@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  test_db:
+    # We use the Alpine version because it is extremely lightweight and fast to pull
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_DB: test_db
+    ports:
+      # Maps port 5432 on your MacBook to port 5432 inside the container
+      - "5433:5432"
+    restart: unless-stopped

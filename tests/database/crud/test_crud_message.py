@@ -1,0 +1,202 @@
+import asyncio
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from database.crud.crud_user import create_user
+from database.crud.crud_chat import create_chat
+from database.crud.crud_message import (
+    create_message,
+    get_message_by_id,
+    get_chat_messages,
+    edit_message_content,
+    soft_delete_message,
+)
+
+# Tells pytest to run all tests in this file asynchronously
+pytestmark = pytest.mark.asyncio
+
+
+async def _make_chat_with_sender(db_session: AsyncSession, chat_id: int, user_id: int):
+    await create_user(db_session, user_id=user_id, phone_number=f"+97250{user_id}")
+    await create_chat(db_session, chat_id=chat_id, is_group=True, title="Test Chat")
+
+
+async def test_create_message_success(db_session: AsyncSession):
+    # Arrange: Foreign Key constraints require the chat and sender to exist first
+    chat_id, user_id, message_id = 700, 800, 90001
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+
+    # Act
+    message = await create_message(
+        session=db_session,
+        message_id=message_id,
+        chat_id=chat_id,
+        sender_id=user_id,
+        content="hello world",
+    )
+
+    # Assert
+    assert message is not None
+    assert message.id == message_id
+    assert message.chat_id == chat_id
+    assert message.sender_id == user_id
+    assert message.content == "hello world"
+    assert message.type == 1
+    assert message.is_edited is False
+    assert message.deleted_at is None
+    assert message.created_at is not None
+
+
+async def test_create_message_without_sender_for_system_messages(db_session: AsyncSession):
+    # Arrange
+    chat_id, message_id = 701, 90002
+    await create_chat(db_session, chat_id=chat_id, is_group=True, title="Test Chat")
+
+    # Act: System messages (e.g. "X joined the group") have no sender
+    message = await create_message(
+        session=db_session,
+        message_id=message_id,
+        chat_id=chat_id,
+        sender_id=None,
+        type=6,
+        content="X joined the group",
+    )
+
+    # Assert
+    assert message is not None
+    assert message.sender_id is None
+    assert message.type == 6
+
+
+async def test_create_message_invalid_chat_fails(db_session: AsyncSession):
+    # Act: The chat_id does not exist, so the Foreign Key constraint should reject it
+    message = await create_message(
+        session=db_session,
+        message_id=90003,
+        chat_id=999999,
+        content="orphan message",
+    )
+
+    # Assert: Should gracefully return None due to IntegrityError handling
+    assert message is None
+
+
+async def test_get_message_by_id(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id, message_id = 702, 801, 90004
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    await create_message(db_session, message_id=message_id, chat_id=chat_id, sender_id=user_id, content="find me")
+
+    # Act
+    fetched = await get_message_by_id(db_session, chat_id=chat_id, message_id=message_id)
+
+    # Assert
+    assert fetched is not None
+    assert fetched.content == "find me"
+
+
+async def test_get_chat_messages_orders_newest_first_and_paginates(db_session: AsyncSession):
+    # Arrange: Insert three messages with strictly increasing (Snowflake-like) IDs
+    chat_id, user_id = 703, 802
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    for message_id in (90010, 90011, 90012):
+        await create_message(db_session, message_id=message_id, chat_id=chat_id, sender_id=user_id, content=str(message_id))
+
+    # Act: First page
+    first_page = await get_chat_messages(db_session, chat_id=chat_id, limit=2)
+
+    # Assert: Newest first
+    assert [m.id for m in first_page] == [90012, 90011]
+
+    # Act: Next page, using the last message of the first page as the cursor
+    second_page = await get_chat_messages(db_session, chat_id=chat_id, before_id=first_page[-1].id, limit=2)
+
+    # Assert
+    assert [m.id for m in second_page] == [90010]
+
+
+async def test_get_chat_messages_excludes_soft_deleted_by_default(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id = 704, 803
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    await create_message(db_session, message_id=90020, chat_id=chat_id, sender_id=user_id, content="visible")
+    await create_message(db_session, message_id=90021, chat_id=chat_id, sender_id=user_id, content="hidden")
+    await soft_delete_message(db_session, chat_id=chat_id, message_id=90021)
+
+    # Act
+    visible_only = await get_chat_messages(db_session, chat_id=chat_id)
+    including_deleted = await get_chat_messages(db_session, chat_id=chat_id, include_deleted=True)
+
+    # Assert
+    assert [m.id for m in visible_only] == [90020]
+    assert {m.id for m in including_deleted} == {90020, 90021}
+
+
+async def test_edit_message_content(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id, message_id = 705, 804, 90030
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    await create_message(db_session, message_id=message_id, chat_id=chat_id, sender_id=user_id, content="typo")
+
+    # Act
+    edited = await edit_message_content(db_session, chat_id=chat_id, message_id=message_id, new_content="fixed")
+
+    # Assert
+    assert edited is not None
+    assert edited.content == "fixed"
+    assert edited.is_edited is True
+    assert edited.edited_at is not None
+
+
+async def test_soft_delete_message(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id, message_id = 706, 805, 90040
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    await create_message(db_session, message_id=message_id, chat_id=chat_id, sender_id=user_id, content="to delete")
+
+    # Act
+    is_deleted = await soft_delete_message(db_session, chat_id=chat_id, message_id=message_id)
+    fetched = await get_message_by_id(db_session, chat_id=chat_id, message_id=message_id)
+
+    # Assert: The row still exists (soft delete), but is flagged
+    assert is_deleted is True
+    assert fetched is not None
+    assert fetched.deleted_at is not None
+
+
+async def test_soft_delete_message_twice_returns_false(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id, message_id = 707, 806, 90050
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    await create_message(db_session, message_id=message_id, chat_id=chat_id, sender_id=user_id, content="to delete")
+    await soft_delete_message(db_session, chat_id=chat_id, message_id=message_id)
+
+    # Act: Deleting an already-deleted message should be a no-op
+    is_deleted_again = await soft_delete_message(db_session, chat_id=chat_id, message_id=message_id)
+
+    # Assert
+    assert is_deleted_again is False
+
+
+async def test_concurrent_create_same_message_id_is_not_deduplicated_by_the_db(session_factory):
+    # Documents a deliberate, known limitation: unlike users/chats (single-column
+    # PK), the messages PK is (id, created_at) because created_at is the partition
+    # key. Two concurrent inserts with the same message_id get different
+    # created_at values (microseconds apart), so the PK does NOT reject the
+    # duplicate - uniqueness of message_id is trusted to the Snowflake generator,
+    # not enforced by the database. If this ever starts failing, the DB started
+    # rejecting duplicates and this test (and the assumption behind it) is stale.
+    chat_id, user_id, message_id = 708, 807, 90060
+    async with session_factory() as setup_session:
+        await _make_chat_with_sender(setup_session, chat_id, user_id)
+
+    async def attempt(content: str):
+        async with session_factory() as session:
+            return await create_message(session, message_id=message_id, chat_id=chat_id, sender_id=user_id, content=content)
+
+    # Act
+    results = await asyncio.gather(attempt("first"), attempt("second"))
+
+    # Assert: both inserts go through - this is the accepted trade-off
+    succeeded = [r for r in results if r is not None]
+    assert len(succeeded) == 2

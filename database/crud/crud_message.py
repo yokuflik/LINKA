@@ -1,0 +1,137 @@
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
+from sqlalchemy.sql import func
+from sqlalchemy.exc import IntegrityError
+from typing import Sequence, Optional
+import logging
+
+from database.models.message import Message
+
+logger = logging.getLogger(__name__)
+
+async def create_message(
+    session: AsyncSession,
+    message_id: int,
+    chat_id: int,
+    sender_id: Optional[int] = None,
+    type: int = 1,
+    content: Optional[str] = None,
+    reply_to_message_id: Optional[int] = None,
+) -> Optional[Message]:
+    """
+    Insert a new message into the chat.
+
+    Time Complexity: O(log N)
+    Explanation: created_at is left to the server default, so the row lands
+    in the current (latest) partition and the (chat_id, id) index on that
+    partition alone absorbs the write - independent of total table size.
+    """
+    new_message = Message(
+        id=message_id,  # Snowflake ID generated at the application layer
+        chat_id=chat_id,
+        sender_id=sender_id,
+        type=type,
+        content=content,
+        reply_to_message_id=reply_to_message_id,
+    )
+
+    session.add(new_message)
+    try:
+        await session.commit()
+        await session.refresh(new_message)
+        return new_message
+    except IntegrityError as e:
+        # Handles a bad chat_id/sender_id FK, or the (astronomically rare) id collision
+        await session.rollback()
+        logger.error(f"Failed to create message {message_id} in chat {chat_id}. Error: {e}")
+        return None
+
+
+async def get_message_by_id(session: AsyncSession, chat_id: int, message_id: int) -> Optional[Message]:
+    """
+    Fetch a single message by (chat_id, id).
+
+    Time Complexity: O(log N)
+    Explanation: chat_id is always known by the caller (a message is only ever
+    read in the context of its chat), so this hits the (chat_id, id) index on
+    each partition instead of an unpruned scan by id alone.
+    """
+    stmt = select(Message).where(Message.chat_id == chat_id, Message.id == message_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def get_chat_messages(
+    session: AsyncSession,
+    chat_id: int,
+    before_id: Optional[int] = None,
+    limit: int = 50,
+    include_deleted: bool = False,
+) -> Sequence[Message]:
+    """
+    Fetch a page of messages for a chat, newest first (cursor-based pagination).
+
+    Time Complexity: O(log N + limit)
+    Explanation: The (chat_id, id) index lets Postgres seek straight to the
+    cursor and walk backwards for `limit` rows, instead of scanning the chat's
+    full history.
+    """
+    stmt = select(Message).where(Message.chat_id == chat_id)
+
+    if before_id is not None:
+        stmt = stmt.where(Message.id < before_id)
+
+    if not include_deleted:
+        stmt = stmt.where(Message.deleted_at.is_(None))
+
+    stmt = stmt.order_by(Message.id.desc()).limit(limit)
+
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+async def edit_message_content(
+    session: AsyncSession,
+    chat_id: int,
+    message_id: int,
+    new_content: str,
+) -> Optional[Message]:
+    """
+    Update a message's content and mark it as edited.
+
+    Time Complexity: O(log N) + O(1)
+    Explanation: B-Tree lookup via (chat_id, id) takes O(log N); the update
+    itself is an O(1) heap operation. RETURNING avoids a secondary SELECT.
+    """
+    stmt = (
+        update(Message)
+        .where(Message.chat_id == chat_id, Message.id == message_id)
+        .values(content=new_content, is_edited=True, edited_at=func.now())
+        .returning(Message)
+    )
+
+    result = await session.execute(stmt)
+    await session.commit()
+
+    return result.scalar_one_or_none()
+
+
+async def soft_delete_message(session: AsyncSession, chat_id: int, message_id: int) -> bool:
+    """
+    Soft-delete a message (sets deleted_at instead of removing the row).
+
+    Time Complexity: O(log N)
+    Explanation: Avoids a physical DELETE, which would be an expensive
+    operation to run at this table's scale; a NULL check elsewhere hides it.
+    """
+    stmt = (
+        update(Message)
+        .where(Message.chat_id == chat_id, Message.id == message_id, Message.deleted_at.is_(None))
+        .values(deleted_at=func.now())
+    )
+
+    result = await session.execute(stmt)
+    await session.commit()
+
+    # Returns True if a row was actually found and marked deleted
+    return result.rowcount > 0

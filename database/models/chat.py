@@ -4,6 +4,11 @@ from sqlalchemy.orm import relationship
 
 from database.base import Base
 
+# Only the first line of the last message is ever rendered in a chat list,
+# so only that much is worth denormalizing onto this (small, hot) table -
+# a message itself can be up to config.MAX_MESSAGE_CONTENT_LENGTH.
+LAST_MESSAGE_PREVIEW_LENGTH = 120
+
 class Chat(Base):
     __tablename__ = "chats"
 
@@ -38,6 +43,16 @@ class Chat(Base):
     # shoved to the end of the list as a NULL special case.
     last_message_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     last_message_id = Column(BigInteger, nullable=True)
+
+    # The snippet the chat list shows under each chat's name. Denormalized
+    # here, next to the id it belongs to, so rendering that screen stays a
+    # single query: resolving last_message_id against `messages` instead
+    # would be one lookup per listed chat into a RANGE-partitioned table
+    # with no partition to prune to (the id is known, created_at isn't),
+    # i.e. every partition probed, per chat, on the most-loaded screen.
+    # NULL means "nothing to preview" - a chat with no messages, or one
+    # whose last message was deleted or has no text.
+    last_message_preview = Column(String(LAST_MESSAGE_PREVIEW_LENGTH), nullable=True)
 
     # SQLAlchemy ORM relationship for easy joins with participants
     # Assuming Participant model will be created next

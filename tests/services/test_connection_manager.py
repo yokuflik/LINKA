@@ -9,11 +9,14 @@ pytestmark = pytest.mark.asyncio
 
 
 class FakeWebSocket:
-    def __init__(self, fail_on_send: bool = False):
+    def __init__(self, fail_on_send: bool = False, delay: float = 0.0):
         self.sent = []
         self.fail_on_send = fail_on_send
+        self.delay = delay
 
     async def send_json(self, data):
+        if self.delay:
+            await asyncio.sleep(self.delay)
         if self.fail_on_send:
             raise RuntimeError("simulated dead connection")
         self.sent.append(data)
@@ -163,3 +166,165 @@ async def test_many_connections_joining_and_leaving_the_same_chat_concurrently(m
     assert manager.get_local_user_ids() == set()
     assert 100 not in manager._chat_subscribers
     assert 100 not in manager._chat_listener_tasks
+
+
+async def test_concurrent_disconnect_during_an_in_flight_broadcast_does_not_crash(manager, redis_db):
+    # Regression test: _broadcast_to_chat used to iterate the live
+    # _chat_subscribers set directly. A disconnect from a *different*
+    # connection in the same chat, landing while a slow send is still being
+    # awaited for another connection, mutated that same set mid-iteration -
+    # confirmed separately to raise "RuntimeError: Set changed size during
+    # iteration" with this exact interleaving. Broadcasting off a snapshot
+    # (and sending concurrently) is what closes this.
+    slow_ws = FakeWebSocket(delay=0.1)
+    victim_ws = FakeWebSocket()
+    await manager.connect(user_id=1, connection_id="slow", websocket=slow_ws, chat_ids=[100])
+    await manager.connect(user_id=2, connection_id="victim", websocket=victim_ws, chat_ids=[100])
+    await asyncio.sleep(0.2)
+
+    async def disconnect_victim_mid_broadcast():
+        await asyncio.sleep(0.03)  # let the broadcast start and reach the slow send
+        await manager.disconnect("victim")
+
+    await asyncio.gather(
+        realtime_service.publish_event(100, {"event": "new_message", "message_id": 1}),
+        disconnect_victim_mid_broadcast(),
+    )
+    await asyncio.sleep(0.3)  # let the slow send (and the broadcast task) finish
+
+    assert slow_ws.sent == [{"event": "new_message", "message_id": 1}]
+    await manager.disconnect("slow")
+
+
+async def test_one_slow_connection_does_not_delay_delivery_to_others(manager, redis_db):
+    slow_ws = FakeWebSocket(delay=0.3)
+    fast_ws = FakeWebSocket()
+    await manager.connect(user_id=1, connection_id="slow", websocket=slow_ws, chat_ids=[100])
+    await manager.connect(user_id=2, connection_id="fast", websocket=fast_ws, chat_ids=[100])
+    await asyncio.sleep(0.2)
+
+    await realtime_service.publish_event(100, {"event": "new_message", "message_id": 1})
+
+    # The fast connection must receive its copy well before the slow one
+    # finishes - sends are dispatched concurrently, not queued behind it.
+    await asyncio.sleep(0.05)
+    assert fast_ws.sent == [{"event": "new_message", "message_id": 1}]
+    assert slow_ws.sent == [], "the slow send should still be in flight at this point"
+
+    await asyncio.sleep(0.4)
+    assert slow_ws.sent == [{"event": "new_message", "message_id": 1}]
+
+    await manager.disconnect("slow")
+    await manager.disconnect("fast")
+
+
+async def test_listener_recovers_from_a_transient_failure_instead_of_dying(manager, redis_db, monkeypatch):
+    # Regression test: _listen_to_chat used to only catch CancelledError, so
+    # any other error (a dropped Redis connection, or any bug in
+    # _broadcast_to_chat itself) permanently killed that chat's delivery -
+    # the bookkeeping still showed subscribers, so no new listener task was
+    # ever spawned to replace the dead one, even for a brand new connection.
+    call_count = {"n": 0}
+    original_broadcast = manager._broadcast_to_chat
+
+    async def flaky_broadcast(chat_id, event):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise ConnectionError("simulated transient Redis blip")
+        await original_broadcast(chat_id, event)
+
+    monkeypatch.setattr(manager, "_broadcast_to_chat", flaky_broadcast)
+
+    ws = FakeWebSocket()
+    await manager.connect(user_id=1, connection_id="c1", websocket=ws, chat_ids=[100])
+    await asyncio.sleep(0.2)
+
+    # This publish drives the injected failure on its first delivery attempt
+    await realtime_service.publish_event(100, {"event": "new_message", "message_id": 1})
+    await asyncio.sleep(0.8)  # covers the listener's 0.5s backoff plus the resubscribe round trip
+
+    assert 100 in manager._chat_listener_tasks, "the listener must still be registered, not dead"
+
+    # A second event, after recovery, must still get delivered
+    await realtime_service.publish_event(100, {"event": "new_message", "message_id": 2})
+    await asyncio.sleep(0.2)
+
+    assert ws.sent == [{"event": "new_message", "message_id": 2}]
+    await manager.disconnect("c1")
+
+
+# ---------------------------------------------------------------------------
+# The per-user personal channel: what makes a chat created *after* connect()
+# still reach an already-open connection, instead of only at the next
+# reconnect (when get_all_chat_ids_for_user() would pick it up naturally).
+# ---------------------------------------------------------------------------
+
+async def test_added_to_chat_event_dynamically_subscribes_the_connection(manager, redis_db):
+    ws = FakeWebSocket()
+    # Connected with an empty chat_ids list - simulates the chat not having
+    # existed yet at connect time.
+    await manager.connect(user_id=1, connection_id="c1", websocket=ws, chat_ids=[])
+    await asyncio.sleep(0.2)
+
+    assert 200 not in manager._chat_subscribers
+
+    await realtime_service.publish_user_event(1, {"event": "added_to_chat", "chat_id": "200"})
+    await asyncio.sleep(0.2)
+
+    # The connection is now live-subscribed to the new chat, with no reconnect needed
+    assert "c1" in manager._chat_subscribers.get(200, set())
+
+    # And a message published to that chat right after gets delivered
+    await realtime_service.publish_event(200, {"event": "new_message", "message_id": 1})
+    await asyncio.sleep(0.2)
+    assert {"event": "added_to_chat", "chat_id": "200"} in ws.sent
+    assert {"event": "new_message", "message_id": 1} in ws.sent
+
+    await manager.disconnect("c1")
+
+
+async def test_added_to_chat_only_affects_the_targeted_user(manager, redis_db):
+    ws1 = FakeWebSocket()
+    ws2 = FakeWebSocket()
+    await manager.connect(user_id=1, connection_id="c1", websocket=ws1, chat_ids=[])
+    await manager.connect(user_id=2, connection_id="c2", websocket=ws2, chat_ids=[])
+    await asyncio.sleep(0.2)
+
+    await realtime_service.publish_user_event(1, {"event": "added_to_chat", "chat_id": "300"})
+    await asyncio.sleep(0.2)
+
+    assert "c1" in manager._chat_subscribers.get(300, set())
+    assert "c2" not in manager._chat_subscribers.get(300, set())
+    assert ws2.sent == []
+
+    await manager.disconnect("c1")
+    await manager.disconnect("c2")
+
+
+async def test_multi_device_both_connections_get_subscribed(manager, redis_db):
+    ws_a = FakeWebSocket()
+    ws_b = FakeWebSocket()
+    await manager.connect(user_id=1, connection_id="device-a", websocket=ws_a, chat_ids=[])
+    await manager.connect(user_id=1, connection_id="device-b", websocket=ws_b, chat_ids=[])
+    await asyncio.sleep(0.2)
+
+    await realtime_service.publish_user_event(1, {"event": "added_to_chat", "chat_id": "400"})
+    await asyncio.sleep(0.2)
+
+    assert manager._chat_subscribers.get(400) == {"device-a", "device-b"}
+    assert {"event": "added_to_chat", "chat_id": "400"} in ws_a.sent
+    assert {"event": "added_to_chat", "chat_id": "400"} in ws_b.sent
+
+    await manager.disconnect("device-a")
+    await manager.disconnect("device-b")
+
+
+async def test_user_channel_listener_stops_when_the_last_connection_disconnects(manager, redis_db):
+    ws = FakeWebSocket()
+    await manager.connect(user_id=1, connection_id="c1", websocket=ws, chat_ids=[])
+    await asyncio.sleep(0.2)
+    assert 1 in manager._user_channel_listener_tasks
+
+    await manager.disconnect("c1")
+    assert 1 not in manager._user_channel_listener_tasks
+    assert 1 not in manager._user_channel_subscribers

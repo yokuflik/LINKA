@@ -104,7 +104,7 @@ async def test_dispatch_send_message_missing_field_returns_bad_request(db_sessio
         websocket=ws,
     )
 
-    assert ws.sent[0] == {"type": "error", "code": "bad_request", "message": "Missing field: 'chat_id'"}
+    assert ws.sent[0] == {"type": "error", "code": "bad_request", "message": "Invalid request: 'chat_id'"}
 
 
 async def test_dispatch_send_message_by_a_non_participant_returns_forbidden(db_session: AsyncSession, redis_db):
@@ -202,6 +202,10 @@ async def test_dispatch_internal_error_is_reported_not_raised(db_session: AsyncS
 
     assert ws.sent[0]["type"] == "error"
     assert ws.sent[0]["code"] == "internal_error"
+    # The real exception text must never reach the client - it's exactly the
+    # kind of thing (a DB error, an internal stack detail) that shouldn't be
+    # exposed; it still goes to the server log via logger.exception().
+    assert "something broke" not in ws.sent[0]["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +248,10 @@ async def test_endpoint_full_session_lifecycle(session_factory, redis_db):
     assert await presence_service.is_online(1) is False
 
     async with session_factory() as verify_session:
-        persisted = await get_message_by_id(verify_session, chat_id=chat_id, message_id=ack["message_id"])
+        # The ack's message_id is a string on the wire (see MessageOut.IdStr /
+        # the header comment in poc/index.html) - back to an int for a
+        # direct CRUD-layer call, exactly what a real client would do.
+        persisted = await get_message_by_id(verify_session, chat_id=chat_id, message_id=int(ack["message_id"]))
     assert persisted is not None
     assert persisted.content == "hello"
 

@@ -11,12 +11,22 @@ from database.crud.crud_message import (
 )
 from database.crud.crud_participant import get_chat_participants, is_participant, update_last_read_message
 from database.models.message import Message
+from config import MAX_MESSAGE_CONTENT_LENGTH
 from services import notification_service, presence_service, realtime_service
 from services.redis_client import redis_client
 from utils.snowflake import next_id
 
 # System messages ("X joined the group", etc.) have no sender
 SYSTEM_MESSAGE_TYPE = 6
+
+
+class MessageTooLongError(Exception):
+    pass
+
+
+def _check_content_length(content: Optional[str]) -> None:
+    if content is not None and len(content) > MAX_MESSAGE_CONTENT_LENGTH:
+        raise MessageTooLongError(f"Message content exceeds {MAX_MESSAGE_CONTENT_LENGTH} characters")
 
 # How long a client_message_id is remembered for idempotency - long enough to
 # cover any realistic client retry window (a flaky connection retrying a send).
@@ -45,6 +55,8 @@ async def send_message(
     The full send flow: idempotency check, permission check, persist,
     acknowledge, fan out to whoever's connected, push to whoever isn't.
     """
+    _check_content_length(content)
+
     if not await is_participant(session, chat_id, sender_id):
         raise NotAParticipantError(f"User {sender_id} is not a participant of chat {chat_id}")
 
@@ -106,11 +118,15 @@ async def send_system_message(session: AsyncSession, chat_id: int, content: str)
 
 
 async def _fan_out(session: AsyncSession, message: Message) -> None:
+    # Ids go out as strings - a JSON number bigger than 2^53 (every one of
+    # our Snowflake ids) silently loses precision the instant a browser
+    # parses it. See routers/schemas.py's IdStr for the full story; this is
+    # the WebSocket-side half of the same fix (Pydantic only covers REST).
     event = {
         "event": "new_message",
-        "chat_id": message.chat_id,
-        "message_id": message.id,
-        "sender_id": message.sender_id,
+        "chat_id": str(message.chat_id),
+        "message_id": str(message.id),
+        "sender_id": str(message.sender_id) if message.sender_id is not None else None,
         "type": message.type,
         "content": message.content,
         "created_at": message.created_at.isoformat(),
@@ -123,13 +139,22 @@ async def _fan_out(session: AsyncSession, message: Message) -> None:
     online_ids = await presence_service.get_online_participants(recipient_ids)
     offline_ids = [uid for uid in recipient_ids if uid not in online_ids]
 
-    for user_id in offline_ids:
-        await notification_service.send_push(
-            user_id,
-            title="New message",
-            body=message.content or "",
-            data={"chat_id": str(message.chat_id), "message_id": str(message.id)},
-        )
+    # Concurrent, not sequential: one at a time, this loop's latency scales
+    # with the chat's offline member count - for a large group that's a real
+    # delay on the sender's own ack, since send_message() awaits _fan_out()
+    # before returning.
+    await asyncio.gather(
+        *(
+            notification_service.send_push(
+                user_id,
+                title="New message",
+                body=message.content or "",
+                data={"chat_id": str(message.chat_id), "message_id": str(message.id)},
+            )
+            for user_id in offline_ids
+        ),
+        return_exceptions=True,
+    )
 
 
 async def get_message_history(
@@ -145,12 +170,16 @@ async def get_message_history(
 
 
 async def edit_message(session: AsyncSession, user_id: int, chat_id: int, message_id: int, new_content: str) -> Message:
+    _check_content_length(new_content)
+
     existing = await get_message_by_id(session, chat_id=chat_id, message_id=message_id)
     if existing is None or existing.sender_id != user_id:
         raise NotAParticipantError(f"User {user_id} may not edit message {message_id}")
 
     message = await edit_message_content(session, chat_id=chat_id, message_id=message_id, new_content=new_content)
-    await realtime_service.publish_event(chat_id, {"event": "message_edited", "chat_id": chat_id, "message_id": message_id, "content": new_content})
+    await realtime_service.publish_event(
+        chat_id, {"event": "message_edited", "chat_id": str(chat_id), "message_id": str(message_id), "content": new_content}
+    )
     return message
 
 
@@ -161,12 +190,14 @@ async def delete_message(session: AsyncSession, user_id: int, chat_id: int, mess
 
     deleted = await soft_delete_message(session, chat_id=chat_id, message_id=message_id)
     if deleted:
-        await realtime_service.publish_event(chat_id, {"event": "message_deleted", "chat_id": chat_id, "message_id": message_id})
+        await realtime_service.publish_event(
+            chat_id, {"event": "message_deleted", "chat_id": str(chat_id), "message_id": str(message_id)}
+        )
     return deleted
 
 
 async def mark_as_read(session: AsyncSession, user_id: int, chat_id: int, message_id: int) -> None:
     await update_last_read_message(session, chat_id=chat_id, user_id=user_id, message_id=message_id)
     await realtime_service.publish_event(
-        chat_id, {"event": "read_receipt", "chat_id": chat_id, "user_id": user_id, "message_id": message_id}
+        chat_id, {"event": "read_receipt", "chat_id": str(chat_id), "user_id": str(user_id), "message_id": str(message_id)}
     )

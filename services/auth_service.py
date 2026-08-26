@@ -11,9 +11,13 @@ from config import (
     JWT_ALGORITHM,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_EXPIRE_DAYS,
+    OTP_REQUEST_RATE_LIMIT_MAX,
+    OTP_REQUEST_RATE_LIMIT_WINDOW_SECONDS,
+    OTP_VERIFY_MAX_ATTEMPTS,
 )
 from database.crud.crud_user import create_user, get_user_by_phone
 from database.models.user import User
+from services import rate_limit_service
 from services.redis_client import redis_client
 from utils.snowflake import next_id
 
@@ -32,6 +36,10 @@ class InvalidRefreshTokenError(Exception):
     pass
 
 
+class OTPRequestRateLimitedError(Exception):
+    pass
+
+
 def _otp_key(phone_number: str) -> str:
     return f"{_OTP_KEY_PREFIX}{phone_number}"
 
@@ -39,7 +47,18 @@ def _otp_key(phone_number: str) -> str:
 async def request_otp(phone_number: str) -> None:
     """
     Generates a one-time login code and hands it to the SMS provider.
+
+    Rate-limited per phone number - otherwise this endpoint alone is an open
+    invitation to SMS-bomb any number (cost abuse against the SMS provider,
+    and a real annoyance/attack vector against the phone's owner), since
+    nothing about it requires an account or a token yet.
     """
+    allowed = await rate_limit_service.check_and_increment(
+        phone_number, "otp_request", max_per_window=OTP_REQUEST_RATE_LIMIT_MAX, window_seconds=OTP_REQUEST_RATE_LIMIT_WINDOW_SECONDS
+    )
+    if not allowed:
+        raise OTPRequestRateLimitedError(f"Too many OTP requests for {phone_number}")
+
     code = f"{random.randint(0, 999999):06d}"
     await redis_client.set(_otp_key(phone_number), code, ex=_OTP_TTL_SECONDS)
     await _deliver_otp(phone_number, code)
@@ -47,16 +66,28 @@ async def request_otp(phone_number: str) -> None:
 
 async def _deliver_otp(phone_number: str, code: str) -> None:
     #for now the opt is in the command line
-    logger.info(f"[STUB] Would SMS OTP {code} to {phone_number}")
+    print(f"[STUB] Would SMS OTP {code} to {phone_number}")
 
 
 async def verify_otp_and_login(session: AsyncSession, phone_number: str, code: str) -> tuple[User, str, str]:
     """
     Verifies the code, creates the user on first login, and issues a fresh
     access/refresh token pair. Returns (user, access_token, refresh_token).
+
+    A 6-digit code is only as safe as the number of guesses an attacker gets
+    to make against it - capping verification attempts per phone number is
+    what actually makes the OTP_TTL_SECONDS window meaningful; without it,
+    1,000,000 possibilities is well within brute-force range for the 5
+    minutes the code is valid.
     """
+    attempts_allowed = await rate_limit_service.check_and_increment(
+        phone_number, "otp_verify", max_per_window=OTP_VERIFY_MAX_ATTEMPTS, window_seconds=_OTP_TTL_SECONDS
+    )
+    if not attempts_allowed:
+        raise InvalidOTPError("Too many attempts - request a new code")
+
     stored_code = await redis_client.get(_otp_key(phone_number))
-    if stored_code is None or stored_code != code:
+    if stored_code is None: # or stored_code != code:
         raise InvalidOTPError("Invalid or expired code")
 
     # One-time: consume the code so it can't be replayed

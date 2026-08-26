@@ -85,6 +85,26 @@ async def test_admin_can_add_a_member(db_session: AsyncSession):
     assert participant.role == chat_service.ROLE_MEMBER
 
 
+async def test_add_member_for_a_nonexistent_user_returns_none_without_a_system_message(db_session: AsyncSession):
+    # Regression: this used to skip the None-check entirely, so a bad
+    # new_user_id (FK violation, silently swallowed by add_participant_to_chat)
+    # still produced a "X joined the group" system message for a join that
+    # never actually happened.
+    from database.crud.crud_message import get_chat_messages
+
+    await _make_users(db_session, 1)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team")
+    # Captured now: add_member's internal IntegrityError rollback (from the
+    # bad new_user_id) expires every object in this session, group included.
+    group_id = group.id
+
+    result = await chat_service.add_member(db_session, actor_id=1, chat_id=group_id, new_user_id=999999)
+    assert result is None
+
+    messages = await get_chat_messages(db_session, chat_id=group_id)
+    assert messages == []
+
+
 async def test_add_member_generates_a_system_message(db_session: AsyncSession):
     from database.crud.crud_message import get_chat_messages
 
@@ -196,3 +216,132 @@ async def test_concurrent_add_member_calls_do_not_duplicate_or_crash(session_fac
     results = await asyncio.gather(attempt(), attempt(), return_exceptions=True)
     unexpected = [r for r in results if isinstance(r, Exception) and not isinstance(r, chat_service.PermissionDeniedError)]
     assert unexpected == [], f"unexpected crash(es): {unexpected}"
+
+
+async def test_create_group_chat_rejects_more_members_than_the_cap(db_session: AsyncSession, monkeypatch):
+    monkeypatch.setattr(chat_service, "MAX_INITIAL_GROUP_MEMBERS", 3)
+    await _make_users(db_session, 1, 2, 3, 4, 5)
+
+    with pytest.raises(chat_service.TooManyMembersError):
+        await chat_service.create_group_chat(db_session, creator_id=1, title="Huge", initial_member_ids=[2, 3, 4, 5])
+
+
+async def test_create_group_chat_allows_exactly_the_cap(db_session: AsyncSession, monkeypatch):
+    monkeypatch.setattr(chat_service, "MAX_INITIAL_GROUP_MEMBERS", 3)
+    await _make_users(db_session, 1, 2, 3, 4)
+
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Just fits", initial_member_ids=[2, 3, 4])
+    assert group is not None
+
+
+# ---------------------------------------------------------------------------
+# Regression: a nonexistent participant used to fail silently (a swallowed FK
+# violation), leaving a "chat" only some of its intended members could ever
+# see - this is exactly the bug a corrupted client-side id (JS JSON-number
+# precision loss - see routers/schemas.py's IdStr) actually triggered.
+# get_or_create_private_chat/create_group_chat must now fail loudly and
+# leave nothing behind instead.
+# ---------------------------------------------------------------------------
+
+async def test_private_chat_with_a_nonexistent_user_raises_and_leaves_nothing_behind(db_session: AsyncSession):
+    await _make_users(db_session, 1)
+
+    with pytest.raises(chat_service.UserNotFoundError):
+        await chat_service.get_or_create_private_chat(db_session, 1, 999999)
+
+    # No orphaned chat, and no dangling pair reservation, should remain
+    chats = await chat_service.get_chat_list(db_session, user_id=1)
+    assert chats == []
+
+
+async def test_group_chat_with_a_nonexistent_member_raises_and_leaves_nothing_behind(db_session: AsyncSession):
+    await _make_users(db_session, 1)
+
+    with pytest.raises(chat_service.UserNotFoundError):
+        await chat_service.create_group_chat(db_session, creator_id=1, title="Group", initial_member_ids=[999999])
+
+    chats = await chat_service.get_chat_list(db_session, user_id=1)
+    assert chats == []
+
+
+# ---------------------------------------------------------------------------
+# "added_to_chat" notifications - what makes a chat created after a user's
+# WebSocket already connected still reach them live (see connection_manager's
+# personal-channel handling). Verified here by actually subscribing to the
+# real Redis channel, the same way a live connection_manager listener would.
+# ---------------------------------------------------------------------------
+
+async def _collect_one_user_event(user_id: int, timeout: float = 2.0):
+    from services import realtime_service
+    agen = realtime_service.subscribe_to_user(user_id)
+    task = asyncio.create_task(agen.__anext__())
+    try:
+        await asyncio.sleep(0.2)  # let the subscribe() actually land before the caller publishes
+        return agen, task
+    except Exception:
+        await agen.aclose()
+        raise
+
+
+async def test_private_chat_creation_notifies_both_sides(db_session: AsyncSession, redis_db):
+    await _make_users(db_session, 1, 2)
+
+    agen_a, task_a = await _collect_one_user_event(1)
+    agen_b, task_b = await _collect_one_user_event(2)
+    try:
+        chat = await chat_service.get_or_create_private_chat(db_session, 1, 2)
+
+        event_a = await asyncio.wait_for(task_a, timeout=2.0)
+        event_b = await asyncio.wait_for(task_b, timeout=2.0)
+    finally:
+        await agen_a.aclose()
+        await agen_b.aclose()
+
+    assert event_a == {"event": "added_to_chat", "chat_id": str(chat.id)}
+    assert event_b == {"event": "added_to_chat", "chat_id": str(chat.id)}
+
+
+async def test_private_chat_reuse_does_not_renotify(db_session: AsyncSession, redis_db):
+    await _make_users(db_session, 1, 2)
+    await chat_service.get_or_create_private_chat(db_session, 1, 2)
+
+    agen, task = await _collect_one_user_event(1)
+    try:
+        # Second call hits the existing-chat early return - no new notification expected
+        await chat_service.get_or_create_private_chat(db_session, 1, 2)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(task, timeout=0.5)
+    finally:
+        task.cancel()
+        await agen.aclose()
+
+
+async def test_group_chat_creation_notifies_creator_and_every_member(db_session: AsyncSession, redis_db):
+    await _make_users(db_session, 1, 2, 3)
+
+    agen_2, task_2 = await _collect_one_user_event(2)
+    agen_3, task_3 = await _collect_one_user_event(3)
+    try:
+        group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team", initial_member_ids=[2, 3])
+        event_2 = await asyncio.wait_for(task_2, timeout=2.0)
+        event_3 = await asyncio.wait_for(task_3, timeout=2.0)
+    finally:
+        await agen_2.aclose()
+        await agen_3.aclose()
+
+    assert event_2 == {"event": "added_to_chat", "chat_id": str(group.id)}
+    assert event_3 == {"event": "added_to_chat", "chat_id": str(group.id)}
+
+
+async def test_add_member_notifies_the_new_member(db_session: AsyncSession, redis_db):
+    await _make_users(db_session, 1, 2)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team")
+
+    agen, task = await _collect_one_user_event(2)
+    try:
+        await chat_service.add_member(db_session, actor_id=1, chat_id=group.id, new_user_id=2)
+        event = await asyncio.wait_for(task, timeout=2.0)
+    finally:
+        await agen.aclose()
+
+    assert event == {"event": "added_to_chat", "chat_id": str(group.id)}

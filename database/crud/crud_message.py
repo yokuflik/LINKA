@@ -6,7 +6,7 @@ from typing import Sequence, Optional
 import logging
 
 from database.models.message import Message
-from database.models.chat import Chat
+from database.models.chat import Chat, LAST_MESSAGE_PREVIEW_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 # pass in. Without this, `limit` is just a suggestion - someone (a bug, or a
 # malicious client) passing limit=1_000_000 would defeat pagination entirely.
 MAX_PAGE_SIZE = 100
+
+
+def build_last_message_preview(content: Optional[str]) -> Optional[str]:
+    """The Chat.last_message_preview value a given message's content maps to."""
+    return None if content is None else content[:LAST_MESSAGE_PREVIEW_LENGTH]
 
 async def create_message(
     session: AsyncSession,
@@ -26,7 +31,7 @@ async def create_message(
 ) -> Optional[Message]:
     """
     Insert a new message into the chat and bump the chat's recency
-    (last_message_at/last_message_id), atomically.
+    (last_message_at/last_message_id/last_message_preview), atomically.
 
     Time Complexity: O(log N)
     Explanation: created_at is left to the server default, so the row lands
@@ -53,7 +58,11 @@ async def create_message(
         await session.execute(
             update(Chat)
             .where(Chat.id == chat_id)
-            .values(last_message_at=new_message.created_at, last_message_id=new_message.id)
+            .values(
+                last_message_at=new_message.created_at,
+                last_message_id=new_message.id,
+                last_message_preview=build_last_message_preview(new_message.content),
+            )
         )
 
         await session.commit()
@@ -132,9 +141,21 @@ async def edit_message_content(
     )
 
     result = await session.execute(stmt)
+    message = result.scalar_one_or_none()
+
+    # The chat list would otherwise keep showing the pre-edit text until the
+    # next message arrives. The last_message_id predicate is what makes this
+    # a no-op when an *older* message is edited.
+    if message is not None:
+        await session.execute(
+            update(Chat)
+            .where(Chat.id == chat_id, Chat.last_message_id == message_id)
+            .values(last_message_preview=build_last_message_preview(new_content))
+        )
+
     await session.commit()
 
-    return result.scalar_one_or_none()
+    return message
 
 
 async def soft_delete_message(session: AsyncSession, chat_id: int, message_id: int) -> bool:
@@ -152,7 +173,20 @@ async def soft_delete_message(session: AsyncSession, chat_id: int, message_id: i
     )
 
     result = await session.execute(stmt)
+    deleted = result.rowcount > 0
+
+    # Same reasoning as the edit path: leaving the snippet behind would keep
+    # deleted text visible in every participant's chat list. It's cleared
+    # rather than backfilled from the previous message - finding that one
+    # means a scan back through the chat's history, and the recency ordering
+    # (last_message_at) is unaffected either way.
+    if deleted:
+        await session.execute(
+            update(Chat)
+            .where(Chat.id == chat_id, Chat.last_message_id == message_id)
+            .values(last_message_preview=None)
+        )
+
     await session.commit()
 
-    # Returns True if a row was actually found and marked deleted
-    return result.rowcount > 0
+    return deleted

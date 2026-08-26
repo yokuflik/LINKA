@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linka — WebSocket PoC</title>
+
+<!--
+  Single-file proof of concept. No build step - open this file directly,
+  or serve it with any static file server.
+
+  IMPORTANT — this was written against Linka's ACTUAL implemented API, which
+  differs from the spec this was requested against in a few places. Deviations,
+  and why:
+
+    - Auth endpoints are POST /auth/otp/request and /auth/otp/verify
+      (not /auth/request-otp / /auth/verify-otp).
+    - POST /chats/private takes { other_user_id }, not { target_user_id }.
+    - Group creation is POST /chats/groups (plural) with { title,
+      initial_member_ids }, not /chats/group with { member_ids }.
+    - The WebSocket send payload's top-level action key is "type"
+      (e.g. "send_message"), not "action" - "type" is also (separately) a
+      field *inside* that payload for the message's content type (1=text),
+      renamed here to "message_type" to avoid colliding with the action key:
+        { "type": "send_message", "chat_id": 1, "client_message_id": "...",
+          "content": "hi", "message_type": 1 }
+    - Real-time events pushed over the socket are flat, not wrapped in
+      {event, data}: { "event": "new_message", "chat_id": ..., "message_id": ...,
+      "sender_id": ..., "type": ..., "content": ..., "created_at": ... }.
+      Acks/errors from your own actions use a "type" key instead of "event"
+      ({"type":"ack",...} / {"type":"error",...}) - see handleWsMessage().
+      There's also an "added_to_chat" event: { "event": "added_to_chat",
+      "chat_id": ... }, pushed to *both* sides right when a private chat is
+      created (or to new group members) - the server has already brought
+      this connection's live subscription up to date by the time it arrives,
+      so the client-side handler here just refreshes the chat list.
+
+  Also: the server had no CORS headers at all before this PoC was written -
+  see main.py's CORSMiddleware (dev-only, wide open by default).
+
+  IMPORTANT — every id (user/chat/message) is a 64-bit Snowflake, and the
+  server sends every one of them as a JSON STRING, not a JSON number. This
+  isn't stylistic: JSON.parse decodes numbers as IEEE-754 doubles, which
+  only represent integers exactly up to 2^53-1 (~9 quadrillion) - our ids
+  are ~3.5*10^17, so ~95% of them get silently corrupted the instant a
+  browser parses one as a Number. This is exactly what broke private-chat
+  creation the first time this was tested: a corrupted id pointed at a user
+  that doesn't exist, and the add-participant call failed silently.
+  Never call parseInt()/Number()/`+id` on an id anywhere in this file -
+  keep them as opaque strings end to end (comparison, JSON.stringify, and
+  putting them in a URL path all work fine on strings; the server parses a
+  numeric string back to an exact int with no special handling needed).
+-->
+
+<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="h-screen bg-slate-100 text-slate-900 antialiased">
+<div id="app" class="h-full"></div>
+
+<script>
+const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } = Vue;
+
+createApp({
+  setup() {
+    // ---------------------------------------------------------------
+    // Config / logging
+    // ---------------------------------------------------------------
+    const apiBase = ref(localStorage.getItem('linka_api_base') || 'http://localhost:8000');
+    const wsBase = computed(() => apiBase.value.replace(/^http/, 'ws'));
+
+    function log(...args) { console.log('%c[Linka]', 'color:#0e7c90', ...args); }
+    function logError(...args) { console.error('[Linka]', ...args); }
+
+    // ---------------------------------------------------------------
+    // Auth state
+    // ---------------------------------------------------------------
+    const accessToken = ref(localStorage.getItem('linka_access_token') || '');
+    const refreshToken = ref(localStorage.getItem('linka_refresh_token') || '');
+    const currentUser = ref(null);
+    const isAuthed = computed(() => !!accessToken.value && !!currentUser.value);
+
+    const authStage = ref('phone'); // 'phone' | 'otp'
+    const phoneNumber = ref('');
+    const otpCode = ref('');
+    const authError = ref('');
+    const authBusy = ref(false);
+
+    // ---------------------------------------------------------------
+    // REST helper - JSON in/out, Bearer auth, one auto-refresh-and-retry
+    // on a 401, console logging on every request/response/error.
+    // ---------------------------------------------------------------
+    async function apiFetch(path, options = {}) {
+      const doFetch = () => {
+        const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+        if (accessToken.value) headers['Authorization'] = `Bearer ${accessToken.value}`;
+        log('→', options.method || 'GET', path);
+        return fetch(`${apiBase.value}${path}`, { ...options, headers });
+      };
+
+      let resp;
+      try {
+        resp = await doFetch();
+      } catch (err) {
+        logError('network error calling', path, err);
+        throw err;
+      }
+
+      if (resp.status === 401 && refreshToken.value) {
+        log('401 on', path, '- attempting token refresh');
+        if (await tryRefresh()) resp = await doFetch();
+      }
+
+      if (!resp.ok) {
+        let detail = resp.statusText;
+        try { detail = (await resp.json()).detail || detail; } catch (_) {}
+        logError('←', resp.status, path, detail);
+        const err = new Error(detail);
+        err.status = resp.status;
+        throw err;
+      }
+
+      log('←', resp.status, path);
+      return resp.status === 204 ? null : resp.json();
+    }
+
+    async function tryRefresh() {
+      try {
+        const resp = await fetch(`${apiBase.value}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: refreshToken.value }),
+        });
+        if (!resp.ok) throw new Error(`refresh rejected (${resp.status})`);
+        const body = await resp.json();
+        accessToken.value = body.access_token;
+        refreshToken.value = body.refresh_token;
+        localStorage.setItem('linka_access_token', accessToken.value);
+        localStorage.setItem('linka_refresh_token', refreshToken.value);
+        log('access token refreshed');
+        return true;
+      } catch (err) {
+        logError('refresh failed, logging out:', err.message);
+        logout();
+        return false;
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Auth actions
+    // ---------------------------------------------------------------
+    async function requestOtp() {
+      authError.value = '';
+      authBusy.value = true;
+      try {
+        await apiFetch('/auth/otp/request', {
+          method: 'POST',
+          body: JSON.stringify({ phone_number: phoneNumber.value }),
+        });
+        authStage.value = 'otp';
+        log('OTP requested for', phoneNumber.value, '- no SMS provider is wired up, check the SERVER console/log for the code');
+      } catch (err) {
+        authError.value = err.message || 'Failed to request code';
+      } finally {
+        authBusy.value = false;
+      }
+    }
+
+    async function verifyOtp() {
+      authError.value = '';
+      authBusy.value = true;
+      try {
+        const body = await apiFetch('/auth/otp/verify', {
+          method: 'POST',
+          body: JSON.stringify({ phone_number: phoneNumber.value, code: otpCode.value }),
+        });
+        accessToken.value = body.access_token;
+        refreshToken.value = body.refresh_token;
+        currentUser.value = body.user;
+        localStorage.setItem('linka_access_token', accessToken.value);
+        localStorage.setItem('linka_refresh_token', refreshToken.value);
+        log('logged in as', currentUser.value);
+        connectWebSocket();
+        await loadChats();
+      } catch (err) {
+        authError.value = err.message || 'Invalid code';
+      } finally {
+        authBusy.value = false;
+      }
+    }
+
+    function logout() {
+      disconnectWebSocket();
+      accessToken.value = '';
+      refreshToken.value = '';
+      currentUser.value = null;
+      chats.value = [];
+      messages.value = [];
+      activeChatId.value = null;
+      authStage.value = 'phone';
+      phoneNumber.value = '';
+      otpCode.value = '';
+      localStorage.removeItem('linka_access_token');
+      localStorage.removeItem('linka_refresh_token');
+      log('logged out');
+    }
+
+    // ---------------------------------------------------------------
+    // WebSocket
+    // ---------------------------------------------------------------
+    const wsStatus = ref('disconnected'); // disconnected | connecting | connected | error
+    let ws = null;
+    let wsReconnectTimer = null;
+    let heartbeatTimer = null;
+
+    function connectWebSocket() {
+      if (ws) { ws.onclose = null; ws.close(); }
+      wsStatus.value = 'connecting';
+      const url = `${wsBase.value}/ws?token=${encodeURIComponent(accessToken.value)}`;
+      log('WS connecting →', url);
+      ws = new WebSocket(url);
+
+      ws.onopen = () => {
+        wsStatus.value = 'connected';
+        log('WS connected');
+        heartbeatTimer = setInterval(() => {
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'heartbeat' }));
+        }, 30000);
+      };
+
+      ws.onmessage = (evt) => {
+        let msg;
+        try { msg = JSON.parse(evt.data); } catch (err) { logError('WS message was not valid JSON:', evt.data); return; }
+        log('WS ←', msg);
+        handleWsMessage(msg);
+      };
+
+      ws.onerror = (evt) => {
+        wsStatus.value = 'error';
+        logError('WS error', evt);
+      };
+
+      ws.onclose = (evt) => {
+        log('WS closed, code =', evt.code, 'reason =', evt.reason || '(none)');
+        wsStatus.value = 'disconnected';
+        if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+        ws = null;
+        if (accessToken.value) {
+          log('reconnecting in 3s…');
+          wsReconnectTimer = setTimeout(connectWebSocket, 3000);
+        }
+      };
+    }
+
+    function disconnectWebSocket() {
+      if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+      if (ws) { ws.onclose = null; ws.close(); ws = null; }
+      wsStatus.value = 'disconnected';
+    }
+
+    function handleWsMessage(msg) {
+      // Acks/errors for actions *you* took use "type"; events fanned out
+      // from the server (yours or anyone else's) use "event".
+      if (msg.type === 'error') { logError('server error:', msg.code, '-', msg.message); return; }
+      if (msg.type === 'ack') { log('ack:', msg.for, msg); return; }
+      if (msg.type === 'heartbeat_ack') { return; }
+
+      if (msg.event === 'new_message') {
+        if (msg.chat_id === activeChatId.value) {
+          messages.value.push({
+            id: msg.message_id, chat_id: msg.chat_id, sender_id: msg.sender_id,
+            type: msg.type, content: msg.content, created_at: msg.created_at, is_edited: false,
+          });
+          nextTick(scrollMessagesToBottom);
+        }
+        bumpChatPreview(msg.chat_id, msg.message_id, msg.created_at, msg.content);
+        return;
+      }
+      if (msg.event === 'message_edited') {
+        const m = messages.value.find((x) => x.id === msg.message_id);
+        if (m) { m.content = msg.content; m.is_edited = true; }
+        updateChatPreviewIfLast(msg.chat_id, msg.message_id, msg.content);
+        return;
+      }
+      if (msg.event === 'message_deleted') {
+        messages.value = messages.value.filter((x) => x.id !== msg.message_id);
+        updateChatPreviewIfLast(msg.chat_id, msg.message_id, null);
+        return;
+      }
+      if (msg.event === 'read_receipt') { log('read receipt:', msg); return; }
+
+      if (msg.event === 'added_to_chat') {
+        // Fired for a chat that didn't exist when this WebSocket connected
+        // (a brand new private/group chat, or being added to an existing
+        // group) - the server has already brought this connection's live
+        // subscription up to date on its own end (see
+        // ConnectionManager._handle_user_channel_event); refreshing here is
+        // just what makes the new chat actually show up in the sidebar.
+        log('added to chat', msg.chat_id);
+        showToast('New chat');
+        loadChats();
+        return;
+      }
+
+      log('unhandled WS message shape:', msg);
+    }
+
+    // ---------------------------------------------------------------
+    // Toasts - lightweight, auto-dismissing notifications
+    // ---------------------------------------------------------------
+    const toasts = ref([]);
+    function showToast(text) {
+      const id = crypto.randomUUID();
+      toasts.value.push({ id, text });
+      setTimeout(() => { toasts.value = toasts.value.filter((t) => t.id !== id); }, 4000);
+    }
+
+    // Keeps the sidebar's preview line in sync with what the server already
+    // wrote to chats.last_message_* when it persisted this message, so it
+    // doesn't take a chat-list refresh to see the newest text.
+    function bumpChatPreview(chatId, messageId, lastMessageAt, content) {
+      const item = chats.value.find((c) => c.chat.id === chatId);
+      if (!item) return;
+      item.chat.last_message_at = lastMessageAt;
+      item.chat.last_message_id = messageId;
+      item.chat.last_message_preview = content;
+      chats.value.sort((a, b) => new Date(b.chat.last_message_at) - new Date(a.chat.last_message_at));
+    }
+
+    // Mirrors the server-side rule in crud_message: editing or deleting a
+    // message only changes a chat's preview when it's the previewed one.
+    function updateChatPreviewIfLast(chatId, messageId, content) {
+      const item = chats.value.find((c) => c.chat.id === chatId);
+      if (item && item.chat.last_message_id === messageId) item.chat.last_message_preview = content;
+    }
+
+    // WhatsApp-style timestamp: today is a time, yesterday is a word,
+    // anything older is a date.
+    function formatChatTime(iso) {
+      if (!iso) return '';
+      const at = new Date(iso);
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      if (at >= startOfToday) return at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+      if (at >= startOfYesterday) return 'Yesterday';
+      return at.toLocaleDateString([], { day: '2-digit', month: '2-digit', year: '2-digit' });
+    }
+
+    // ---------------------------------------------------------------
+    // Chats
+    // ---------------------------------------------------------------
+    const chats = ref([]);
+    const activeChatId = ref(null);
+    const messages = ref([]);
+    const messageInput = ref('');
+    const chatsError = ref('');
+    const messagesError = ref('');
+    const messagesEl = ref(null);
+
+    // chat_id -> the other participant's phone number, for private chats.
+    // Resolved lazily via GET /chats/{id}/members (there's no participant
+    // info on the chat object itself) and cached here.
+    const privateChatTitles = ref({});
+
+    async function resolvePrivateChatTitle(chatId) {
+      if (privateChatTitles.value[chatId]) return;
+      try {
+        const members = await apiFetch(`/chats/${chatId}/members`);
+        const other = members.find((m) => m.user.id !== currentUser.value.id);
+        if (other) privateChatTitles.value[chatId] = other.user.phone_number;
+      } catch (err) {
+        logError('failed to resolve private chat title for', chatId, err);
+      }
+    }
+
+    function chatDisplayName(chat) {
+      if (chat.is_group) return chat.title || 'Untitled group';
+      const phone = privateChatTitles.value[chat.id];
+      return phone ? `Chat with ${phone}` : `Private chat #${chat.id}`;
+    }
+
+    // user_id -> phone_number, so a message bubble can show who sent it by
+    // phone number instead of their raw id. Populated from the same
+    // /chats/{id}/members endpoint as the private-chat title above, just for
+    // every chat (group chats have multiple senders to label, not one).
+    const userPhoneById = ref({});
+
+    async function resolveChatMemberPhones(chatId) {
+      try {
+        const members = await apiFetch(`/chats/${chatId}/members`);
+        for (const m of members) {
+          userPhoneById.value[m.user.id] = m.user.phone_number;
+        }
+      } catch (err) {
+        logError('failed to resolve member phone numbers for', chatId, err);
+      }
+    }
+
+    function senderLabel(senderId) {
+      if (senderId == null) return 'system';
+      return userPhoneById.value[senderId] || senderId;
+    }
+
+    const activeChatLabel = computed(() => {
+      const item = chats.value.find((c) => c.chat.id === activeChatId.value);
+      return item ? chatDisplayName(item.chat) : '';
+    });
+
+    function scrollMessagesToBottom() {
+      if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+    }
+
+    async function loadChats() {
+      chatsError.value = '';
+      try {
+        chats.value = await apiFetch('/chats?limit=50');
+        log('loaded', chats.value.length, 'chat(s)');
+        await Promise.all(
+          chats.value.filter((c) => !c.chat.is_group).map((c) => resolvePrivateChatTitle(c.chat.id))
+        );
+      } catch (err) {
+        chatsError.value = err.message;
+      }
+    }
+
+    async function selectChat(chatId) {
+      activeChatId.value = chatId;
+      messages.value = [];
+      messagesError.value = '';
+      const item = chats.value.find((c) => c.chat.id === chatId);
+      if (item && !item.chat.is_group) resolvePrivateChatTitle(chatId);
+      resolveChatMemberPhones(chatId);
+      try {
+        const history = await apiFetch(`/chats/${chatId}/messages?limit=50`);
+        // The API returns newest-first (keyset pagination); the UI wants oldest-first.
+        messages.value = history.slice().reverse();
+        await nextTick();
+        scrollMessagesToBottom();
+      } catch (err) {
+        messagesError.value = err.message;
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // New chat / group forms
+    // ---------------------------------------------------------------
+    const showNewPrivate = ref(false);
+    const showNewGroup = ref(false);
+    const newPrivatePhone = ref('');
+    const newGroupTitle = ref('');
+    const newGroupMemberPhones = ref('');
+    const chatFormError = ref('');
+
+    async function createPrivateChat() {
+      chatFormError.value = '';
+      const phone = newPrivatePhone.value.trim();
+      if (!phone) { chatFormError.value = 'Enter a phone number.'; return; }
+      try {
+        // /users/by-phone resolves the number to a user id first - the
+        // create-chat endpoint itself still takes other_user_id, it just
+        // doesn't know about phone numbers.
+        const target = await apiFetch(`/users/by-phone?phone_number=${encodeURIComponent(phone)}`);
+        const chat = await apiFetch('/chats/private', {
+          method: 'POST',
+          body: JSON.stringify({ other_user_id: target.id }),
+        });
+        privateChatTitles.value[chat.id] = target.phone_number; // already known - skip the round trip
+        newPrivatePhone.value = '';
+        showNewPrivate.value = false;
+        await loadChats();
+        await selectChat(chat.id);
+      } catch (err) {
+        chatFormError.value = err.status === 404 ? `No user with phone number ${phone}` : err.message;
+      }
+    }
+
+    async function createGroupChat() {
+      chatFormError.value = '';
+      if (!newGroupTitle.value.trim()) { chatFormError.value = 'Enter a group title.'; return; }
+      const phones = newGroupMemberPhones.value
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      try {
+        // Same two-step flow as creating a private chat: resolve each phone
+        // number to a user id first (/chats/groups itself only knows ids).
+        const targets = await Promise.all(
+          phones.map((phone) => apiFetch(`/users/by-phone?phone_number=${encodeURIComponent(phone)}`).catch((err) => {
+            throw err.status === 404 ? new Error(`No user with phone number ${phone}`) : err;
+          }))
+        );
+        const memberIds = targets.map((t) => t.id);
+        for (const t of targets) userPhoneById.value[t.id] = t.phone_number; // already known - skip a later round trip
+
+        const chat = await apiFetch('/chats/groups', {
+          method: 'POST',
+          body: JSON.stringify({ title: newGroupTitle.value.trim(), initial_member_ids: memberIds }),
+        });
+        newGroupTitle.value = '';
+        newGroupMemberPhones.value = '';
+        showNewGroup.value = false;
+        await loadChats();
+        await selectChat(chat.id);
+      } catch (err) {
+        chatFormError.value = err.message;
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Sending a message (over the WebSocket, per the real /ws protocol)
+    // ---------------------------------------------------------------
+    function sendMessage() {
+      const content = messageInput.value.trim();
+      if (!content || !activeChatId.value) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        logError('cannot send - WebSocket is not connected (status:', wsStatus.value, ')');
+        return;
+      }
+      const payload = {
+        type: 'send_message',
+        chat_id: activeChatId.value,
+        client_message_id: crypto.randomUUID(),
+        content,
+        message_type: 1,
+      };
+      log('WS →', payload);
+      ws.send(JSON.stringify(payload));
+      messageInput.value = '';
+    }
+
+    // ---------------------------------------------------------------
+    // Lifecycle
+    // ---------------------------------------------------------------
+    watch(apiBase, (v) => localStorage.setItem('linka_api_base', v));
+
+    onMounted(async () => {
+      if (accessToken.value) {
+        try {
+          currentUser.value = await apiFetch('/users/me');
+          log('resumed session as', currentUser.value);
+          connectWebSocket();
+          await loadChats();
+        } catch (err) {
+          logError('stored session is invalid, logging out:', err.message);
+          logout();
+        }
+      }
+    });
+
+    onBeforeUnmount(() => disconnectWebSocket());
+
+    return {
+      apiBase, isAuthed, currentUser,
+      authStage, phoneNumber, otpCode, authError, authBusy, requestOtp, verifyOtp, logout,
+      wsStatus,
+      chats, activeChatId, activeChatLabel, chatDisplayName, senderLabel, formatChatTime, messages, messageInput, chatsError, messagesError, messagesEl,
+      selectChat, sendMessage,
+      showNewPrivate, showNewGroup, newPrivatePhone, newGroupTitle, newGroupMemberPhones, chatFormError,
+      createPrivateChat, createGroupChat,
+      toasts,
+    };
+  },
+
+  template: `
+    <div class="h-full flex items-center justify-center p-4" v-if="!isAuthed">
+      <div class="w-full max-w-sm bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+        <h1 class="text-xl font-semibold mb-1">Linka</h1>
+        <p class="text-sm text-slate-500 mb-4">WebSocket PoC client</p>
+
+        <label class="block text-xs font-medium text-slate-500 mb-1">API server</label>
+        <input v-model="apiBase" class="w-full mb-4 px-3 py-2 text-sm border border-slate-300 rounded-lg font-mono" />
+
+        <template v-if="authStage === 'phone'">
+          <label class="block text-xs font-medium text-slate-500 mb-1">Phone number</label>
+          <input v-model="phoneNumber" placeholder="+972---------"
+                 class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg"
+                 @keyup.enter="requestOtp" />
+          <button @click="requestOtp" :disabled="authBusy || !phoneNumber"
+                  class="w-full py-2 bg-teal-700 text-white rounded-lg font-medium disabled:opacity-50">
+            {{ authBusy ? 'Sending…' : 'Send code' }}
+          </button>
+        </template>
+
+        <template v-else>
+          <p class="text-xs text-slate-500 mb-3">No SMS provider is wired up yet — check the <span class="font-mono">server</span> console/log for the code.</p>
+          <label class="block text-xs font-medium text-slate-500 mb-1">OTP code</label>
+          <input v-model="otpCode" placeholder="000000"
+                 class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg font-mono tracking-widest"
+                 @keyup.enter="verifyOtp" />
+          <button @click="verifyOtp" :disabled="authBusy || !otpCode"
+                  class="w-full py-2 bg-teal-700 text-white rounded-lg font-medium disabled:opacity-50">
+            {{ authBusy ? 'Verifying…' : 'Verify & log in' }}
+          </button>
+          <button @click="authStage = 'phone'" class="w-full mt-2 py-1 text-sm text-slate-500">← back</button>
+        </template>
+
+        <p v-if="authError" class="mt-3 text-sm text-red-600">{{ authError }}</p>
+      </div>
+    </div>
+
+    <div class="h-full flex flex-col" v-else>
+      <header class="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
+        <div class="flex items-center gap-3">
+          <span class="font-semibold">Linka</span>
+          <span class="flex items-center gap-1.5 text-xs text-slate-500">
+            <span class="w-2 h-2 rounded-full"
+                  :class="{ 'bg-emerald-500': wsStatus === 'connected', 'bg-amber-400': wsStatus === 'connecting', 'bg-red-500': wsStatus === 'error' || wsStatus === 'disconnected' }"></span>
+            {{ wsStatus }}
+          </span>
+        </div>
+        <div class="flex items-center gap-3 text-sm">
+          <span class="text-slate-500">You are <span class="font-medium text-slate-800">{{ currentUser.phone_number }}</span></span>
+          <button @click="logout" class="px-3 py-1 border border-slate-300 rounded-lg text-sm">Log out</button>
+        </div>
+      </header>
+
+      <div class="flex flex-1 min-h-0">
+        <aside class="w-72 flex flex-col border-r border-slate-200 bg-white">
+          <div class="p-3 border-b border-slate-200 flex gap-2">
+            <button @click="showNewPrivate = !showNewPrivate; showNewGroup = false"
+                    class="flex-1 text-xs px-2 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">+ Private</button>
+            <button @click="showNewGroup = !showNewGroup; showNewPrivate = false"
+                    class="flex-1 text-xs px-2 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">+ Group</button>
+          </div>
+
+          <div v-if="showNewPrivate" class="p-3 border-b border-slate-200 bg-slate-50">
+            <label class="block text-xs font-medium text-slate-500 mb-1">Their phone number</label>
+            <input v-model="newPrivatePhone" placeholder="+972501234567" @keyup.enter="createPrivateChat"
+                   class="w-full mb-2 px-2 py-1.5 text-sm border border-slate-300 rounded-lg font-mono" />
+            <button @click="createPrivateChat" class="w-full py-1.5 text-sm bg-teal-700 text-white rounded-lg">Create</button>
+          </div>
+
+          <div v-if="showNewGroup" class="p-3 border-b border-slate-200 bg-slate-50">
+            <label class="block text-xs font-medium text-slate-500 mb-1">Title</label>
+            <input v-model="newGroupTitle" class="w-full mb-2 px-2 py-1.5 text-sm border border-slate-300 rounded-lg" />
+            <label class="block text-xs font-medium text-slate-500 mb-1">Member phone numbers (comma-separated)</label>
+            <input v-model="newGroupMemberPhones" placeholder="+972501234567, +972507654321"
+                   class="w-full mb-2 px-2 py-1.5 text-sm border border-slate-300 rounded-lg font-mono" />
+            <button @click="createGroupChat" class="w-full py-1.5 text-sm bg-teal-700 text-white rounded-lg">Create</button>
+          </div>
+
+          <p v-if="chatFormError" class="px-3 py-1 text-xs text-red-600">{{ chatFormError }}</p>
+          <p v-if="chatsError" class="px-3 py-1 text-xs text-red-600">{{ chatsError }}</p>
+
+          <div class="flex-1 overflow-y-auto">
+            <button v-for="item in chats" :key="item.chat.id" @click="selectChat(item.chat.id)"
+                    class="w-full text-left px-3 py-2.5 border-b border-slate-100 hover:bg-slate-50"
+                    :class="{ 'bg-teal-50': item.chat.id === activeChatId }">
+              <div class="flex items-baseline gap-2">
+                <span class="flex-1 min-w-0 text-sm font-medium truncate">{{ chatDisplayName(item.chat) }}</span>
+                <span class="shrink-0 text-[11px] text-slate-400">{{ formatChatTime(item.chat.last_message_at) }}</span>
+              </div>
+              <div class="min-h-[1rem] text-xs text-slate-500 truncate">{{ item.chat.last_message_preview }}</div>
+            </button>
+            <p v-if="!chats.length" class="p-3 text-sm text-slate-400">No chats yet — create one above.</p>
+          </div>
+        </aside>
+
+        <main class="flex-1 flex flex-col min-w-0">
+          <template v-if="activeChatId">
+            <div class="px-4 py-2 border-b border-slate-200 bg-white text-sm font-medium">{{ activeChatLabel }}</div>
+
+            <div ref="messagesEl" class="flex-1 overflow-y-auto p-4 space-y-2">
+              <p v-if="messagesError" class="text-sm text-red-600">{{ messagesError }}</p>
+              <div v-for="m in messages" :key="m.id"
+                   class="max-w-md" :class="m.sender_id === currentUser.id ? 'ml-auto text-right' : ''">
+                <div class="inline-block px-3 py-2 rounded-2xl text-sm"
+                     :class="m.sender_id === currentUser.id ? 'bg-teal-700 text-white' : 'bg-white border border-slate-200'">
+                  <div v-if="m.sender_id !== currentUser.id" class="text-[11px] opacity-60 mb-0.5">{{ senderLabel(m.sender_id) }}</div>
+                  {{ m.content }}
+                  <span v-if="m.is_edited" class="text-[10px] opacity-60"> (edited)</span>
+                </div>
+                <div class="text-[10px] text-slate-400 mt-0.5">{{ new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</div>
+              </div>
+              <p v-if="!messages.length" class="h-full flex items-center justify-center text-sm text-slate-400">No messages here</p>
+            </div>
+
+            <div class="p-3 border-t border-slate-200 bg-white flex gap-2">
+              <input v-model="messageInput" @keyup.enter="sendMessage" placeholder="Message…"
+                     class="flex-1 px-3 py-2 border border-slate-300 rounded-lg" />
+              <button @click="sendMessage" class="px-4 py-2 bg-teal-700 text-white rounded-lg font-medium">Send</button>
+            </div>
+          </template>
+          <div v-else class="flex-1 flex items-center justify-center text-slate-400 text-sm">
+            Select a chat, or create one from the sidebar.
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div class="fixed top-3 right-3 flex flex-col gap-2 z-50">
+      <div v-for="t in toasts" :key="t.id"
+           class="bg-slate-900 text-white text-sm px-3 py-2 rounded-lg shadow-lg">{{ t.text }}</div>
+    </div>
+  `,
+}).mount('#app');
+</script>
+</body>
+</html>

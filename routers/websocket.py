@@ -78,23 +78,23 @@ async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: 
                 message = await message_service.edit_message(
                     session,
                     user_id=user_id,
-                    chat_id=payload["chat_id"],
-                    message_id=payload["message_id"],
+                    chat_id=int(payload["chat_id"]),
+                    message_id=int(payload["message_id"]),
                     new_content=payload["content"],
                 )
-            await websocket.send_json({"type": "ack", "for": "edit_message", "message_id": message.id})
+            await websocket.send_json({"type": "ack", "for": "edit_message", "message_id": str(message.id)})
 
         elif message_type == "delete_message":
             async with session_scope() as session:
                 deleted = await message_service.delete_message(
-                    session, user_id=user_id, chat_id=payload["chat_id"], message_id=payload["message_id"]
+                    session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
                 )
             await websocket.send_json({"type": "ack", "for": "delete_message", "deleted": deleted})
 
         elif message_type == "mark_read":
             async with session_scope() as session:
                 await message_service.mark_as_read(
-                    session, user_id=user_id, chat_id=payload["chat_id"], message_id=payload["message_id"]
+                    session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
                 )
             await websocket.send_json({"type": "ack", "for": "mark_read"})
 
@@ -103,11 +103,20 @@ async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: 
 
     except message_service.NotAParticipantError as e:
         await websocket.send_json({"type": "error", "code": "forbidden", "message": str(e)})
-    except KeyError as e:
-        await websocket.send_json({"type": "error", "code": "bad_request", "message": f"Missing field: {e}"})
-    except Exception as e:
+    except message_service.MessageTooLongError as e:
+        await websocket.send_json({"type": "error", "code": "bad_request", "message": str(e)})
+    except (KeyError, ValueError, TypeError) as e:
+        # KeyError: a required field is missing. ValueError/TypeError: an id
+        # field was present but not parseable as an int (e.g. garbage, or a
+        # client-side bug reintroducing the float-precision issue below).
+        await websocket.send_json({"type": "error", "code": "bad_request", "message": f"Invalid request: {e}"})
+    except Exception:
+        # Deliberately not str(e) here: an unexpected internal error's real
+        # message (a DB error, a stack detail) is exactly the kind of thing
+        # that shouldn't leak to the client - it's already fully captured
+        # below via logger.exception() for whoever operates this service.
         logger.exception(f"Unhandled error dispatching {message_type!r} for user {user_id}")
-        await websocket.send_json({"type": "error", "code": "internal_error", "message": str(e)})
+        await websocket.send_json({"type": "error", "code": "internal_error", "message": "Something went wrong"})
 
 
 async def _handle_send_message(user_id: int, payload: dict, websocket: WebSocket) -> None:
@@ -118,21 +127,23 @@ async def _handle_send_message(user_id: int, payload: dict, websocket: WebSocket
         await websocket.send_json({"type": "error", "code": "rate_limited", "client_message_id": payload.get("client_message_id")})
         return
 
+    reply_to_message_id = payload.get("reply_to_message_id")
+
     async with session_scope() as session:
         message = await message_service.send_message(
             session,
             sender_id=user_id,
-            chat_id=payload["chat_id"],
+            chat_id=int(payload["chat_id"]),
             client_message_id=payload["client_message_id"],
             content=payload.get("content"),
             type=payload.get("message_type", 1),
-            reply_to_message_id=payload.get("reply_to_message_id"),
+            reply_to_message_id=int(reply_to_message_id) if reply_to_message_id is not None else None,
         )
 
     await websocket.send_json({
         "type": "ack",
         "for": "send_message",
         "client_message_id": payload["client_message_id"],
-        "message_id": message.id,
+        "message_id": str(message.id),
         "created_at": message.created_at.isoformat(),
     })

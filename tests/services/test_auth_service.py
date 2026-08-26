@@ -168,3 +168,51 @@ async def test_concurrent_refresh_with_the_same_token_only_one_wins(redis_db):
 
     assert len(successes) == 1
     assert len(failures) == 1
+
+
+async def test_otp_requests_are_rate_limited_per_phone(redis_db, monkeypatch):
+    # Without this, request_otp is an open SMS-bombing endpoint - it needs
+    # neither an account nor a token to call.
+    monkeypatch.setattr(auth_service, "OTP_REQUEST_RATE_LIMIT_MAX", 3)
+    phone = "+972500000008"
+
+    for _ in range(3):
+        await auth_service.request_otp(phone)
+
+    with pytest.raises(auth_service.OTPRequestRateLimitedError):
+        await auth_service.request_otp(phone)
+
+
+async def test_otp_verification_attempts_are_capped(db_session: AsyncSession, redis_db, monkeypatch):
+    # A 6-digit code is only safe if the number of guesses is capped - without
+    # this, it's brute-forceable well within its own TTL.
+    monkeypatch.setattr(auth_service, "OTP_VERIFY_MAX_ATTEMPTS", 5)
+    phone = "+972500000009"
+    await auth_service.request_otp(phone)
+    correct_code = await _get_code(redis_db, phone)
+
+    for _ in range(5):
+        with pytest.raises(auth_service.InvalidOTPError):
+            await auth_service.verify_otp_and_login(db_session, phone, "000000")
+
+    # Even the *correct* code must now be rejected - the attempt budget, not
+    # just the guess itself, is what's exhausted.
+    with pytest.raises(auth_service.InvalidOTPError):
+        await auth_service.verify_otp_and_login(db_session, phone, correct_code)
+
+
+async def test_otp_verification_attempt_cap_is_per_phone_not_global(db_session: AsyncSession, redis_db, monkeypatch):
+    monkeypatch.setattr(auth_service, "OTP_VERIFY_MAX_ATTEMPTS", 2)
+    phone_a = "+972500000010"
+    phone_b = "+972500000011"
+    await auth_service.request_otp(phone_a)
+    await auth_service.request_otp(phone_b)
+    code_b = await _get_code(redis_db, phone_b)
+
+    for _ in range(2):
+        with pytest.raises(auth_service.InvalidOTPError):
+            await auth_service.verify_otp_and_login(db_session, phone_a, "000000")
+
+    # phone_a is exhausted, but phone_b's budget is untouched
+    user, _, _ = await auth_service.verify_otp_and_login(db_session, phone_b, code_b)
+    assert user.phone_number == phone_b

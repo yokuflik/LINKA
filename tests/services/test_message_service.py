@@ -225,4 +225,36 @@ async def test_send_message_fans_out_over_realtime_pubsub(db_session: AsyncSessi
         await agen.aclose()
 
     assert event["event"] == "new_message"
-    assert event["message_id"] == sent.id
+    # Ids go out as strings on this channel - see message_service._fan_out
+    # and the big comment in poc/index.html for why (JS JSON-number precision).
+    assert event["message_id"] == str(sent.id)
+    assert isinstance(event["chat_id"], str)
+
+
+async def test_send_message_rejects_content_over_the_length_cap(db_session: AsyncSession, redis_db, monkeypatch):
+    monkeypatch.setattr(message_service, "MAX_MESSAGE_CONTENT_LENGTH", 10)
+    chat_id = await _make_group(db_session, 1, [2])
+
+    with pytest.raises(message_service.MessageTooLongError):
+        await message_service.send_message(
+            db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="x" * 11
+        )
+
+
+async def test_send_message_allows_content_at_exactly_the_cap(db_session: AsyncSession, redis_db, monkeypatch):
+    monkeypatch.setattr(message_service, "MAX_MESSAGE_CONTENT_LENGTH", 10)
+    chat_id = await _make_group(db_session, 1, [2])
+
+    message = await message_service.send_message(
+        db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="x" * 10
+    )
+    assert message.content == "x" * 10
+
+
+async def test_edit_message_rejects_content_over_the_length_cap(db_session: AsyncSession, redis_db, monkeypatch):
+    chat_id = await _make_group(db_session, 1, [2])
+    message = await message_service.send_message(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="hi")
+
+    monkeypatch.setattr(message_service, "MAX_MESSAGE_CONTENT_LENGTH", 10)
+    with pytest.raises(message_service.MessageTooLongError):
+        await message_service.edit_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id, new_content="x" * 11)

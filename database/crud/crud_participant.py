@@ -8,6 +8,7 @@ import logging
 
 from database.models.participant import Participant
 from database.models.chat import Chat
+from database.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,25 @@ async def get_chat_participants(session: AsyncSession, chat_id: int) -> Sequence
     Explanation: Hits the primary key B-Tree which is naturally clustered by chat_id.
     """
     stmt = select(Participant).where(Participant.chat_id == chat_id)
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+async def get_chat_participants_with_users(session: AsyncSession, chat_id: int) -> Sequence[Participant]:
+    """
+    Same as get_chat_participants, but with each row's User eagerly loaded -
+    for UI purposes (e.g. showing a private chat's title as the other
+    participant's phone number) where the caller needs more than just ids.
+
+    Time Complexity: O(log N + K) where K is the number of participants -
+    one join against users by primary key per row, still index-bound.
+    """
+    stmt = (
+        select(Participant)
+        .join(User, User.id == Participant.user_id)
+        .where(Participant.chat_id == chat_id)
+        .options(contains_eager(Participant.user))
+    )
     result = await session.execute(stmt)
     return result.scalars().all()
 

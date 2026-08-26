@@ -4,10 +4,15 @@ from typing import Any, AsyncIterator
 from services.redis_client import redis_client
 
 _CHANNEL_PREFIX = "chat_events:"
+_USER_CHANNEL_PREFIX = "user_events:"
 
 
 def _channel(chat_id: int) -> str:
     return f"{_CHANNEL_PREFIX}{chat_id}"
+
+
+def _user_channel(user_id: int) -> str:
+    return f"{_USER_CHANNEL_PREFIX}{user_id}"
 
 
 async def publish_event(chat_id: int, event: dict[str, Any]) -> None:
@@ -40,4 +45,32 @@ async def subscribe_to_chat(chat_id: int) -> AsyncIterator[dict[str, Any]]:
             yield json.loads(message["data"])
     finally:
         await pubsub.unsubscribe(_channel(chat_id))
+        await pubsub.aclose()
+
+
+async def publish_user_event(user_id: int, event: dict[str, Any]) -> None:
+    """
+    A per-user channel, separate from any chat's - for events about a user's
+    own membership changing (e.g. "you were just added to chat X") rather
+    than events happening inside a chat they're already subscribed to.
+    This is what makes a *newly* created chat reach an already-connected
+    client at all: connection_manager only subscribes a connection to the
+    chats that existed at connect time, so without a signal on a channel
+    that connection was already listening to, a chat created afterward is
+    simply invisible to it until the next reconnect.
+    """
+    await redis_client.publish(_user_channel(user_id), json.dumps(event))
+
+
+async def subscribe_to_user(user_id: int) -> AsyncIterator[dict[str, Any]]:
+    """Same contract as subscribe_to_chat, for a user's personal channel."""
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(_user_channel(user_id))
+    try:
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+            yield json.loads(message["data"])
+    finally:
+        await pubsub.unsubscribe(_user_channel(user_id))
         await pubsub.aclose()

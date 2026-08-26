@@ -26,7 +26,19 @@ class Chat(Base):
 
     # Audit timestamp
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
+
+    # Denormalized recency, bumped by crud_message.create_message on every
+    # new message. Lets the chat list (home screen) be sorted/paginated by
+    # "last activity" via a small join against Participant, instead of an
+    # aggregate MAX(messages.id) per chat over a multi-billion row table.
+    #
+    # Defaults to created_at (same server-side NOW(), so they match exactly)
+    # instead of NULL: a chat with no messages yet should rank by when it was
+    # created, mixed in with messaged chats in the same timeline - not get
+    # shoved to the end of the list as a NULL special case.
+    last_message_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_message_id = Column(BigInteger, nullable=True)
+
     # SQLAlchemy ORM relationship for easy joins with participants
     # Assuming Participant model will be created next
     participants = relationship("Participant", back_populates="chat", cascade="all, delete-orphan")

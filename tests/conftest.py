@@ -1,3 +1,10 @@
+import os
+
+# Must be set before services.redis_client / database.connection is imported
+# by anything below (both read these once, at import time).
+os.environ.setdefault("REDIS_URL", "redis://localhost:6380/0")
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test_user:test_password@localhost:5433/test_db")
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import text
@@ -6,9 +13,16 @@ from sqlalchemy.orm import sessionmaker
 
 from database.base import Base
 
-# Registers the Message model (and its "messages" table) on Base.metadata,
-# even for test files that never import it directly.
+# Registers every model on Base.metadata regardless of which one the test
+# file being run actually imports - create_all() needs the full set (e.g.
+# Message's FK to chats.id fails to resolve if Chat was never imported by
+# anything), and a test file that only exercises, say, crud_user has no
+# reason to import Chat/Participant/Message itself.
+from database.models import chat as _chat  # noqa: F401
+from database.models import participant as _participant  # noqa: F401
 from database.models import message as _message  # noqa: F401
+from database.models import user as _user  # noqa: F401
+from database.models import private_chat_pair as _private_chat_pair  # noqa: F401
 
 # Pointing to a local PostgreSQL instance dedicated ONLY for tests
 # (Usually spun up via Docker before running the tests)
@@ -52,3 +66,44 @@ async def session_factory():
 async def db_session(session_factory):
     async with session_factory() as session:
         yield session
+
+
+@pytest_asyncio.fixture(scope="function", autouse=True)
+async def _reset_shared_singletons_after_every_test():
+    """
+    Tears down the pooled connections of every process-wide async singleton
+    after each test, whether or not that test used it directly.
+
+    pytest-asyncio gives each test function its own event loop, but
+    services.redis_client.redis_client and database.connection.engine are
+    both created once at import time and shared for the rest of the process.
+    A test that touches either only *transitively* (e.g. a chat_service test
+    going through message_service's Redis fan-out, or a websocket test going
+    through database.connection.session_scope()) still opens connections
+    bound to that test's loop; without this, the next test to touch either -
+    even indirectly - would try to reuse a connection tied to a now-closed
+    loop and crash with "Event loop is closed". autouse + no dependencies
+    means this fixture is set up first and torn down last, so its cleanup
+    always runs after redis_db's own teardown below.
+    """
+    yield
+    from services.redis_client import redis_client
+    from database.connection import engine as db_connection_engine
+
+    await redis_client.connection_pool.disconnect()
+    await db_connection_engine.dispose()
+
+
+@pytest_asyncio.fixture(scope="function")
+async def redis_db():
+    """
+    Flushes the dedicated test Redis DB before and after each test that
+    requests it - service tests don't share Postgres's per-test
+    create_all/drop_all isolation, so this is what keeps presence/rate-limit/
+    idempotency/OTP keys from leaking between tests.
+    """
+    from services.redis_client import redis_client
+
+    await redis_client.flushdb()
+    yield redis_client
+    await redis_client.flushdb()

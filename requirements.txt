@@ -1,0 +1,7 @@
+fastapi==0.115.13
+sqlalchemy==2.0.41
+asyncpg==0.31.0
+redis==8.1.0
+pyjwt==2.10.1
+pytest==8.4.1
+pytest-asyncio==1.4.0

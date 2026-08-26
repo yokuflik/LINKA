@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.crud.crud_user import create_user
 from database.crud.crud_chat import create_chat
+from database.crud.crud_message import create_message
 from database.crud.crud_participant import (
     add_participant_to_chat,
     get_user_chats,
@@ -91,6 +92,40 @@ async def test_remove_participant(db_session: AsyncSession):
     # Assert
     assert is_removed is True
     assert len(participants) == 0
+
+
+async def test_get_user_chats_orders_by_recency_and_paginates(db_session: AsyncSession):
+    # Arrange: 610 gets a message, then 611 is created but never messaged,
+    # then 612 gets a message. 611 (empty) should rank by its creation time -
+    # between the two messaged chats - not get shoved to the end of the list.
+    user_id = 510
+    await create_user(db_session, user_id=user_id, phone_number="+972505100000")
+
+    await create_chat(db_session, chat_id=610, is_group=True)
+    await add_participant_to_chat(db_session, chat_id=610, user_id=user_id)
+    await create_message(db_session, message_id=90100, chat_id=610, sender_id=user_id, content="hi")
+
+    await create_chat(db_session, chat_id=611, is_group=True)  # no message, ever
+    await add_participant_to_chat(db_session, chat_id=611, user_id=user_id)
+
+    await create_chat(db_session, chat_id=612, is_group=True)
+    await add_participant_to_chat(db_session, chat_id=612, user_id=user_id)
+    await create_message(db_session, message_id=90101, chat_id=612, sender_id=user_id, content="hi")
+
+    # Act: first page, most recently active chat first
+    first_page = await get_user_chats(db_session, user_id, limit=2)
+
+    # Assert: 612 (messaged last) is first; 611 (created after 610's message,
+    # never messaged) ranks by its creation time, ahead of 610
+    assert [p.chat_id for p in first_page] == [612, 611]
+
+    # Act: next page, cursoring off the last row of the first page
+    last = first_page[-1]
+    next_before = (last.chat.last_message_at, last.chat_id)
+    second_page = await get_user_chats(db_session, user_id, before=next_before, limit=2)
+
+    # Assert
+    assert [p.chat_id for p in second_page] == [610]
 
 
 async def test_concurrent_add_same_participant_only_one_wins(session_factory):

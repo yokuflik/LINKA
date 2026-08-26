@@ -6,8 +6,14 @@ from typing import Sequence, Optional
 import logging
 
 from database.models.message import Message
+from database.models.chat import Chat
 
 logger = logging.getLogger(__name__)
+
+# Hard ceiling on any page size a caller can request, regardless of what they
+# pass in. Without this, `limit` is just a suggestion - someone (a bug, or a
+# malicious client) passing limit=1_000_000 would defeat pagination entirely.
+MAX_PAGE_SIZE = 100
 
 async def create_message(
     session: AsyncSession,
@@ -19,12 +25,15 @@ async def create_message(
     reply_to_message_id: Optional[int] = None,
 ) -> Optional[Message]:
     """
-    Insert a new message into the chat.
+    Insert a new message into the chat and bump the chat's recency
+    (last_message_at/last_message_id), atomically.
 
     Time Complexity: O(log N)
     Explanation: created_at is left to the server default, so the row lands
     in the current (latest) partition and the (chat_id, id) index on that
     partition alone absorbs the write - independent of total table size.
+    The recency bump is a single-row update by primary key on the small
+    `chats` table, so it doesn't change that complexity.
     """
     new_message = Message(
         id=message_id,  # Snowflake ID generated at the application layer
@@ -37,6 +46,16 @@ async def create_message(
 
     session.add(new_message)
     try:
+        # Flushed (not yet committed) so a bad FK/id collision on the message
+        # itself is caught before the chat is touched, without a partial commit.
+        await session.flush()
+
+        await session.execute(
+            update(Chat)
+            .where(Chat.id == chat_id)
+            .values(last_message_at=new_message.created_at, last_message_id=new_message.id)
+        )
+
         await session.commit()
         await session.refresh(new_message)
         return new_message
@@ -74,8 +93,10 @@ async def get_chat_messages(
     Time Complexity: O(log N + limit)
     Explanation: The (chat_id, id) index lets Postgres seek straight to the
     cursor and walk backwards for `limit` rows, instead of scanning the chat's
-    full history.
+    full history - independent of whether the chat has 50 or 50 million messages.
     """
+    limit = min(limit, MAX_PAGE_SIZE)
+
     stmt = select(Message).where(Message.chat_id == chat_id)
 
     if before_id is not None:

@@ -12,3 +12,10 @@ services:
       # Maps port 5432 on your MacBook to port 5432 inside the container
       - "5433:5432"
     restart: unless-stopped
+
+  test_redis:
+    image: redis:7-alpine
+    ports:
+      # Maps port 6379 on your MacBook to port 6379 inside the container
+      - "6380:6379"
+    restart: unless-stopped

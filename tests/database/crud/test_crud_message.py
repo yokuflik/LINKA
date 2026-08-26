@@ -3,13 +3,14 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.crud.crud_user import create_user
-from database.crud.crud_chat import create_chat
+from database.crud.crud_chat import create_chat, get_chat_by_id
 from database.crud.crud_message import (
     create_message,
     get_message_by_id,
     get_chat_messages,
     edit_message_content,
     soft_delete_message,
+    MAX_PAGE_SIZE,
 )
 
 # Tells pytest to run all tests in this file asynchronously
@@ -176,6 +177,38 @@ async def test_soft_delete_message_twice_returns_false(db_session: AsyncSession)
 
     # Assert
     assert is_deleted_again is False
+
+
+async def test_create_message_bumps_chat_recency(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id = 709, 808
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    chat_before = await get_chat_by_id(db_session, chat_id)
+    # No message yet, so recency defaults to when the chat was created
+    assert chat_before.last_message_at == chat_before.created_at
+    assert chat_before.last_message_id is None
+
+    # Act
+    message = await create_message(db_session, message_id=90070, chat_id=chat_id, sender_id=user_id, content="hi")
+
+    # Assert: last_message_at/id mirror the message that was just sent
+    chat_after = await get_chat_by_id(db_session, chat_id)
+    assert chat_after.last_message_at == message.created_at
+    assert chat_after.last_message_id == message.id
+
+
+async def test_get_chat_messages_limit_is_capped(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id = 710, 809
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    for i in range(MAX_PAGE_SIZE + 10):
+        await create_message(db_session, message_id=91000 + i, chat_id=chat_id, sender_id=user_id, content=str(i))
+
+    # Act: ask for way more than the cap allows
+    page = await get_chat_messages(db_session, chat_id=chat_id, limit=MAX_PAGE_SIZE + 10)
+
+    # Assert: the server-side cap wins over whatever the caller requested
+    assert len(page) == MAX_PAGE_SIZE
 
 
 async def test_concurrent_create_same_message_id_is_not_deduplicated_by_the_db(session_factory):

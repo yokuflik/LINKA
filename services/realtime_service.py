@@ -5,6 +5,7 @@ from services.redis_client import redis_client
 
 _CHANNEL_PREFIX = "chat_events:"
 _USER_CHANNEL_PREFIX = "user_events:"
+_PRESENCE_CHANNEL_PREFIX = "presence_events:"
 
 
 def _channel(chat_id: int) -> str:
@@ -13,6 +14,10 @@ def _channel(chat_id: int) -> str:
 
 def _user_channel(user_id: int) -> str:
     return f"{_USER_CHANNEL_PREFIX}{user_id}"
+
+
+def _presence_channel(user_id: int) -> str:
+    return f"{_PRESENCE_CHANNEL_PREFIX}{user_id}"
 
 
 async def publish_event(chat_id: int, event: dict[str, Any]) -> None:
@@ -73,4 +78,32 @@ async def subscribe_to_user(user_id: int) -> AsyncIterator[dict[str, Any]]:
             yield json.loads(message["data"])
     finally:
         await pubsub.unsubscribe(_user_channel(user_id))
+        await pubsub.aclose()
+
+
+async def publish_presence_event(user_id: int, event: dict[str, Any]) -> None:
+    """
+    One channel per user whose presence might be watched - deliberately NOT
+    the same channel as publish_user_event, so a presence_update can never
+    be confused with (or accidentally broadcast alongside) that user's own
+    "you were added/removed from a chat" events. A publish here reaches
+    subscribers only if someone is actually subscribed via
+    connection_manager.subscribe_presence right now (subscribe-on-demand -
+    see CLAUDE.md's presence architecture section); with none, this is a
+    publish to a channel with zero listeners.
+    """
+    await redis_client.publish(_presence_channel(user_id), json.dumps(event))
+
+
+async def subscribe_to_presence(user_id: int) -> AsyncIterator[dict[str, Any]]:
+    """Same contract as subscribe_to_chat, for one user's presence channel."""
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(_presence_channel(user_id))
+    try:
+        async for message in pubsub.listen():
+            if message["type"] != "message":
+                continue
+            yield json.loads(message["data"])
+    finally:
+        await pubsub.unsubscribe(_presence_channel(user_id))
         await pubsub.aclose()

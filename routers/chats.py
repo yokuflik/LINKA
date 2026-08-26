@@ -100,10 +100,17 @@ async def add_member(
 async def remove_member(
     chat_id: int,
     target_user_id: int,
+    new_owner_id: Optional[int] = None,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
 ):
-    removed = await chat_service.remove_member(session, actor_id=user_id, chat_id=chat_id, target_user_id=target_user_id)
+    # new_owner_id only matters when the owner is leaving on their own
+    # (user_id == target_user_id) and the group still has other members -
+    # see chat_service.remove_member for the full rule (including the
+    # "nobody left to inherit it" -> delete-the-chat case).
+    removed = await chat_service.remove_member(
+        session, actor_id=user_id, chat_id=chat_id, target_user_id=target_user_id, new_owner_id=new_owner_id
+    )
     if not removed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found")
 

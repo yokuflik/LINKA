@@ -1,3 +1,4 @@
+import json
 from typing import Optional, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -5,6 +6,7 @@ from database.crud.crud_chat import create_chat, delete_chat, update_chat_detail
 from database.crud.crud_message import compute_message_status
 from database.crud.crud_participant import (
     add_participant_to_chat,
+    get_chat_participants,
     get_chat_participants_with_users,
     get_user_chats,
     is_participant,
@@ -14,6 +16,7 @@ from database.crud.crud_participant import (
 from database.crud.crud_private_chat_pair import create_pair, get_pair_chat_id
 from database.models.chat import Chat
 from database.models.participant import Participant
+from database.models.user import User
 from config import MAX_INITIAL_GROUP_MEMBERS
 from services import message_service, realtime_service
 from utils.snowflake import next_id
@@ -35,6 +38,15 @@ class UserNotFoundError(Exception):
     pass
 
 
+class OwnershipTransferRequiredError(Exception):
+    """
+    Raised when the owner tries to leave a group that still has other
+    members without naming who inherits ownership - a group can never be
+    left ownerless while people remain in it.
+    """
+    pass
+
+
 async def _notify_added_to_chat(user_id: int, chat_id: int) -> None:
     """
     Tells connection_manager (via the user's personal channel) to bring this
@@ -44,6 +56,32 @@ async def _notify_added_to_chat(user_id: int, chat_id: int) -> None:
     itself, to refresh its chat list / show a notification.
     """
     await realtime_service.publish_user_event(user_id, {"event": "added_to_chat", "chat_id": str(chat_id)})
+
+
+async def _notify_removed_from_chat(user_id: int, chat_id: int, actor_id: int, chat_title: Optional[str]) -> None:
+    """
+    Mirror of _notify_added_to_chat, for the opposite direction: tells
+    connection_manager to drop this user's already-open connections from the
+    chat's live subscription immediately (they're no longer a participant,
+    so they shouldn't keep receiving its events), and reaches the client
+    itself so it can drop the chat from its own list right away instead of
+    only at the next reconnect/GET /chats. Fired both when someone else
+    removes this user and when they leave on their own initiative, so every
+    one of their connected devices stays in sync either way - actor_id is
+    included so the client can tell the two cases apart (e.g. skip a "you
+    were removed" toast on the device that did the leaving itself), and
+    chat_title so that toast can name the group instead of just saying "a
+    group" (the client's own list entry for it is about to disappear too).
+    """
+    await realtime_service.publish_user_event(
+        user_id,
+        {
+            "event": "removed_from_chat",
+            "chat_id": str(chat_id),
+            "actor_id": str(actor_id),
+            "chat_title": chat_title,
+        },
+    )
 
 
 async def get_or_create_private_chat(session: AsyncSession, user_a_id: int, user_b_id: int) -> Chat:
@@ -199,30 +237,116 @@ async def update_group_details(
     )
 
 
+async def _display_name_for(session: AsyncSession, user_id: int) -> str:
+    """
+    System-message text is plain content, not a structured field a client
+    could resolve an id against post-hoc (unlike sender_id on a normal
+    message) - so it has to already contain a human-readable name/phone
+    number by the time it's written.
+    """
+    user = await session.get(User, user_id)
+    if user is None:
+        return str(user_id)
+    return user.display_name or user.phone_number
+
+
 async def add_member(session: AsyncSession, actor_id: int, chat_id: int, new_user_id: int) -> Optional[Participant]:
     await _require_role(session, chat_id, actor_id, min_role=ROLE_ADMIN)
     participant = await add_participant_to_chat(session, chat_id=chat_id, user_id=new_user_id, role=ROLE_MEMBER)
     if participant is None:
         return None
 
-    await message_service.send_system_message(session, chat_id=chat_id, content=f"{new_user_id} joined the group")
+    actor_name = await _display_name_for(session, actor_id)
+    new_member_name = await _display_name_for(session, new_user_id)
+    await message_service.send_system_message(
+        session, chat_id=chat_id, content=f"{actor_name} added {new_member_name} to the group"
+    )
     await _notify_added_to_chat(new_user_id, chat_id)
     return participant
 
 
-async def remove_member(session: AsyncSession, actor_id: int, chat_id: int, target_user_id: int) -> bool:
+async def remove_member(
+    session: AsyncSession,
+    actor_id: int,
+    chat_id: int,
+    target_user_id: int,
+    new_owner_id: Optional[int] = None,
+) -> bool:
+    chat = await session.get(Chat, chat_id)
+    chat_title = chat.title if chat is not None else None
+
     if actor_id != target_user_id:
         # Removing someone else requires admin/owner; leaving yourself never needs a role check
         await _require_role(session, chat_id, actor_id, min_role=ROLE_ADMIN)
 
+        # An admin may only remove a plain member - not another admin, and not
+        # the owner. Only the owner outranks an admin and can remove one.
+        actor = await session.get(Participant, {"chat_id": chat_id, "user_id": actor_id})
+        target = await session.get(Participant, {"chat_id": chat_id, "user_id": target_user_id})
+        if target is not None and target.role >= actor.role:
+            raise PermissionDeniedError(
+                f"User {actor_id} cannot remove user {target_user_id}: insufficient role"
+            )
+    else:
+        # Self-leave. A group can never be left ownerless while other people
+        # remain in it - the owner must name a successor first. If nobody
+        # else is left, there's nothing to transfer, and the whole chat is
+        # deleted below once this last participant is removed.
+        actor = await session.get(Participant, {"chat_id": chat_id, "user_id": actor_id})
+        if actor is not None and actor.role == ROLE_OWNER:
+            other_participants = [p for p in await get_chat_participants(session, chat_id) if p.user_id != actor_id]
+            if other_participants:
+                if new_owner_id is None:
+                    raise OwnershipTransferRequiredError(
+                        f"Owner {actor_id} must name a new owner before leaving chat {chat_id}"
+                    )
+                if not any(p.user_id == new_owner_id for p in other_participants):
+                    raise UserNotFoundError(f"User {new_owner_id} is not a member of chat {chat_id}")
+
+                await update_participant_role(session, chat_id=chat_id, user_id=new_owner_id, role=ROLE_OWNER)
+                actor_name = await _display_name_for(session, actor_id)
+                new_owner_name = await _display_name_for(session, new_owner_id)
+                await message_service.send_system_message(
+                    session, chat_id=chat_id, content=f"{actor_name} made {new_owner_name} the group owner"
+                )
+
     removed = await remove_participant(session, chat_id=chat_id, user_id=target_user_id)
     if removed:
-        verb = "left" if actor_id == target_user_id else "was removed from"
-        await message_service.send_system_message(session, chat_id=chat_id, content=f"{target_user_id} {verb} the group")
+        remaining = await get_chat_participants(session, chat_id)
+        if remaining:
+            verb = "left" if actor_id == target_user_id else "was removed from"
+            name = await _display_name_for(session, target_user_id)
+            await message_service.send_system_message(session, chat_id=chat_id, content=f"{name} {verb} the group")
+        else:
+            # Nobody left in the chat at all (last member left, or the owner
+            # left with no one to hand it to) - no point sending a system
+            # message nobody will ever read, just delete the chat outright.
+            await delete_chat(session, chat_id)
+        await _notify_removed_from_chat(target_user_id, chat_id, actor_id, chat_title)
     return removed
 
 
 async def change_member_role(session: AsyncSession, actor_id: int, chat_id: int, target_user_id: int, new_role: int) -> Participant:
     """Only an Owner may promote/demote members."""
     await _require_role(session, chat_id, actor_id, min_role=ROLE_OWNER)
-    return await update_participant_role(session, chat_id=chat_id, user_id=target_user_id, role=new_role)
+    participant = await update_participant_role(session, chat_id=chat_id, user_id=target_user_id, role=new_role)
+
+    # Unlike "X joined/left the group", a role change is only meant to be
+    # seen by the two people involved, not the whole chat - there's no
+    # per-recipient system message, so this is fanned out to everyone (same
+    # as any other system message) but as structured JSON content instead of
+    # plain text. The client parses the "role_changed" kind and renders it
+    # only when actor_id/target_id matches the viewer, building the
+    # human-readable text itself (it already has name/phone resolution) -
+    # this avoids a new Message column for something only two people ever see.
+    await message_service.send_system_message(
+        session,
+        chat_id=chat_id,
+        content=json.dumps({
+            "kind": "role_changed",
+            "actor_id": str(actor_id),
+            "target_id": str(target_user_id),
+            "new_role": new_role,
+        }),
+    )
+    return participant

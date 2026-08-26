@@ -73,15 +73,21 @@ async def create_message(
         # itself is caught before the chat is touched, without a partial commit.
         await session.flush()
 
-        await session.execute(
-            update(Chat)
-            .where(Chat.id == chat_id)
-            .values(
-                last_message_at=new_message.created_at,
-                last_message_id=new_message.id,
-                last_message_preview=build_last_message_preview(new_message.content),
-            )
-        )
+        chat_update_values = {
+            "last_message_at": new_message.created_at,
+            "last_message_id": new_message.id,
+        }
+        # System messages (sender_id=None - "X joined the group", or a
+        # private role-change notice) must never become the chat list's
+        # preview line: unlike the message stream, that list has no
+        # per-viewer filtering, so anyone glancing at their chat list would
+        # see it, including text meant only for the two people involved in a
+        # role change. Leaving last_message_preview untouched here keeps it
+        # on the last real user message.
+        if sender_id is not None:
+            chat_update_values["last_message_preview"] = build_last_message_preview(new_message.content)
+
+        await session.execute(update(Chat).where(Chat.id == chat_id).values(**chat_update_values))
 
         if sender_id is not None:
             # Sending implies having seen the chat up to this point - without

@@ -54,6 +54,39 @@
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
+<!-- Structural split into child components (see CLAUDE.md) - plain
+     Vue.defineComponent objects loaded as sibling scripts, since this PoC
+     has no build step and can't use .vue SFCs. All business logic/state
+     stays in the root app below; these only own template markup. -->
+<script src="components/AuthScreen.js"></script>
+<script src="components/AppHeader.js"></script>
+<script src="components/ChatSidebar.js"></script>
+<script src="components/ChatHeader.js"></script>
+<script src="components/MessageList.js"></script>
+<script src="components/MessageInput.js"></script>
+<script src="components/MembersModal.js"></script>
+<script src="components/ToastList.js"></script>
+<style>
+  /* Chat-bubble speech tail (WhatsApp-style), drawn with a CSS triangle
+     instead of an image so it inherits the bubble's own background color. */
+  .bubble-tail { position: relative; }
+  .bubble-tail::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    width: 0;
+    height: 0;
+    border-bottom: 8px solid transparent;
+  }
+  .bubble-tail-mine::after {
+    right: -6px;
+    border-left: 8px solid #0f766e; /* teal-700, matches bg-teal-700 */
+  }
+  .bubble-tail-theirs::after {
+    left: -6px;
+    border-right: 8px solid #ffffff; /* matches bg-white */
+  }
+</style>
 </head>
 <body class="h-screen bg-slate-100 text-slate-900 antialiased">
 <div id="app" class="h-full"></div>
@@ -62,6 +95,9 @@
 const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } = Vue;
 
 createApp({
+  components: {
+    AuthScreen, AppHeader, ChatSidebar, ChatHeader, MessageList, MessageInput, MembersModal, ToastList,
+  },
   setup() {
     // ---------------------------------------------------------------
     // Config / logging
@@ -197,6 +233,8 @@ createApp({
       chats.value = [];
       messages.value = [];
       activeChatId.value = null;
+      presenceSubscribedUserId = null;
+      presenceByUserId.value = {};
       authStage.value = 'phone';
       phoneNumber.value = '';
       otpCode.value = '';
@@ -227,6 +265,16 @@ createApp({
           if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'heartbeat' }));
         }, 30000);
         markAllChatsDelivered();
+
+        // A fresh connection means the server-side presence subscription
+        // from before (if any) is gone with the old connection - the local
+        // "what am I subscribed to" bookkeeping needs resetting before
+        // re-subscribing, otherwise subscribeToPresence's "already
+        // subscribed to this user, no-op" guard would wrongly skip sending
+        // the request on this new socket.
+        presenceSubscribedUserId = null;
+        const activeItem = chats.value.find((c) => c.chat.id === activeChatId.value);
+        if (activeItem && !activeItem.chat.is_group) subscribeToPresenceForChat(activeChatId.value);
       };
 
       ws.onmessage = (evt) => {
@@ -283,12 +331,76 @@ createApp({
       }
     }
 
+    // ---------------------------------------------------------------
+    // Presence (subscribe-on-demand - see CLAUDE.md's presence section)
+    //
+    // Deliberately NOT a chat_id -> subscription map: the server only ever
+    // tracks presence per *user*, one active subscription per watcher, kept
+    // alive only as long as that user's 1:1 chat is the one open right now
+    // - never for groups (groups have no presence concept at all). This
+    // plain variable (not a ref - nothing in the template reads it
+    // directly) mirrors that one-active-subscription-at-a-time contract.
+    // ---------------------------------------------------------------
+    let presenceSubscribedUserId = null;
+
+    // user_id -> {status: 'online'|'offline', last_seen_at: iso-str|null},
+    // populated by the initial presence_status pull (on subscribe) and kept
+    // current by live presence_update pushes for as long as subscribed.
+    const presenceByUserId = ref({});
+
+    function subscribeToPresence(userId) {
+      if (presenceSubscribedUserId === userId) return;
+      if (presenceSubscribedUserId != null) unsubscribeFromPresence();
+      presenceSubscribedUserId = userId;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'subscribe_presence', user_id: userId }));
+      }
+    }
+
+    function unsubscribeFromPresence() {
+      if (presenceSubscribedUserId == null) return;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'unsubscribe_presence', user_id: presenceSubscribedUserId }));
+      }
+      presenceSubscribedUserId = null;
+    }
+
+    // Resolves the other participant's id if it isn't cached yet, then
+    // subscribes - guarded on activeChatId still matching chatId when the
+    // (possibly awaited) resolution finishes, since the user may have
+    // already switched to a different (or group) chat in the meantime.
+    async function subscribeToPresenceForChat(chatId) {
+      if (!privateChatOtherUserId.value[chatId]) await resolvePrivateChatTitle(chatId);
+      const otherUserId = privateChatOtherUserId.value[chatId];
+      if (otherUserId && activeChatId.value === chatId) subscribeToPresence(otherUserId);
+    }
+
+    // "Last seen" is deliberately not shown - only ever "online", or
+    // nothing at all when offline.
+    function presenceLabelFor(userId) {
+      const info = presenceByUserId.value[userId];
+      return info && info.status === 'online' ? 'online' : '';
+    }
+
+    const activeChatPresenceLabel = computed(() => {
+      if (activeChatIsGroup.value || !activeChatId.value) return '';
+      const otherUserId = privateChatOtherUserId.value[activeChatId.value];
+      return otherUserId ? presenceLabelFor(otherUserId) : '';
+    });
+
     function handleWsMessage(msg) {
       // Acks/errors for actions *you* took use "type"; events fanned out
       // from the server (yours or anyone else's) use "event".
       if (msg.type === 'error') { logError('server error:', msg.code, '-', msg.message); return; }
       if (msg.type === 'ack') { log('ack:', msg.for, msg); return; }
       if (msg.type === 'heartbeat_ack') { return; }
+
+      if (msg.type === 'presence_status' || msg.type === 'presence_update') {
+        // "Last seen" is intentionally not tracked here - only the current
+        // online/offline status (see presenceLabelFor).
+        presenceByUserId.value[msg.user_id] = { status: msg.status };
+        return;
+      }
 
       if (msg.event === 'new_message') {
         if (msg.chat_id === activeChatId.value) {
@@ -299,7 +411,25 @@ createApp({
           });
           nextTick(scrollMessagesToBottom);
         }
-        bumpChatPreview(msg.chat_id, msg.message_id, msg.created_at, msg.content, msg.status);
+        // System messages ("X joined the group", or a private "role_changed"
+        // notice - see shouldShowSystemMessage) must never become the
+        // sidebar preview: unlike the message stream, the chat list has no
+        // per-viewer filtering, so a "role_changed" preview would leak to
+        // every participant, not just the actor/target it's meant for.
+        if (msg.sender_id != null) {
+          bumpChatPreview(msg.chat_id, msg.message_id, msg.created_at, msg.content, msg.status);
+        }
+
+        if (msg.sender_id == null) {
+          // A system message (e.g. "X joined the group") means this chat's
+          // membership just changed - re-pull /chats/{id}/members so the
+          // header's participant row and the members modal update live for
+          // everyone with this chat loaded, not just whoever triggered it.
+          // Only bother for chats whose members were already fetched once
+          // (selectChat/openMembersModal) - no point priming ones nobody's
+          // looked at yet.
+          if (groupChatMembers.value[msg.chat_id]) resolveChatMemberPhones(msg.chat_id);
+        }
 
         if (msg.sender_id !== currentUser.value.id) {
           // The message just reached this device over a live connection -
@@ -342,6 +472,29 @@ createApp({
         log('added to chat', msg.chat_id);
         showToast('New chat');
         loadChats();
+        return;
+      }
+
+      if (msg.event === 'removed_from_chat') {
+        // Mirror of added_to_chat: fired when someone else removes this
+        // user from a group (or this user leaves from another device) - the
+        // server has already dropped this connection's live subscription to
+        // that chat (ConnectionManager._handle_user_channel_event); this is
+        // just what makes it disappear from the sidebar without a reload.
+        log('removed from chat', msg.chat_id);
+        chats.value = chats.value.filter((c) => c.chat.id !== msg.chat_id);
+        if (activeChatId.value === msg.chat_id) {
+          activeChatId.value = null;
+          messages.value = [];
+          showMembersModal.value = false;
+        }
+        // Only toast when someone else did the removing - self-initiated
+        // leaves (leaveActiveGroup) already updated this device instantly
+        // and don't need to be told about their own action.
+        if (msg.actor_id !== currentUser.value.id) {
+          const name = msg.chat_title || 'a group';
+          showToast(`You were removed from "${name}"`);
+        }
         return;
       }
 
@@ -447,12 +600,21 @@ createApp({
     // info on the chat object itself) and cached here.
     const privateChatTitles = ref({});
 
+    // chat_id -> the other participant's user id, for private chats only -
+    // needed (not just their phone number) to send subscribe_presence,
+    // which addresses a user by id. Populated alongside privateChatTitles
+    // from the same /chats/{id}/members call, so it's "free".
+    const privateChatOtherUserId = ref({});
+
     async function resolvePrivateChatTitle(chatId) {
       if (privateChatTitles.value[chatId]) return;
       try {
         const members = await apiFetch(`/chats/${chatId}/members`);
         const other = members.find((m) => m.user.id !== currentUser.value.id);
-        if (other) privateChatTitles.value[chatId] = other.user.phone_number;
+        if (other) {
+          privateChatTitles.value[chatId] = other.user.phone_number;
+          privateChatOtherUserId.value[chatId] = other.user.id;
+        }
       } catch (err) {
         logError('failed to resolve private chat title for', chatId, err);
       }
@@ -464,11 +626,11 @@ createApp({
       return phone ? `Chat with ${contactDisplayName(phone)}` : `Private chat #${chat.id}`;
     }
 
-    // user_id -> phone_number, so a message bubble can show who sent it by
-    // phone number instead of their raw id. Populated from the same
+    // user_id -> that user's UserOut, so a message bubble can show who sent
+    // it by name/phone instead of their raw id. Populated from the same
     // /chats/{id}/members endpoint as the private-chat title above, just for
     // every chat (group chats have multiple senders to label, not one).
-    const userPhoneById = ref({});
+    const userById = ref({});
 
     // chat_id -> that chat's member list, straight from /chats/{id}/members -
     // only actually used for group chats, to render the WhatsApp-style
@@ -479,7 +641,7 @@ createApp({
       try {
         const members = await apiFetch(`/chats/${chatId}/members`);
         for (const m of members) {
-          userPhoneById.value[m.user.id] = m.user.phone_number;
+          userById.value[m.user.id] = m.user;
         }
         groupChatMembers.value[chatId] = members;
       } catch (err) {
@@ -489,7 +651,54 @@ createApp({
 
     function senderLabel(senderId) {
       if (senderId == null) return 'system';
-      return contactDisplayName(userPhoneById.value[senderId] || senderId);
+      const user = userById.value[senderId];
+      if (!user) return senderId;
+      return contactDisplayName(user.phone_number) || user.display_name || user.phone_number;
+    }
+
+    function userLabelById(userId) {
+      const user = userById.value[userId];
+      if (!user) return userId;
+      return contactDisplayName(user.phone_number) || user.display_name || user.phone_number;
+    }
+
+    // System messages are plain text ("X joined the group") EXCEPT the
+    // "role_changed" kind (see chat_service.change_member_role), which is
+    // sent as JSON on purpose - unlike every other system message, it's only
+    // meant to be seen by the two people involved, not the whole chat, and
+    // there's no per-recipient message, so filtering has to happen here.
+    function parseSystemMessage(content) {
+      if (typeof content !== 'string' || content[0] !== '{') return null;
+      try {
+        const data = JSON.parse(content);
+        return data && typeof data === 'object' ? data : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    // sender_id == null on a message is what marks it as a system message
+    // (see database/models/message.py / SYSTEM_MESSAGE_TYPE) - only that
+    // subset is ever checked for the JSON "role_changed" shape.
+    function shouldShowSystemMessage(m) {
+      if (m.sender_id != null) return true;
+      const data = parseSystemMessage(m.content);
+      if (!data || data.kind !== 'role_changed') return true;
+      const me = currentUser.value.id;
+      return data.actor_id === me || data.target_id === me;
+    }
+
+    function systemMessageText(m) {
+      const data = parseSystemMessage(m.content);
+      if (!data) return m.content;
+      if (data.kind === 'role_changed') {
+        const actorName = data.actor_id === currentUser.value.id ? 'You' : userLabelById(data.actor_id);
+        const targetName = data.target_id === currentUser.value.id ? 'you' : userLabelById(data.target_id);
+        return data.new_role === 2
+          ? `${actorName} made ${targetName} an admin`
+          : `${actorName} removed ${targetName} as admin`;
+      }
+      return m.content;
     }
 
     const activeChatLabel = computed(() => {
@@ -518,6 +727,202 @@ createApp({
       return contactDisplayName(member.user.phone_number) || member.user.display_name || member.user.phone_number;
     }
 
+    // 1=Member, 2=Admin, 3=Owner (see database/models/participant.py) -
+    // anything >= 2 can manage members, mirrors chat_service._require_role
+    // (min_role=ROLE_ADMIN) on the server so the button only appears where
+    // the POST /chats/{id}/members call would actually succeed.
+    const ROLE_LABELS = { 1: '', 2: 'Admin', 3: 'Owner' };
+    function roleLabel(role) { return ROLE_LABELS[role] || ''; }
+
+    const currentUserRoleInActiveChat = computed(() => {
+      const members = activeChatMembers.value;
+      const me = members.find((m) => m.user.id === currentUser.value.id);
+      return me ? me.role : null;
+    });
+    const canManageActiveChatMembers = computed(() => (currentUserRoleInActiveChat.value || 0) >= 2);
+    // Only an Owner may change roles - mirrors chat_service.change_member_role's
+    // _require_role(min_role=ROLE_OWNER) exactly, so this button only shows
+    // where the PATCH /chats/{id}/members/{user_id} call would actually succeed.
+    const canChangeActiveChatRoles = computed(() => currentUserRoleInActiveChat.value === 3);
+
+    // ---------------------------------------------------------------
+    // Group members modal
+    // ---------------------------------------------------------------
+    const showMembersModal = ref(false);
+    const addMemberPhone = ref('');
+    const membersModalError = ref('');
+    const membersModalBusy = ref(false);
+
+    async function openMembersModal() {
+      if (!activeChatId.value) return;
+      membersModalError.value = '';
+      addMemberPhone.value = '';
+      showOwnerTransferPicker.value = false;
+      showMembersModal.value = true;
+      await resolveChatMemberPhones(activeChatId.value);
+    }
+
+    async function addMemberToActiveGroup() {
+      membersModalError.value = '';
+      const phone = addMemberPhone.value.trim();
+      if (!phone) { membersModalError.value = 'Enter a phone number.'; return; }
+      membersModalBusy.value = true;
+      try {
+        // Same two-step flow as createGroupChat: resolve phone -> user id,
+        // then POST /chats/{id}/members (server re-checks admin role itself).
+        const target = await apiFetch(`/users/by-phone?phone_number=${encodeURIComponent(phone)}`);
+        await apiFetch(`/chats/${activeChatId.value}/members`, {
+          method: 'POST',
+          body: JSON.stringify({ user_id: target.id }),
+        });
+        addMemberPhone.value = '';
+        await resolveChatMemberPhones(activeChatId.value);
+      } catch (err) {
+        if (err.status === 404) membersModalError.value = `No user with phone number ${phone}`;
+        else if (err.status === 409) membersModalError.value = 'User is already a member.';
+        else membersModalError.value = err.message;
+      } finally {
+        membersModalBusy.value = false;
+      }
+    }
+
+    // Toggles a member between Admin (2) and plain Member (1) - Owner (3) is
+    // never a toggle target here, only ever set at group creation.
+    // PATCH /chats/{id}/members/{user_id} re-checks ROLE_OWNER server-side,
+    // this is just the matching client-side gate (canChangeActiveChatRoles).
+    //
+    // The server (chat_service.change_member_role) sends a real system
+    // message for this, fanned out to the whole chat like any other -  but
+    // as structured JSON content with a "role_changed" kind instead of
+    // plain text, since this notice is only meant for the actor/target pair,
+    // not everyone. See handleWsMessage's parsing and
+    // shouldShowSystemMessage() below for the client-side filter.
+    async function toggleMemberAdmin(member) {
+      if (!canChangeActiveChatRoles.value || member.role === 3) return;
+      const chatId = activeChatId.value;
+      const newRole = member.role === 1 ? 2 : 1;
+      membersModalError.value = '';
+      try {
+        await apiFetch(`/chats/${chatId}/members/${member.user.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ role: newRole }),
+        });
+        member.role = newRole;
+      } catch (err) {
+        if (err.status === 403) membersModalError.value = 'Only the group owner can change roles.';
+        else membersModalError.value = err.message;
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Per-member options popup (click a member's name in the modal) -
+    // "Make admin"/"Remove as admin" wired to toggleMemberAdmin above;
+    // "Remove from group" wired to memberOptionRemoveFromGroup below.
+    // ---------------------------------------------------------------
+    const memberOptionsFor = ref(null); // the member object the popup is currently open for, or null
+
+    // Whether the options popup has anything to show for this member at all -
+    // used both to gate opening it and to style the row as clickable.
+    function hasMemberOptions(member) {
+      const canToggleAdmin = canChangeActiveChatRoles.value && member.role !== 3;
+      return canToggleAdmin || canRemoveMember(member);
+    }
+
+    function openMemberOptions(member) {
+      if (!hasMemberOptions(member)) return;
+      memberOptionsFor.value = memberOptionsFor.value === member ? null : member;
+    }
+
+    async function memberOptionMakeOrRemoveAdmin() {
+      const member = memberOptionsFor.value;
+      memberOptionsFor.value = null;
+      if (member) await toggleMemberAdmin(member);
+    }
+
+    // Mirrors chat_service.remove_member's server-side rule: an admin may
+    // only remove a plain member - not another admin, and not the owner.
+    // Only the owner outranks an admin and can remove one.
+    function canRemoveMember(member) {
+      if (member.user.id === currentUser.value.id) return false;
+      return (currentUserRoleInActiveChat.value || 0) > member.role;
+    }
+
+    async function memberOptionRemoveFromGroup() {
+      const member = memberOptionsFor.value;
+      memberOptionsFor.value = null;
+      if (!member || !canRemoveMember(member)) return;
+      membersModalError.value = '';
+      try {
+        await apiFetch(`/chats/${activeChatId.value}/members/${member.user.id}`, { method: 'DELETE' });
+        await resolveChatMemberPhones(activeChatId.value);
+      } catch (err) {
+        if (err.status === 403) membersModalError.value = 'You cannot remove this member.';
+        else membersModalError.value = err.message;
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Leave group - available to every member (not just admins/owner).
+    // Same DELETE /chats/{id}/members/{user_id} endpoint as removing
+    // someone else, but chat_service.remove_member skips the role check
+    // when actor_id === target_user_id.
+    //
+    // The owner can't just vanish while others remain - chat_service
+    // requires a new_owner_id in that case (409 OwnershipTransferRequired
+    // otherwise). startLeaveGroup is what decides which path to take;
+    // leaveActiveGroup(newOwnerId) does the actual call either way. If the
+    // owner is the last one left, there's nobody to transfer to and the
+    // server deletes the whole chat instead - same call, no picker needed.
+    // ---------------------------------------------------------------
+    const leaveGroupBusy = ref(false);
+    const showOwnerTransferPicker = ref(false);
+    const ownerTransferTargetId = ref('');
+
+    const otherActiveChatMembers = computed(() =>
+      activeChatMembers.value.filter((m) => m.user.id !== currentUser.value.id)
+    );
+
+    function startLeaveGroup() {
+      if (!activeChatId.value) return;
+      const others = otherActiveChatMembers.value;
+      if (currentUserRoleInActiveChat.value === 3 && others.length) {
+        ownerTransferTargetId.value = others[0].user.id;
+        showOwnerTransferPicker.value = true;
+        return;
+      }
+      leaveActiveGroup(null);
+    }
+
+    function cancelOwnerTransferPicker() {
+      showOwnerTransferPicker.value = false;
+    }
+
+    async function confirmLeaveWithTransfer() {
+      if (!ownerTransferTargetId.value) return;
+      await leaveActiveGroup(ownerTransferTargetId.value);
+    }
+
+    async function leaveActiveGroup(newOwnerId) {
+      if (!activeChatId.value || leaveGroupBusy.value) return;
+      if (!newOwnerId && !confirm(`Leave "${activeChatLabel.value}"?`)) return;
+      const chatId = activeChatId.value;
+      leaveGroupBusy.value = true;
+      membersModalError.value = '';
+      try {
+        const qs = newOwnerId ? `?new_owner_id=${newOwnerId}` : '';
+        await apiFetch(`/chats/${chatId}/members/${currentUser.value.id}${qs}`, { method: 'DELETE' });
+        showMembersModal.value = false;
+        showOwnerTransferPicker.value = false;
+        chats.value = chats.value.filter((c) => c.chat.id !== chatId);
+        activeChatId.value = null;
+        messages.value = [];
+      } catch (err) {
+        membersModalError.value = err.status === 409 ? 'Name a new owner first.' : err.message;
+      } finally {
+        leaveGroupBusy.value = false;
+      }
+    }
+
     // MessageStatus from the server: 1=sent, 2=delivered, 3=read (see
     // database/models/message.py). Only ever rendered for your own
     // messages - like WhatsApp, there's no such thing as a tick on a
@@ -529,8 +934,12 @@ createApp({
       return status === 3 ? 'text-sky-500' : 'text-slate-400';
     }
 
+    // messagesEl now refs the MessageList component instance (it exposes
+    // its own scrollable element as `messagesEl`) rather than a raw div,
+    // since that markup moved into a child component.
     function scrollMessagesToBottom() {
-      if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+      const el = messagesEl.value && messagesEl.value.messagesEl;
+      if (el) el.scrollTop = el.scrollHeight;
     }
 
     async function loadChats() {
@@ -557,6 +966,13 @@ createApp({
       const item = chats.value.find((c) => c.chat.id === chatId);
       if (item && !item.chat.is_group) resolvePrivateChatTitle(chatId);
       resolveChatMemberPhones(chatId);
+
+      // Subscribe-on-demand presence: only ever one active subscription,
+      // scoped to whichever private chat is open right now - switching away
+      // (including to a group, which has no presence at all) unsubscribes
+      // first. See CLAUDE.md's presence section for the full contract.
+      unsubscribeFromPresence();
+      if (item && !item.chat.is_group) subscribeToPresenceForChat(chatId);
       try {
         const history = await apiFetch(`/chats/${chatId}/messages?limit=50`);
         // The API returns newest-first (keyset pagination); the UI wants oldest-first.
@@ -626,7 +1042,7 @@ createApp({
           }))
         );
         const memberIds = targets.map((t) => t.id);
-        for (const t of targets) userPhoneById.value[t.id] = t.phone_number; // already known - skip a later round trip
+        for (const t of targets) userById.value[t.id] = t; // already known - skip a later round trip
 
         const chat = await apiFetch('/chats/groups', {
           method: 'POST',
@@ -690,145 +1106,56 @@ createApp({
       authStage, phoneNumber, otpCode, authError, authBusy, requestOtp, verifyOtp, logout,
       wsStatus,
       chats, activeChatId, activeChatLabel, chatDisplayName, senderLabel, formatChatTime, messages, messageInput, chatsError, messagesError, messagesEl,
-      activeChatIsGroup, visibleActiveChatMembers, hiddenActiveChatMemberCount, memberDisplayName,
+      activeChatIsGroup, visibleActiveChatMembers, hiddenActiveChatMemberCount, memberDisplayName, roleLabel,
+      activeChatPresenceLabel,
       selectChat, sendMessage, statusTickSymbol, statusTickClass,
       showNewPrivate, showNewGroup, newPrivatePhone, newGroupTitle, newGroupMemberPhones, chatFormError,
       createPrivateChat, createGroupChat,
+      showMembersModal, openMembersModal, addMemberPhone, membersModalError, membersModalBusy,
+      canManageActiveChatMembers, addMemberToActiveGroup, activeChatMembers,
+      canChangeActiveChatRoles, toggleMemberAdmin,
+      memberOptionsFor, openMemberOptions, memberOptionMakeOrRemoveAdmin, memberOptionRemoveFromGroup, canRemoveMember, hasMemberOptions,
+      leaveGroupBusy, leaveActiveGroup, startLeaveGroup, showOwnerTransferPicker, ownerTransferTargetId,
+      otherActiveChatMembers, cancelOwnerTransferPicker, confirmLeaveWithTransfer,
+      systemMessageText, shouldShowSystemMessage,
       toasts,
     };
   },
 
   template: `
-    <div class="h-full flex items-center justify-center p-4" v-if="!isAuthed">
-      <div class="w-full max-w-sm bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-        <h1 class="text-xl font-semibold mb-1">Linka</h1>
-        <p class="text-sm text-slate-500 mb-4">WebSocket PoC client</p>
-
-        <label class="block text-xs font-medium text-slate-500 mb-1">API server</label>
-        <input v-model="apiBase" class="w-full mb-4 px-3 py-2 text-sm border border-slate-300 rounded-lg font-mono" />
-
-        <template v-if="authStage === 'phone'">
-          <label class="block text-xs font-medium text-slate-500 mb-1">Phone number</label>
-          <input v-model="phoneNumber" placeholder="+972---------"
-                 class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg"
-                 @keyup.enter="requestOtp" />
-          <button @click="requestOtp" :disabled="authBusy || !phoneNumber"
-                  class="w-full py-2 bg-teal-700 text-white rounded-lg font-medium disabled:opacity-50">
-            {{ authBusy ? 'Sending…' : 'Send code' }}
-          </button>
-        </template>
-
-        <template v-else>
-          <p class="text-xs text-slate-500 mb-3">No SMS provider is wired up yet — check the <span class="font-mono">server</span> console/log for the code.</p>
-          <label class="block text-xs font-medium text-slate-500 mb-1">OTP code</label>
-          <input v-model="otpCode" placeholder="000000"
-                 class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg font-mono tracking-widest"
-                 @keyup.enter="verifyOtp" />
-          <button @click="verifyOtp" :disabled="authBusy || !otpCode"
-                  class="w-full py-2 bg-teal-700 text-white rounded-lg font-medium disabled:opacity-50">
-            {{ authBusy ? 'Verifying…' : 'Verify & log in' }}
-          </button>
-          <button @click="authStage = 'phone'" class="w-full mt-2 py-1 text-sm text-slate-500">← back</button>
-        </template>
-
-        <p v-if="authError" class="mt-3 text-sm text-red-600">{{ authError }}</p>
-      </div>
-    </div>
+    <AuthScreen v-if="!isAuthed"
+      v-model:apiBase="apiBase" v-model:phoneNumber="phoneNumber" v-model:otpCode="otpCode"
+      :authStage="authStage" :authError="authError" :authBusy="authBusy"
+      @request-otp="requestOtp" @verify-otp="verifyOtp" @back-to-phone="authStage = 'phone'" />
 
     <div class="h-full flex flex-col" v-else>
-      <header class="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
-        <div class="flex items-center gap-3">
-          <span class="font-semibold">Linka</span>
-          <span class="flex items-center gap-1.5 text-xs text-slate-500">
-            <span class="w-2 h-2 rounded-full"
-                  :class="{ 'bg-emerald-500': wsStatus === 'connected', 'bg-amber-400': wsStatus === 'connecting', 'bg-red-500': wsStatus === 'error' || wsStatus === 'disconnected' }"></span>
-            {{ wsStatus }}
-          </span>
-        </div>
-        <div class="flex items-center gap-3 text-sm">
-          <span class="text-slate-500">You are <span class="font-medium text-slate-800">{{ currentUser.display_name || currentUser.phone_number }}</span></span>
-          <button @click="logout" class="px-3 py-1 border border-slate-300 rounded-lg text-sm">Log out</button>
-        </div>
-      </header>
+      <AppHeader :wsStatus="wsStatus" :currentUser="currentUser" @logout="logout" />
 
       <div class="flex flex-1 min-h-0">
-        <aside class="w-72 flex flex-col border-r border-slate-200 bg-white">
-          <div class="p-3 border-b border-slate-200 flex gap-2">
-            <button @click="showNewPrivate = !showNewPrivate; showNewGroup = false"
-                    class="flex-1 text-xs px-2 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">+ Private</button>
-            <button @click="showNewGroup = !showNewGroup; showNewPrivate = false"
-                    class="flex-1 text-xs px-2 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">+ Group</button>
-          </div>
-
-          <div v-if="showNewPrivate" class="p-3 border-b border-slate-200 bg-slate-50">
-            <label class="block text-xs font-medium text-slate-500 mb-1">Their phone number</label>
-            <input v-model="newPrivatePhone" placeholder="+972501234567" @keyup.enter="createPrivateChat"
-                   class="w-full mb-2 px-2 py-1.5 text-sm border border-slate-300 rounded-lg font-mono" />
-            <button @click="createPrivateChat" class="w-full py-1.5 text-sm bg-teal-700 text-white rounded-lg">Create</button>
-          </div>
-
-          <div v-if="showNewGroup" class="p-3 border-b border-slate-200 bg-slate-50">
-            <label class="block text-xs font-medium text-slate-500 mb-1">Title</label>
-            <input v-model="newGroupTitle" class="w-full mb-2 px-2 py-1.5 text-sm border border-slate-300 rounded-lg" />
-            <label class="block text-xs font-medium text-slate-500 mb-1">Member phone numbers (comma-separated)</label>
-            <input v-model="newGroupMemberPhones" placeholder="+972501234567, +972507654321"
-                   class="w-full mb-2 px-2 py-1.5 text-sm border border-slate-300 rounded-lg font-mono" />
-            <button @click="createGroupChat" class="w-full py-1.5 text-sm bg-teal-700 text-white rounded-lg">Create</button>
-          </div>
-
-          <p v-if="chatFormError" class="px-3 py-1 text-xs text-red-600">{{ chatFormError }}</p>
-          <p v-if="chatsError" class="px-3 py-1 text-xs text-red-600">{{ chatsError }}</p>
-
-          <div class="flex-1 overflow-y-auto">
-            <button v-for="item in chats" :key="item.chat.id" @click="selectChat(item.chat.id)"
-                    class="w-full text-left px-3 py-2.5 border-b border-slate-100 hover:bg-slate-50"
-                    :class="{ 'bg-teal-50': item.chat.id === activeChatId }">
-              <div class="flex items-baseline gap-2">
-                <span class="flex-1 min-w-0 text-sm font-medium truncate">{{ chatDisplayName(item.chat) }}</span>
-                <span class="shrink-0 text-[11px] text-slate-400">{{ formatChatTime(item.chat.last_message_at) }}</span>
-              </div>
-              <div class="min-h-[1rem] text-xs text-slate-500 truncate">{{ item.chat.last_message_preview }}</div>
-            </button>
-            <p v-if="!chats.length" class="p-3 text-sm text-slate-400">No chats yet — create one above.</p>
-          </div>
-        </aside>
+        <ChatSidebar
+          v-model:showNewPrivate="showNewPrivate" v-model:showNewGroup="showNewGroup"
+          v-model:newPrivatePhone="newPrivatePhone" v-model:newGroupTitle="newGroupTitle"
+          v-model:newGroupMemberPhones="newGroupMemberPhones"
+          :chatFormError="chatFormError" :chatsError="chatsError" :chats="chats" :activeChatId="activeChatId"
+          :chatDisplayName="chatDisplayName" :formatChatTime="formatChatTime"
+          @create-private-chat="createPrivateChat" @create-group-chat="createGroupChat"
+          @select-chat="selectChat" />
 
         <main class="flex-1 flex flex-col min-w-0">
           <template v-if="activeChatId">
-            <div class="px-4 py-2 border-b border-slate-200 bg-white">
-              <div class="text-sm font-medium">{{ activeChatLabel }}</div>
-              <div v-if="activeChatIsGroup" class="mt-0.5 text-xs text-slate-500 truncate">
-                <span v-for="(member, index) in visibleActiveChatMembers" :key="member.user.id">
-                  {{ memberDisplayName(member) }}<span v-if="index < visibleActiveChatMembers.length - 1 || hiddenActiveChatMemberCount > 0">, </span>
-                </span>
-                <span v-if="hiddenActiveChatMemberCount > 0">&bull;&bull;&bull;</span>
-              </div>
-            </div>
+            <ChatHeader
+              :activeChatLabel="activeChatLabel" :activeChatIsGroup="activeChatIsGroup"
+              :visibleActiveChatMembers="visibleActiveChatMembers"
+              :hiddenActiveChatMemberCount="hiddenActiveChatMemberCount"
+              :memberDisplayName="memberDisplayName" :activeChatPresenceLabel="activeChatPresenceLabel"
+              @open-members-modal="openMembersModal" />
 
-            <div ref="messagesEl" class="flex-1 overflow-y-auto p-4 space-y-2">
-              <p v-if="messagesError" class="text-sm text-red-600">{{ messagesError }}</p>
-              <div v-for="m in messages" :key="m.id"
-                   class="max-w-md" :class="m.sender_id === currentUser.id ? 'ml-auto text-right' : ''">
-                <div class="inline-block px-3 py-2 rounded-2xl text-sm"
-                     :class="m.sender_id === currentUser.id ? 'bg-teal-700 text-white' : 'bg-white border border-slate-200'">
-                  <div v-if="m.sender_id !== currentUser.id" class="text-[11px] opacity-60 mb-0.5">{{ senderLabel(m.sender_id) }}</div>
-                  {{ m.content }}
-                  <span v-if="m.is_edited" class="text-[10px] opacity-60"> (edited)</span>
-                </div>
-                <div class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
-                     :class="m.sender_id === currentUser.id ? 'justify-end' : ''">
-                  <span>{{ new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
-                  <span v-if="m.sender_id === currentUser.id" class="text-sm font-bold leading-none" :class="statusTickClass(m.status)">{{ statusTickSymbol(m.status) }}</span>
-                </div>
-              </div>
-              <p v-if="!messages.length" class="h-full flex items-center justify-center text-sm text-slate-400">No messages here</p>
-            </div>
+            <MessageList ref="messagesEl"
+              :messages="messages" :messagesError="messagesError" :currentUser="currentUser"
+              :shouldShowSystemMessage="shouldShowSystemMessage" :systemMessageText="systemMessageText"
+              :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass" />
 
-            <div class="p-3 border-t border-slate-200 bg-white flex gap-2">
-              <input v-model="messageInput" @keyup.enter="sendMessage" placeholder="Message…"
-                     class="flex-1 px-3 py-2 border border-slate-300 rounded-lg" />
-              <button @click="sendMessage" class="px-4 py-2 bg-teal-700 text-white rounded-lg font-medium">Send</button>
-            </div>
+            <MessageInput v-model:messageInput="messageInput" @send-message="sendMessage" />
           </template>
           <div v-else class="flex-1 flex items-center justify-center text-slate-400 text-sm">
             Select a chat, or create one from the sidebar.
@@ -837,10 +1164,25 @@ createApp({
       </div>
     </div>
 
-    <div class="fixed top-3 right-3 flex flex-col gap-2 z-50">
-      <div v-for="t in toasts" :key="t.id"
-           class="bg-slate-900 text-white text-sm px-3 py-2 rounded-lg shadow-lg">{{ t.text }}</div>
-    </div>
+    <MembersModal v-if="showMembersModal"
+      :activeChatLabel="activeChatLabel" :activeChatMembers="activeChatMembers"
+      :memberDisplayName="memberDisplayName" :roleLabel="roleLabel"
+      :hasMemberOptions="hasMemberOptions" :memberOptionsFor="memberOptionsFor"
+      :canChangeActiveChatRoles="canChangeActiveChatRoles" :canRemoveMember="canRemoveMember"
+      :showOwnerTransferPicker="showOwnerTransferPicker" :leaveGroupBusy="leaveGroupBusy"
+      v-model:ownerTransferTargetId="ownerTransferTargetId" :otherActiveChatMembers="otherActiveChatMembers"
+      :canManageActiveChatMembers="canManageActiveChatMembers"
+      v-model:addMemberPhone="addMemberPhone" :membersModalBusy="membersModalBusy" :membersModalError="membersModalError"
+      @close="showMembersModal = false"
+      @open-member-options="openMemberOptions"
+      @member-option-make-or-remove-admin="memberOptionMakeOrRemoveAdmin"
+      @member-option-remove-from-group="memberOptionRemoveFromGroup"
+      @start-leave-group="startLeaveGroup"
+      @confirm-leave-with-transfer="confirmLeaveWithTransfer"
+      @cancel-owner-transfer-picker="cancelOwnerTransferPicker"
+      @add-member-to-active-group="addMemberToActiveGroup" />
+
+    <ToastList :toasts="toasts" />
   `,
 }).mount('#app');
 </script>

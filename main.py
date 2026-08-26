@@ -83,6 +83,11 @@ async def _handle_user_not_found(request: Request, exc: Exception):
     return JSONResponse(status_code=404, content={"detail": str(exc)})
 
 
+@app.exception_handler(chat_service.OwnershipTransferRequiredError)
+async def _handle_ownership_transfer_required(request: Request, exc: Exception):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
 @app.exception_handler(message_service.NotAParticipantError)
 async def _handle_not_a_participant(request: Request, exc: Exception):
     return JSONResponse(status_code=403, content={"detail": str(exc)})

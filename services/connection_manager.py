@@ -43,6 +43,16 @@ class ConnectionManager:
         self._user_channel_subscribers: dict[int, set[str]] = {}
         self._user_channel_listener_tasks: dict[int, asyncio.Task] = {}
 
+        # Subscribe-on-demand presence (see CLAUDE.md): target_user_id ->
+        # connection_ids currently watching that user's presence, populated
+        # only by an explicit subscribe_presence WS action (never on connect)
+        # and scoped to however long the watcher keeps the relevant 1:1 chat
+        # open. Same three-dict shape as the chat/user-channel state above,
+        # for the same reason.
+        self._presence_subscribers: dict[int, set[str]] = {}
+        self._presence_listener_tasks: dict[int, asyncio.Task] = {}
+        self._presence_watches_by_connection: dict[str, set[int]] = {}
+
     async def connect(self, user_id: int, connection_id: str, websocket: WebSocket, chat_ids: list[int]) -> None:
         self._sockets_by_connection[connection_id] = websocket
         self._user_by_connection[connection_id] = user_id
@@ -71,6 +81,9 @@ class ConnectionManager:
 
         for chat_id in self._chats_by_connection.pop(connection_id, set()):
             await self._unsubscribe_connection_from_chat(connection_id, chat_id)
+
+        for target_user_id in self._presence_watches_by_connection.pop(connection_id, set()):
+            await self._unsubscribe_connection_from_presence(connection_id, target_user_id)
 
     def get_local_user_ids(self) -> set[int]:
         """Every user with at least one connection to *this* process right now."""
@@ -159,9 +172,70 @@ class ConnectionManager:
                 self._chats_by_connection.setdefault(connection_id, set()).add(chat_id)
                 await self._subscribe_connection_to_chat(connection_id, chat_id)
 
+        if event.get("event") == "removed_from_chat" and event.get("chat_id") is not None:
+            chat_id = int(event["chat_id"])
+            # Mirror of the above: drop this user's already-open connections
+            # from the chat's live subscription now, instead of leaving them
+            # subscribed to events for a chat they're no longer part of until
+            # their next reconnect.
+            for connection_id in list(self._user_channel_subscribers.get(user_id, ())):
+                self._chats_by_connection.get(connection_id, set()).discard(chat_id)
+                await self._unsubscribe_connection_from_chat(connection_id, chat_id)
+
         # Forwarded to the client too, so the UI can react (refresh the chat
         # list, show a notification) without polling.
         connection_ids = list(self._user_channel_subscribers.get(user_id, ()))
+        await self._send_to_connections(connection_ids, event)
+
+    # -----------------------------------------------------------------
+    # Presence (subscribe-on-demand)
+    # -----------------------------------------------------------------
+
+    async def subscribe_presence(self, connection_id: str, target_user_id: int) -> None:
+        """
+        Called only from the `subscribe_presence` WS action - after the
+        caller (routers/websocket.py) has already verified the requester
+        shares a private chat with target_user_id. Deliberately not called
+        from connect(): presence has no "subscribe to everything I might
+        care about at connect time" step the way chats do, by design.
+        """
+        subscribers = self._presence_subscribers.setdefault(target_user_id, set())
+        is_first_subscriber = len(subscribers) == 0
+        subscribers.add(connection_id)
+        self._presence_watches_by_connection.setdefault(connection_id, set()).add(target_user_id)
+
+        if is_first_subscriber:
+            self._presence_listener_tasks[target_user_id] = asyncio.create_task(self._listen_to_presence(target_user_id))
+
+    async def unsubscribe_presence(self, connection_id: str, target_user_id: int) -> None:
+        """Called from the `unsubscribe_presence` WS action (chat closed/switched away from)."""
+        self._presence_watches_by_connection.get(connection_id, set()).discard(target_user_id)
+        await self._unsubscribe_connection_from_presence(connection_id, target_user_id)
+
+    async def _unsubscribe_connection_from_presence(self, connection_id: str, target_user_id: int) -> None:
+        subscribers = self._presence_subscribers.get(target_user_id)
+        if subscribers is None:
+            return
+
+        subscribers.discard(connection_id)
+        if not subscribers:
+            del self._presence_subscribers[target_user_id]
+            task = self._presence_listener_tasks.pop(target_user_id, None)
+            if task is not None:
+                task.cancel()
+
+    async def _listen_to_presence(self, target_user_id: int) -> None:
+        await self._run_resilient_listener(
+            label=f"presence {target_user_id}",
+            subscribe=lambda: realtime_service.subscribe_to_presence(target_user_id),
+            on_event=lambda event: self._broadcast_to_presence_watchers(target_user_id, event),
+            still_wanted=lambda: target_user_id in self._presence_subscribers,
+        )
+
+    async def _broadcast_to_presence_watchers(self, target_user_id: int, event: dict) -> None:
+        # Snapshotted for the same reason as _broadcast_to_chat: a concurrent
+        # unsubscribe must not mutate this set mid-iteration.
+        connection_ids = list(self._presence_subscribers.get(target_user_id, ()))
         await self._send_to_connections(connection_ids, event)
 
     # -----------------------------------------------------------------

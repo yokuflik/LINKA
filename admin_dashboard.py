@@ -1,7 +1,6 @@
 import os
 from dotenv import load_dotenv
 
-# 1. טוען את משתני הסביבה מקובץ ה-.env לפני כל ייבוא אחר
 load_dotenv()
 
 import asyncio
@@ -10,7 +9,6 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from sqlalchemy import select, text
 
-# 2. מייבא את השם המדויק כפי שהוא מופיע בקובץ שלך
 from database.connection import AsyncSessionLocal
 from database.models.user import User
 from database.models.chat import Chat
@@ -20,7 +18,6 @@ admin_app = FastAPI(title="Linka Admin Dashboard")
 
 @admin_app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    # 3. משתמש בשם הנכון לפתיחת הסשן
     async with AsyncSessionLocal() as session:
         # 1. Fetch total user count
         users_count_result = await session.execute(select(text("COUNT(*)")).select_from(User))

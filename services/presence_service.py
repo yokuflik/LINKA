@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+
+from services import realtime_service
 from services.redis_client import redis_client
 
 # "Online" means an open, foreground WebSocket connection - exactly like
@@ -13,6 +16,14 @@ _PRESENCE_TTL_SECONDS = 60
 
 _KEY_PREFIX = "presence:"          # presence:{user_id} -> set of connection_ids
 _SERVER_KEY_PREFIX = "presence_srv:"  # presence_srv:{user_id}:{connection_id} -> server_id
+_LAST_SEEN_KEY_PREFIX = "presence_last_seen:"  # presence_last_seen:{user_id} -> ISO timestamp, no TTL
+
+# Presence changes are published as targeted events (see realtime_service's
+# per-user presence channel), never a global broadcast - only whoever has
+# actually subscribed to *this specific* user's presence (via
+# connection_manager.subscribe_presence, gated on sharing a private chat -
+# see routers/websocket.py) has a live listener on that channel at all, so a
+# publish with zero subscribers is effectively a no-op.
 
 
 def _presence_key(user_id: int) -> str:
@@ -23,17 +34,28 @@ def _server_key(user_id: int, connection_id: str) -> str:
     return f"{_SERVER_KEY_PREFIX}{user_id}:{connection_id}"
 
 
+def _last_seen_key(user_id: int) -> str:
+    return f"{_LAST_SEEN_KEY_PREFIX}{user_id}"
+
+
 async def mark_online(user_id: int, connection_id: str, server_id: str) -> None:
     """
     Called on WebSocket connect. A user can have multiple simultaneous
     connections (multi-device), so this tracks a *set* of connection_ids
     rather than a single boolean - the user only goes offline once every
-    connection in the set is gone.
+    connection in the set is gone. A presence_update is only published when
+    this connection is the *first* one (0 -> 1 devices) - a second device
+    connecting doesn't change the user's externally-visible status.
     """
     key = _presence_key(user_id)
     await redis_client.sadd(key, connection_id)
     await redis_client.expire(key, _PRESENCE_TTL_SECONDS)
     await redis_client.set(_server_key(user_id, connection_id), server_id, ex=_PRESENCE_TTL_SECONDS)
+
+    if await redis_client.scard(key) == 1:
+        await realtime_service.publish_presence_event(
+            user_id, {"type": "presence_update", "user_id": str(user_id), "status": "online"}
+        )
 
 
 async def heartbeat(user_id: int, connection_id: str) -> None:
@@ -43,9 +65,31 @@ async def heartbeat(user_id: int, connection_id: str) -> None:
 
 
 async def mark_offline(user_id: int, connection_id: str) -> None:
-    """Called on WebSocket disconnect (clean close, or the handler's own error path)."""
+    """
+    Called on WebSocket disconnect (clean close, or the handler's own error
+    path). Only records last_seen and publishes offline once every device is
+    gone (0 remaining connections) - not on each individual device dropping.
+    """
     await redis_client.srem(_presence_key(user_id), connection_id)
     await redis_client.delete(_server_key(user_id, connection_id))
+
+    if await redis_client.scard(_presence_key(user_id)) == 0:
+        last_seen_at = datetime.now(timezone.utc).isoformat()
+        await redis_client.set(_last_seen_key(user_id), last_seen_at)
+        await realtime_service.publish_presence_event(
+            user_id, {"type": "presence_update", "user_id": str(user_id), "status": "offline", "last_seen_at": last_seen_at}
+        )
+
+
+async def get_status(user_id: int) -> dict:
+    """
+    The "pull" half of subscribe-on-demand: a subscriber's first snapshot on
+    subscribe_presence, before any presence_update event has had a chance to
+    arrive.
+    """
+    online = await is_online(user_id)
+    last_seen_at = await redis_client.get(_last_seen_key(user_id))
+    return {"status": "online" if online else "offline", "last_seen_at": last_seen_at}
 
 
 async def is_online(user_id: int) -> bool:

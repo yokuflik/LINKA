@@ -5,8 +5,10 @@ from sqlalchemy.exc import IntegrityError
 from typing import Sequence, Optional
 import logging
 
-from database.models.message import Message
+from database.models.message import Message, MessageStatus
 from database.models.chat import Chat, LAST_MESSAGE_PREVIEW_LENGTH
+from database.models.participant import Participant
+from database.crud.crud_participant import recompute_chat_receipt_cursors
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,19 @@ def build_last_message_preview(content: Optional[str]) -> Optional[str]:
     """The Chat.last_message_preview value a given message's content maps to."""
     return None if content is None else content[:LAST_MESSAGE_PREVIEW_LENGTH]
 
+
+def compute_message_status(message_id: int, chat: Chat) -> MessageStatus:
+    """
+    Derived, not stored - see MessageStatus. O(1) regardless of chat size,
+    group size, or how much history this chat has: just two integer
+    comparisons against the chat's own receipt-watermark columns.
+    """
+    if chat.all_read_up_to_message_id is not None and message_id <= chat.all_read_up_to_message_id:
+        return MessageStatus.READ
+    if chat.all_delivered_up_to_message_id is not None and message_id <= chat.all_delivered_up_to_message_id:
+        return MessageStatus.DELIVERED
+    return MessageStatus.SENT
+
 async def create_message(
     session: AsyncSession,
     message_id: int,
@@ -31,14 +46,17 @@ async def create_message(
 ) -> Optional[Message]:
     """
     Insert a new message into the chat and bump the chat's recency
-    (last_message_at/last_message_id/last_message_preview), atomically.
+    (last_message_at/last_message_id/last_message_preview) and receipt
+    watermarks, atomically.
 
-    Time Complexity: O(log N)
+    Time Complexity: O(log N + K), K = this chat's participant count.
     Explanation: created_at is left to the server default, so the row lands
     in the current (latest) partition and the (chat_id, id) index on that
     partition alone absorbs the write - independent of total table size.
     The recency bump is a single-row update by primary key on the small
-    `chats` table, so it doesn't change that complexity.
+    `chats` table, so it doesn't change that complexity; the receipt-cursor
+    recompute (see recompute_chat_receipt_cursors) is the only O(K) part,
+    and K is bounded by group size (~1000 at most), never by message count.
     """
     new_message = Message(
         id=message_id,  # Snowflake ID generated at the application layer
@@ -64,6 +82,20 @@ async def create_message(
                 last_message_preview=build_last_message_preview(new_message.content),
             )
         )
+
+        if sender_id is not None:
+            # Sending implies having seen the chat up to this point - without
+            # this, the sender's own (now stale) watermark could keep
+            # falsely blocking Chat.all_delivered_up_to_message_id/
+            # all_read_up_to_message_id for messages they'd actually already
+            # seen from others, forever, until they explicitly re-opened the
+            # chat. System messages (sender_id=None) have no one to bump.
+            await session.execute(
+                update(Participant)
+                .where(Participant.chat_id == chat_id, Participant.user_id == sender_id)
+                .values(last_delivered_message_id=new_message.id, last_read_message_id=new_message.id)
+            )
+            await recompute_chat_receipt_cursors(session, chat_id)
 
         await session.commit()
         await session.refresh(new_message)

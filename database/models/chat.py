@@ -54,6 +54,22 @@ class Chat(Base):
     # whose last message was deleted or has no text.
     last_message_preview = Column(String(LAST_MESSAGE_PREVIEW_LENGTH), nullable=True)
 
+    # Chat-wide receipt watermarks: the highest message id that literally
+    # every *current* participant has delivered/read, i.e.
+    # MIN(Participant.last_delivered_message_id) / MIN(last_read_message_id)
+    # across this chat's participants (see crud_participant's
+    # recompute_chat_receipt_cursors). Denormalized here for the same reason
+    # as last_message_id above: a message's single/double-grey/double-blue
+    # check status (database.models.message.MessageStatus) is never stored
+    # on the message - a group can have up to ~1000 recipients, so a literal
+    # per-message status column would mean up to ~1000x the writes on a
+    # table already sized for tens of billions of rows. Comparing a
+    # message's id against these two columns instead is one O(1) integer
+    # comparison, independent of group size or message history length.
+    # NULL means "no participant has acknowledged anything yet".
+    all_delivered_up_to_message_id = Column(BigInteger, nullable=True)
+    all_read_up_to_message_id = Column(BigInteger, nullable=True)
+
     # SQLAlchemy ORM relationship for easy joins with participants
     # Assuming Participant model will be created next
     participants = relationship("Participant", back_populates="chat", cascade="all, delete-orphan")

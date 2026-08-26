@@ -259,6 +259,16 @@ createApp({
       wsStatus.value = 'disconnected';
     }
 
+    // Sends a {chat_id, message_id} receipt action ("mark_delivered" or
+    // "mark_read") back over the socket - the client-side half of the
+    // watermark pattern the server maintains (see crud_participant.
+    // recompute_chat_receipt_cursors). Silently a no-op with no open
+    // connection - a receipt that never sent just gets caught up next time.
+    function sendReceipt(type, chatId, messageId) {
+      if (!ws || ws.readyState !== WebSocket.OPEN || messageId == null) return;
+      ws.send(JSON.stringify({ type, chat_id: chatId, message_id: messageId }));
+    }
+
     function handleWsMessage(msg) {
       // Acks/errors for actions *you* took use "type"; events fanned out
       // from the server (yours or anyone else's) use "event".
@@ -271,10 +281,20 @@ createApp({
           messages.value.push({
             id: msg.message_id, chat_id: msg.chat_id, sender_id: msg.sender_id,
             type: msg.type, content: msg.content, created_at: msg.created_at, is_edited: false,
+            status: msg.status,
           });
           nextTick(scrollMessagesToBottom);
         }
-        bumpChatPreview(msg.chat_id, msg.message_id, msg.created_at, msg.content);
+        bumpChatPreview(msg.chat_id, msg.message_id, msg.created_at, msg.content, msg.status);
+
+        if (msg.sender_id !== currentUser.value.id) {
+          // The message just reached this device over a live connection -
+          // that's "delivered", regardless of which chat is open right now.
+          sendReceipt('mark_delivered', msg.chat_id, msg.message_id);
+          // "Read" only for the chat actually on screen - opening a chat
+          // separately catches up on anything sent while it wasn't (see selectChat).
+          if (msg.chat_id === activeChatId.value) sendReceipt('mark_read', msg.chat_id, msg.message_id);
+        }
         return;
       }
       if (msg.event === 'message_edited') {
@@ -288,7 +308,15 @@ createApp({
         updateChatPreviewIfLast(msg.chat_id, msg.message_id, null);
         return;
       }
-      if (msg.event === 'read_receipt') { log('read receipt:', msg); return; }
+      if (msg.event === 'delivery_receipt' || msg.event === 'read_receipt') {
+        // Which of *my* sent messages this actually changed the tick on
+        // depends on every other participant's own watermark, not just this
+        // one event - simplest correct move is to ask the server, which
+        // already recomputed it (see crud_participant.
+        // recompute_chat_receipt_cursors), rather than guess client-side.
+        if (msg.chat_id === activeChatId.value) refreshMessageStatuses(msg.chat_id);
+        return;
+      }
 
       if (msg.event === 'added_to_chat') {
         // Fired for a chat that didn't exist when this WebSocket connected
@@ -319,13 +347,30 @@ createApp({
     // Keeps the sidebar's preview line in sync with what the server already
     // wrote to chats.last_message_* when it persisted this message, so it
     // doesn't take a chat-list refresh to see the newest text.
-    function bumpChatPreview(chatId, messageId, lastMessageAt, content) {
+    function bumpChatPreview(chatId, messageId, lastMessageAt, content, status) {
       const item = chats.value.find((c) => c.chat.id === chatId);
       if (!item) return;
       item.chat.last_message_at = lastMessageAt;
       item.chat.last_message_id = messageId;
       item.chat.last_message_preview = content;
+      item.chat.last_message_status = status;
       chats.value.sort((a, b) => new Date(b.chat.last_message_at) - new Date(a.chat.last_message_at));
+    }
+
+    // Re-pulls just the status field for whatever's currently loaded in the
+    // open conversation, after a delivery/read receipt event - see
+    // handleWsMessage. Only touches messages the server's page still knows
+    // about; older, already-paginated-past history is left alone.
+    async function refreshMessageStatuses(chatId) {
+      try {
+        const page = await apiFetch(`/chats/${chatId}/messages?limit=50`);
+        const statusById = new Map(page.map((m) => [m.id, m.status]));
+        for (const m of messages.value) {
+          if (statusById.has(m.id)) m.status = statusById.get(m.id);
+        }
+      } catch (err) {
+        logError('failed to refresh message statuses for', chatId, err);
+      }
     }
 
     // Mirrors the server-side rule in crud_message: editing or deleting a
@@ -346,6 +391,30 @@ createApp({
       const startOfYesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
       if (at >= startOfYesterday) return 'Yesterday';
       return at.toLocaleDateString([], { day: '2-digit', month: '2-digit', year: '2-digit' });
+    }
+
+    // ---------------------------------------------------------------
+    // Local contact names - a client-only lookup, not backed by anything
+    // the server knows. Covers phone numbers "1"-"10" only (there's no
+    // registered user with a phone number in that shape); anything else
+    // falls through to whatever the server actually said.
+    // ---------------------------------------------------------------
+    const MOCK_CONTACT_NAMES = {
+      '1': 'Daniel Cohen',
+      '2': 'Noa Levi',
+      '3': 'Avi Mizrahi',
+      '4': 'Maya Gold',
+      '5': 'Yossi Avraham',
+      '6': 'Shira Peretz',
+      '7': 'Omer Azulay',
+      '8': 'Tamar Mizrahi',
+      '9': 'Itay Ben-David',
+      '10': 'Roni Katz',
+    };
+
+    function contactDisplayName(rawValue) {
+      if (rawValue == null) return rawValue;
+      return MOCK_CONTACT_NAMES[String(rawValue)] || rawValue;
     }
 
     // ---------------------------------------------------------------
@@ -378,7 +447,7 @@ createApp({
     function chatDisplayName(chat) {
       if (chat.is_group) return chat.title || 'Untitled group';
       const phone = privateChatTitles.value[chat.id];
-      return phone ? `Chat with ${phone}` : `Private chat #${chat.id}`;
+      return phone ? `Chat with ${contactDisplayName(phone)}` : `Private chat #${chat.id}`;
     }
 
     // user_id -> phone_number, so a message bubble can show who sent it by
@@ -400,13 +469,24 @@ createApp({
 
     function senderLabel(senderId) {
       if (senderId == null) return 'system';
-      return userPhoneById.value[senderId] || senderId;
+      return contactDisplayName(userPhoneById.value[senderId] || senderId);
     }
 
     const activeChatLabel = computed(() => {
       const item = chats.value.find((c) => c.chat.id === activeChatId.value);
       return item ? chatDisplayName(item.chat) : '';
     });
+
+    // MessageStatus from the server: 1=sent, 2=delivered, 3=read (see
+    // database/models/message.py). Only ever rendered for your own
+    // messages - like WhatsApp, there's no such thing as a tick on a
+    // message someone else sent you.
+    function statusTickSymbol(status) {
+      return status >= 2 ? '✓✓' : '✓';
+    }
+    function statusTickClass(status) {
+      return status === 3 ? 'text-sky-500' : 'text-slate-400';
+    }
 
     function scrollMessagesToBottom() {
       if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
@@ -438,6 +518,15 @@ createApp({
         messages.value = history.slice().reverse();
         await nextTick();
         scrollMessagesToBottom();
+
+        // Opening a chat means "I have this device, and I've seen up to
+        // here" - catches up on both receipts in one go, including
+        // anything sent while this chat wasn't the active one (or wasn't
+        // connected at all).
+        if (history.length) {
+          sendReceipt('mark_delivered', chatId, history[0].id);
+          sendReceipt('mark_read', chatId, history[0].id);
+        }
       } catch (err) {
         messagesError.value = err.message;
       }
@@ -556,7 +645,7 @@ createApp({
       authStage, phoneNumber, otpCode, authError, authBusy, requestOtp, verifyOtp, logout,
       wsStatus,
       chats, activeChatId, activeChatLabel, chatDisplayName, senderLabel, formatChatTime, messages, messageInput, chatsError, messagesError, messagesEl,
-      selectChat, sendMessage,
+      selectChat, sendMessage, statusTickSymbol, statusTickClass,
       showNewPrivate, showNewGroup, newPrivatePhone, newGroupTitle, newGroupMemberPhones, chatFormError,
       createPrivateChat, createGroupChat,
       toasts,
@@ -611,7 +700,7 @@ createApp({
           </span>
         </div>
         <div class="flex items-center gap-3 text-sm">
-          <span class="text-slate-500">You are <span class="font-medium text-slate-800">{{ currentUser.phone_number }}</span></span>
+          <span class="text-slate-500">You are <span class="font-medium text-slate-800">{{ currentUser.display_name || currentUser.phone_number }}</span></span>
           <button @click="logout" class="px-3 py-1 border border-slate-300 rounded-lg text-sm">Log out</button>
         </div>
       </header>
@@ -672,7 +761,11 @@ createApp({
                   {{ m.content }}
                   <span v-if="m.is_edited" class="text-[10px] opacity-60"> (edited)</span>
                 </div>
-                <div class="text-[10px] text-slate-400 mt-0.5">{{ new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</div>
+                <div class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
+                     :class="m.sender_id === currentUser.id ? 'justify-end' : ''">
+                  <span>{{ new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
+                  <span v-if="m.sender_id === currentUser.id" :class="statusTickClass(m.status)">{{ statusTickSymbol(m.status) }}</span>
+                </div>
               </div>
               <p v-if="!messages.length" class="h-full flex items-center justify-center text-sm text-slate-400">No messages here</p>
             </div>

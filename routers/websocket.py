@@ -91,6 +91,13 @@ async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: 
                 )
             await websocket.send_json({"type": "ack", "for": "delete_message", "deleted": deleted})
 
+        elif message_type == "mark_delivered":
+            async with session_scope() as session:
+                await message_service.mark_as_delivered(
+                    session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
+                )
+            await websocket.send_json({"type": "ack", "for": "mark_delivered"})
+
         elif message_type == "mark_read":
             async with session_scope() as session:
                 await message_service.mark_as_read(

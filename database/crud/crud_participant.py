@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete, tuple_
+from sqlalchemy import select, update, delete, tuple_, func
 from sqlalchemy.orm import contains_eager
 from sqlalchemy.exc import IntegrityError
 from typing import Sequence, Optional, Tuple
@@ -29,10 +29,21 @@ async def add_participant_to_chat(
     Explanation: Inserting into the composite Primary Key B-Tree (chat_id, user_id) 
     and the secondary index (user_id) takes logarithmic time.
     """
+    # A brand-new participant's watermarks start at the chat's *current*
+    # last_message_id, not NULL/0 - anything sent before they joined isn't
+    # theirs to block on. Without this, adding one new member to an
+    # otherwise fully-read 1000-person group would freeze
+    # Chat.all_read_up_to_message_id/all_delivered_up_to_message_id back
+    # down to "nothing", making years of already-read history report as
+    # unread/undelivered again the moment they were added.
+    chat_last_message_id = await session.scalar(select(Chat.last_message_id).where(Chat.id == chat_id))
+
     new_participant = Participant(
         chat_id=chat_id,
         user_id=user_id,
-        role=role
+        role=role,
+        last_delivered_message_id=chat_last_message_id,
+        last_read_message_id=chat_last_message_id,
     )
     session.add(new_participant)
     try:
@@ -163,15 +174,80 @@ async def get_chat_participants_with_users(session: AsyncSession, chat_id: int) 
     return result.scalars().all()
 
 
+async def recompute_chat_receipt_cursors(session: AsyncSession, chat_id: int) -> None:
+    """
+    Rolls Chat.all_delivered_up_to_message_id / all_read_up_to_message_id up
+    to MIN(watermark) across this chat's current participants - "the
+    highest message id that literally everyone has delivered/read". Shared
+    by update_last_delivered_message/update_last_read_message/
+    remove_participant below and by crud_message.create_message (sending
+    implies having seen the chat up to that point, which can itself unstick
+    a cursor that was stuck on the sender's own stale watermark).
+
+    A participant who hasn't delivered/read anything yet (NULL) has to
+    count as 0, not be skipped - plain SQL MIN() ignores NULLs, which would
+    let the cursor advance past messages a real participant never actually
+    got.
+
+    Time Complexity: O(K) where K is this chat's participant count (at most
+    ~1000 even for a large group), via the existing index on
+    Participant.chat_id (part of its composite Primary Key) - completely
+    independent of the chat's total message history, which is what makes
+    this affordable to run on every single send/delivery-ack/read-ack.
+
+    Does not commit - callers run this alongside their own write(s) and
+    commit once, atomically.
+    """
+    stmt = select(
+        func.min(func.coalesce(Participant.last_delivered_message_id, 0)),
+        func.min(func.coalesce(Participant.last_read_message_id, 0)),
+    ).where(Participant.chat_id == chat_id)
+    min_delivered, min_read = (await session.execute(stmt)).one()
+
+    await session.execute(
+        update(Chat)
+        .where(Chat.id == chat_id)
+        .values(all_delivered_up_to_message_id=min_delivered, all_read_up_to_message_id=min_read)
+    )
+
+
+async def update_last_delivered_message(
+    session: AsyncSession,
+    chat_id: int,
+    user_id: int,
+    message_id: int,
+) -> Optional[Participant]:
+    """
+    Same watermark pattern as update_last_read_message, one step earlier in
+    the pipeline: a message reaching this participant's device, not
+    necessarily opened/read yet.
+    """
+    stmt = (
+        update(Participant)
+        .where(Participant.chat_id == chat_id, Participant.user_id == user_id)
+        .values(last_delivered_message_id=message_id)
+        .returning(Participant)
+    )
+
+    result = await session.execute(stmt)
+    participant = result.scalar_one_or_none()
+
+    if participant is not None:
+        await recompute_chat_receipt_cursors(session, chat_id)
+
+    await session.commit()
+    return participant
+
+
 async def update_last_read_message(
-    session: AsyncSession, 
-    chat_id: int, 
-    user_id: int, 
+    session: AsyncSession,
+    chat_id: int,
+    user_id: int,
     message_id: int
 ) -> Optional[Participant]:
     """
     Update the watermark (last read message) for a user in a chat.
-    
+
     Time Complexity: O(log N) + O(1)
     Explanation: B-Tree lookup takes O(log N). The update is an O(1) heap operation.
     Using RETURNING prevents a secondary SELECT query.
@@ -182,22 +258,37 @@ async def update_last_read_message(
         .values(last_read_message_id=message_id)
         .returning(Participant)
     )
-    
+
     result = await session.execute(stmt)
+    participant = result.scalar_one_or_none()
+
+    if participant is not None:
+        await recompute_chat_receipt_cursors(session, chat_id)
+
     await session.commit()
-    
-    return result.scalar_one_or_none()
+
+    return participant
 
 
 async def remove_participant(session: AsyncSession, chat_id: int, user_id: int) -> bool:
     """
     Remove a user from a chat.
-    
-    Time Complexity: O(log N)
+
+    Time Complexity: O(log N) + O(K) for the receipt-cursor recompute below
+    (K = this chat's remaining participant count) if the removed user was
+    actually a member - a departure can only ever raise
+    Chat.all_delivered_up_to_message_id/all_read_up_to_message_id (one
+    fewer participant left who might have been the bottleneck), so it's
+    worth recomputing immediately rather than waiting for someone else's
+    next delivery/read ack to do it.
     """
     stmt = delete(Participant).where(Participant.chat_id == chat_id, Participant.user_id == user_id)
     result = await session.execute(stmt)
+    removed = result.rowcount > 0
+
+    if removed:
+        await recompute_chat_receipt_cursors(session, chat_id)
+
     await session.commit()
-    
-    # Returns True if a row was actually deleted, False otherwise
-    return result.rowcount > 0
+
+    return removed

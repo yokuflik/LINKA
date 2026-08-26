@@ -68,6 +68,14 @@ class ChatOut(BaseModel):
     last_message_id: Optional[IdStr]
     last_message_preview: Optional[str]
 
+    # MessageStatus for last_message_id (1=sent, 2=delivered, 3=read - see
+    # database/models/message.py), for the chat list's own tick next to your
+    # last sent message. Only ever set by chat_service.get_chat_list - the
+    # create/update endpoints that also return a ChatOut don't have the
+    # participant-watermark context to compute it, so it defaults to None
+    # there rather than lying with a guessed value.
+    last_message_status: Optional[int] = None
+
 
 class ChatListItemOut(BaseModel):
     chat: ChatOut
@@ -125,3 +133,10 @@ class MessageOut(BaseModel):
     edited_at: Optional[datetime]
     deleted_at: Optional[datetime]
     created_at: datetime
+
+    # MessageStatus (1=sent, 2=delivered, 3=read - see database/models/
+    # message.py), always attached by message_service.get_message_history
+    # before this model is built. Only meaningful for a message the
+    # requesting user themselves sent - same as WhatsApp, a client should
+    # only render the check marks on its own outgoing messages.
+    status: int

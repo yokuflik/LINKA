@@ -10,8 +10,12 @@ from database.crud.crud_message import (
     get_chat_messages,
     edit_message_content,
     soft_delete_message,
+    compute_message_status,
     MAX_PAGE_SIZE,
 )
+from database.crud.crud_participant import add_participant_to_chat, update_last_delivered_message, update_last_read_message
+from database.models.message import MessageStatus
+from database.models.participant import Participant
 
 # Tells pytest to run all tests in this file asynchronously
 pytestmark = pytest.mark.asyncio
@@ -195,6 +199,52 @@ async def test_create_message_bumps_chat_recency(db_session: AsyncSession):
     chat_after = await get_chat_by_id(db_session, chat_id)
     assert chat_after.last_message_at == message.created_at
     assert chat_after.last_message_id == message.id
+
+
+async def test_create_message_bumps_senders_own_watermarks(db_session: AsyncSession):
+    # Arrange: sending implies having seen the chat up to that point - a
+    # lone sender is therefore, trivially, "everyone" who's read it so far.
+    chat_id, user_id = 711, 810
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    await add_participant_to_chat(db_session, chat_id=chat_id, user_id=user_id)
+
+    # Act
+    message = await create_message(db_session, message_id=90080, chat_id=chat_id, sender_id=user_id, content="hi")
+
+    # Assert: the sender's own watermarks jumped to their new message...
+    participant = await db_session.get(Participant, {"chat_id": chat_id, "user_id": user_id})
+    assert participant.last_delivered_message_id == message.id
+    assert participant.last_read_message_id == message.id
+
+    # ...and the chat-wide receipt cursors reflect that immediately.
+    chat = await get_chat_by_id(db_session, chat_id)
+    assert chat.all_delivered_up_to_message_id == message.id
+    assert chat.all_read_up_to_message_id == message.id
+
+
+async def test_compute_message_status(db_session: AsyncSession):
+    # Arrange
+    chat_id, sender_id, recipient_id = 712, 811, 812
+    await _make_chat_with_sender(db_session, chat_id, sender_id)
+    await create_user(db_session, user_id=recipient_id, phone_number=f"+97250{recipient_id}")
+    await add_participant_to_chat(db_session, chat_id=chat_id, user_id=sender_id)
+    await add_participant_to_chat(db_session, chat_id=chat_id, user_id=recipient_id)
+
+    message = await create_message(db_session, message_id=90090, chat_id=chat_id, sender_id=sender_id, content="status check")
+
+    # Assert: one grey check - sent, but the recipient hasn't gotten it yet
+    chat = await get_chat_by_id(db_session, chat_id)
+    assert compute_message_status(message.id, chat) == MessageStatus.SENT
+
+    # Act + Assert: two grey checks once the recipient's device has it
+    await update_last_delivered_message(db_session, chat_id=chat_id, user_id=recipient_id, message_id=message.id)
+    chat = await get_chat_by_id(db_session, chat_id)
+    assert compute_message_status(message.id, chat) == MessageStatus.DELIVERED
+
+    # Act + Assert: two blue checks once the recipient has actually read it
+    await update_last_read_message(db_session, chat_id=chat_id, user_id=recipient_id, message_id=message.id)
+    chat = await get_chat_by_id(db_session, chat_id)
+    assert compute_message_status(message.id, chat) == MessageStatus.READ
 
 
 async def test_get_chat_messages_limit_is_capped(db_session: AsyncSession):

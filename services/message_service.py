@@ -2,15 +2,22 @@ import asyncio
 from typing import Optional, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from database.crud.crud_chat import get_chat_by_id
 from database.crud.crud_message import (
+    compute_message_status,
     create_message,
     edit_message_content,
     get_chat_messages,
     get_message_by_id,
     soft_delete_message,
 )
-from database.crud.crud_participant import get_chat_participants, is_participant, update_last_read_message
-from database.models.message import Message
+from database.crud.crud_participant import (
+    get_chat_participants,
+    is_participant,
+    update_last_delivered_message,
+    update_last_read_message,
+)
+from database.models.message import Message, MessageStatus
 from config import MAX_MESSAGE_CONTENT_LENGTH
 from services import notification_service, presence_service, realtime_service
 from services.redis_client import redis_client
@@ -130,6 +137,10 @@ async def _fan_out(session: AsyncSession, message: Message) -> None:
         "type": message.type,
         "content": message.content,
         "created_at": message.created_at.isoformat(),
+        # Always SENT at the instant a message is created - the chat-wide
+        # receipt cursors can't already cover an id that didn't exist a
+        # moment ago, so this needs no DB lookup to be correct.
+        "status": MessageStatus.SENT,
     }
     await realtime_service.publish_event(message.chat_id, event)
 
@@ -166,7 +177,17 @@ async def get_message_history(
 ) -> Sequence[Message]:
     if not await is_participant(session, chat_id, user_id):
         raise NotAParticipantError(f"User {user_id} is not a participant of chat {chat_id}")
-    return await get_chat_messages(session, chat_id=chat_id, before_id=before_id, limit=limit)
+
+    chat = await get_chat_by_id(session, chat_id)
+    messages = await get_chat_messages(session, chat_id=chat_id, before_id=before_id, limit=limit)
+
+    # Attached rather than a stored column - see MessageStatus. One extra
+    # row fetch (the chat) for the whole page, then an O(1) comparison per
+    # message already in hand; no per-message query.
+    for message in messages:
+        message.status = compute_message_status(message.id, chat)
+
+    return messages
 
 
 async def edit_message(session: AsyncSession, user_id: int, chat_id: int, message_id: int, new_content: str) -> Message:
@@ -194,6 +215,13 @@ async def delete_message(session: AsyncSession, user_id: int, chat_id: int, mess
             chat_id, {"event": "message_deleted", "chat_id": str(chat_id), "message_id": str(message_id)}
         )
     return deleted
+
+
+async def mark_as_delivered(session: AsyncSession, user_id: int, chat_id: int, message_id: int) -> None:
+    await update_last_delivered_message(session, chat_id=chat_id, user_id=user_id, message_id=message_id)
+    await realtime_service.publish_event(
+        chat_id, {"event": "delivery_receipt", "chat_id": str(chat_id), "user_id": str(user_id), "message_id": str(message_id)}
+    )
 
 
 async def mark_as_read(session: AsyncSession, user_id: int, chat_id: int, message_id: int) -> None:

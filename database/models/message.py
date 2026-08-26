@@ -1,8 +1,31 @@
+import enum
+
 from sqlalchemy import Column, BigInteger, SMALLINT, Text, Boolean, DateTime, ForeignKey, Index, PrimaryKeyConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
 from database.base import Base
+
+
+class MessageStatus(enum.IntEnum):
+    """
+    A message's receipt state from the sender's point of view - WhatsApp's
+    one grey check / two grey checks / two blue checks.
+
+    Deliberately not a column on Message: it's derived on the fly by
+    crud_message.compute_message_status(), by comparing this message's id
+    against its chat's all_delivered_up_to_message_id/all_read_up_to_message_id
+    (see database/models/chat.py). Storing it directly would need a write to
+    this row every time it crosses a threshold - and in a group, that
+    threshold is "every one of up to ~1000 participants has acknowledged it",
+    on a table already sized for tens of billions of rows. The chat-level
+    watermark columns turn that into a single indexed integer comparison
+    per message instead, at read time, with zero extra writes to `messages`.
+    """
+    SENT = 1
+    DELIVERED = 2
+    READ = 3
+
 
 class Message(Base):
     __tablename__ = "messages"

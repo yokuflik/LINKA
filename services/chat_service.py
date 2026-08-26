@@ -2,6 +2,7 @@ from typing import Optional, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.crud.crud_chat import create_chat, delete_chat, update_chat_details
+from database.crud.crud_message import compute_message_status
 from database.crud.crud_participant import (
     add_participant_to_chat,
     get_chat_participants_with_users,
@@ -152,7 +153,19 @@ async def get_chat_list(
     `chat.last_message_id != participant.last_read_message_id` without an
     extra query.
     """
-    return await get_user_chats(session, user_id, before=before, limit=limit)
+    participants = await get_user_chats(session, user_id, before=before, limit=limit)
+
+    # Attached rather than a stored column - same reasoning as MessageStatus.
+    # The chat is already loaded, and this is a plain comparison against its
+    # own last_message_id/all_delivered_up_to_message_id/
+    # all_read_up_to_message_id - no extra query per chat.
+    for participant in participants:
+        chat = participant.chat
+        chat.last_message_status = (
+            compute_message_status(chat.last_message_id, chat) if chat.last_message_id is not None else None
+        )
+
+    return participants
 
 
 async def get_chat_members(session: AsyncSession, requester_id: int, chat_id: int) -> Sequence[Participant]:

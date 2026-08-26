@@ -4,6 +4,7 @@
 2. **No Yapping:** Be extremely concise. Output only the necessary code or commands, accompanied by a 1-sentence explanation maximum. Skip all pleasantries, apologies, and overly verbose explanations.
 3. **The 3-Strike Rule (Anti-Loop):** If you execute commands and encounter an error on the exact same issue 3 times in a row, DO NOT attempt another fix. Stop immediately, explicitly state that you are stuck in a loop, and ask the user for guidance.
 4. **Code Standards:** Write all source code comments exclusively in English.
+5. **Targeted Edits:** For small tasks, minor features, or bug fixes, NEVER rewrite or output the entire file. Use targeted diffs or provide ONLY the specific code blocks/functions that need to be updated.
 
 # Linka
 

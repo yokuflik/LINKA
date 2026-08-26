@@ -226,6 +226,7 @@ createApp({
         heartbeatTimer = setInterval(() => {
           if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'heartbeat' }));
         }, 30000);
+        markAllChatsDelivered();
       };
 
       ws.onmessage = (evt) => {
@@ -267,6 +268,19 @@ createApp({
     function sendReceipt(type, chatId, messageId) {
       if (!ws || ws.readyState !== WebSocket.OPEN || messageId == null) return;
       ws.send(JSON.stringify({ type, chat_id: chatId, message_id: messageId }));
+    }
+
+    // Catches up "delivered" on every chat's latest message, not just the
+    // one that happens to be open - otherwise a login/reconnect only ever
+    // marked delivered live (new_message events) or for whichever single
+    // chat selectChat() was called on, leaving everything sent while this
+    // device was offline stuck at "sent" until each chat was opened by hand.
+    function markAllChatsDelivered() {
+      for (const item of chats.value) {
+        if (item.chat.last_message_id != null) {
+          sendReceipt('mark_delivered', item.chat.id, item.chat.last_message_id);
+        }
+      }
     }
 
     function handleWsMessage(msg) {
@@ -456,12 +470,18 @@ createApp({
     // every chat (group chats have multiple senders to label, not one).
     const userPhoneById = ref({});
 
+    // chat_id -> that chat's member list, straight from /chats/{id}/members -
+    // only actually used for group chats, to render the WhatsApp-style
+    // participant row under the header.
+    const groupChatMembers = ref({});
+
     async function resolveChatMemberPhones(chatId) {
       try {
         const members = await apiFetch(`/chats/${chatId}/members`);
         for (const m of members) {
           userPhoneById.value[m.user.id] = m.user.phone_number;
         }
+        groupChatMembers.value[chatId] = members;
       } catch (err) {
         logError('failed to resolve member phone numbers for', chatId, err);
       }
@@ -476,6 +496,27 @@ createApp({
       const item = chats.value.find((c) => c.chat.id === activeChatId.value);
       return item ? chatDisplayName(item.chat) : '';
     });
+
+    const activeChatIsGroup = computed(() => {
+      const item = chats.value.find((c) => c.chat.id === activeChatId.value);
+      return !!(item && item.chat.is_group);
+    });
+
+    // How many names fit before the header would get crowded - the rest
+    // collapse into a single "..." marker, same idea as WhatsApp's group row.
+    const MAX_VISIBLE_MEMBERS = 8;
+
+    const activeChatMembers = computed(() => {
+      return groupChatMembers.value[activeChatId.value] || [];
+    });
+
+    const visibleActiveChatMembers = computed(() => activeChatMembers.value.slice(0, MAX_VISIBLE_MEMBERS));
+
+    const hiddenActiveChatMemberCount = computed(() => Math.max(0, activeChatMembers.value.length - MAX_VISIBLE_MEMBERS));
+
+    function memberDisplayName(member) {
+      return contactDisplayName(member.user.phone_number) || member.user.display_name || member.user.phone_number;
+    }
 
     // MessageStatus from the server: 1=sent, 2=delivered, 3=read (see
     // database/models/message.py). Only ever rendered for your own
@@ -500,6 +541,10 @@ createApp({
         await Promise.all(
           chats.value.filter((c) => !c.chat.is_group).map((c) => resolvePrivateChatTitle(c.chat.id))
         );
+        // Covers the race with connectWebSocket()'s onopen handler, which
+        // also calls this - whichever of the two (socket open, chat list
+        // loaded) finishes last is the one that actually has both ready.
+        markAllChatsDelivered();
       } catch (err) {
         chatsError.value = err.message;
       }
@@ -645,6 +690,7 @@ createApp({
       authStage, phoneNumber, otpCode, authError, authBusy, requestOtp, verifyOtp, logout,
       wsStatus,
       chats, activeChatId, activeChatLabel, chatDisplayName, senderLabel, formatChatTime, messages, messageInput, chatsError, messagesError, messagesEl,
+      activeChatIsGroup, visibleActiveChatMembers, hiddenActiveChatMemberCount, memberDisplayName,
       selectChat, sendMessage, statusTickSymbol, statusTickClass,
       showNewPrivate, showNewGroup, newPrivatePhone, newGroupTitle, newGroupMemberPhones, chatFormError,
       createPrivateChat, createGroupChat,
@@ -749,7 +795,15 @@ createApp({
 
         <main class="flex-1 flex flex-col min-w-0">
           <template v-if="activeChatId">
-            <div class="px-4 py-2 border-b border-slate-200 bg-white text-sm font-medium">{{ activeChatLabel }}</div>
+            <div class="px-4 py-2 border-b border-slate-200 bg-white">
+              <div class="text-sm font-medium">{{ activeChatLabel }}</div>
+              <div v-if="activeChatIsGroup" class="mt-0.5 text-xs text-slate-500 truncate">
+                <span v-for="(member, index) in visibleActiveChatMembers" :key="member.user.id">
+                  {{ memberDisplayName(member) }}<span v-if="index < visibleActiveChatMembers.length - 1 || hiddenActiveChatMemberCount > 0">, </span>
+                </span>
+                <span v-if="hiddenActiveChatMemberCount > 0">&bull;&bull;&bull;</span>
+              </div>
+            </div>
 
             <div ref="messagesEl" class="flex-1 overflow-y-auto p-4 space-y-2">
               <p v-if="messagesError" class="text-sm text-red-600">{{ messagesError }}</p>
@@ -764,7 +818,7 @@ createApp({
                 <div class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
                      :class="m.sender_id === currentUser.id ? 'justify-end' : ''">
                   <span>{{ new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
-                  <span v-if="m.sender_id === currentUser.id" :class="statusTickClass(m.status)">{{ statusTickSymbol(m.status) }}</span>
+                  <span v-if="m.sender_id === currentUser.id" class="text-sm font-bold leading-none" :class="statusTickClass(m.status)">{{ statusTickSymbol(m.status) }}</span>
                 </div>
               </div>
               <p v-if="!messages.length" class="h-full flex items-center justify-center text-sm text-slate-400">No messages here</p>

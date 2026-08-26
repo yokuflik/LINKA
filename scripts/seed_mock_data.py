@@ -1,5 +1,5 @@
 """
-Fills the database with a dataset big enough to actually navigate: five users,
+Fills the database with a dataset big enough to actually navigate: ten users,
 private chats between some of them, group chats containing some of them, and a
 backdated message history in every one of those chats.
 
@@ -42,52 +42,38 @@ ROLE_MEMBER = 1
 ROLE_OWNER = 3
 TEXT_MESSAGE_TYPE = 1
 
-# Numbers are fixed (not random) so they're the same on every run: these are
-# what you type into the PoC's login screen. The OTP still prints to the
-# server console like any other login - seeded users aren't special.
-MOCK_USERS = [
-    ("+972500000001", "Noa Peretz"),
-    ("+972500000002", "Yossi Levi"),
-    ("+972500000003", "Maya Cohen"),
-    ("+972500000004", "Amit Bar"),
-    ("+972500000005", "Dana Shani"),
+# Phone numbers "1".."10", matching MOCK_CONTACT_NAMES in poc/index.html key
+# for key - these are what you type into the PoC's login screen. The OTP
+# still prints to the server console like any other login - seeded users
+# aren't special.
+USERS = [
+    ("1", "Daniel Cohen"),
+    ("2", "Noa Levi"),
+    ("3", "Avi Mizrahi"),
+    ("4", "Maya Gold"),
+    ("5", "Yossi Avraham"),
+    ("6", "Shira Peretz"),
+    ("7", "Omer Azulay"),
+    ("8", "Tamar Mizrahi"),
+    ("9", "Itay Ben-David"),
+    ("10", "Roni Katz"),
 ]
 
-# Indices into MOCK_USERS. Deliberately not every possible pair - a dataset
-# where everyone has a chat with everyone hides bugs in the "no chat with
-# this person yet" path.
-PRIVATE_PAIRS = [(0, 1), (0, 2), (1, 2), (1, 3), (3, 4)]
-
-# Phone numbers "1".."10", matching MOCK_CONTACT_NAMES in poc/index.html
-# key for key. That map is purely client-side and fires for any phone number
-# on the wire that happens to be one of these keys - it has nothing to check
-# against unless a real user with one of these phone numbers actually exists
-# and shares a chat with whoever's logged in. These users (and a private
-# chat from every MOCK_USER to every one of them, below) are what makes the
-# mapping visible for all ten, from any seeded account, instead of just
-# whichever one you happened to create by hand.
-CONTACT_NAMES = {
-    "1": "Daniel Cohen",
-    "2": "Noa Levi",
-    "3": "Avi Mizrahi",
-    "4": "Maya Gold",
-    "5": "Yossi Avraham",
-    "6": "Shira Peretz",
-    "7": "Omer Azulay",
-    "8": "Tamar Mizrahi",
-    "9": "Itay Ben-David",
-    "10": "Roni Katz",
-}
-
-# Kept short on purpose: these chats exist to demonstrate the name mapping in
-# the sidebar, not to be another bulk-history dataset like PRIVATE_PAIRS/GROUP_CHATS.
-CONTACT_CHAT_MESSAGE_COUNT = 6
+# Indices into USERS. Deliberately not every possible pair - a dataset where
+# everyone has a chat with everyone hides bugs in the "no chat with this
+# person yet" path.
+PRIVATE_PAIRS = [
+    (0, 1), (0, 2), (1, 2), (1, 3), (3, 4),
+    (4, 5), (5, 6), (6, 7), (7, 8), (8, 9),
+    (0, 9), (2, 7),
+]
 
 # (title, owner index, other member indices)
 GROUP_CHATS = [
     ("Linka Devs", 0, [1, 2, 3]),
-    ("Weekend Trip", 3, [0, 4]),
-    ("Cohen Family", 2, [1, 4]),
+    ("Weekend Trip", 3, [0, 4, 5]),
+    ("Cohen Family", 2, [1, 4, 9]),
+    ("Book Club", 6, [7, 8, 9]),
 ]
 
 # Nothing here matters beyond being varied in length - a few are long enough
@@ -132,30 +118,19 @@ def _random_content() -> str:
 
 
 async def _ensure_users(session) -> list[User]:
+    """
+    Lookup-then-create, plus a backfill: these phone numbers ("1".."10") are
+    also the shape the PoC's login screen accepts, so one of them may already
+    exist from earlier manual testing with no display_name set - that would
+    otherwise leave this user's DB record permanently out of sync with
+    MOCK_CONTACT_NAMES in poc/index.html.
+    """
     users = []
-    for phone_number, display_name in MOCK_USERS:
+    for phone_number, display_name in USERS:
         user = await get_user_by_phone(session, phone_number)
         if user is None:
             user = await create_user(session, user_id=next_id(), phone_number=phone_number, display_name=display_name)
             print(f"  created user {display_name} ({phone_number})")
-        users.append(user)
-    return users
-
-
-async def _ensure_contact_users(session) -> list[User]:
-    """
-    Same lookup-then-create as _ensure_users, plus a backfill: these phone
-    numbers ("1".."10") are also the shape the PoC's login screen accepts,
-    so one of them may already exist from earlier manual testing with no
-    display_name set - that would otherwise leave this contact's DB record
-    permanently out of sync with CONTACT_NAMES/MOCK_CONTACT_NAMES.
-    """
-    users = []
-    for phone_number, display_name in CONTACT_NAMES.items():
-        user = await get_user_by_phone(session, phone_number)
-        if user is None:
-            user = await create_user(session, user_id=next_id(), phone_number=phone_number, display_name=display_name)
-            print(f"  created contact user {display_name} ({phone_number})")
         elif user.display_name != display_name:
             user = await update_user_profile(session, user_id=user.id, display_name=display_name)
             print(f"  backfilled display_name for {phone_number} -> {display_name}")
@@ -272,12 +247,9 @@ async def main(messages_per_chat: int, days: int) -> None:
     async with session_scope() as session:
         print("Users:")
         users = await _ensure_users(session)
-        contacts = await _ensure_contact_users(session)
 
         print("Chats:")
-        # (label, chat, sender_ids, message_count) - the contact chats below
-        # get their own (much smaller) count instead of messages_per_chat,
-        # since they exist to show off the name mapping, not to add bulk.
+        # (label, chat, sender_ids, message_count)
         chats: list[tuple[str, Chat, list[int], int]] = []
 
         for a, b in PRIVATE_PAIRS:
@@ -291,15 +263,7 @@ async def main(messages_per_chat: int, days: int) -> None:
             chat = await _ensure_group_chat(session, title, owner, members)
             chats.append((title, chat, [owner.id] + [m.id for m in members], messages_per_chat))
 
-        # Every MOCK_USER x every phone-mapped contact, so the mapping shows
-        # up in the sidebar no matter which of the five accounts you log in as.
-        for user in users:
-            for contact in contacts:
-                chat = await _ensure_private_chat(session, user, contact)
-                label = f"{user.display_name} <-> {contact.display_name}"
-                chats.append((label, chat, [user.id, contact.id], CONTACT_CHAT_MESSAGE_COUNT))
-
-        print(f"Messages ({messages_per_chat} per main chat, {CONTACT_CHAT_MESSAGE_COUNT} per contact chat):")
+        print(f"Messages ({messages_per_chat} per chat):")
         total_messages = 0
         for label, chat, sender_ids, count in chats:
             await _seed_messages(session, chat, sender_ids, count, days)
@@ -308,11 +272,10 @@ async def main(messages_per_chat: int, days: int) -> None:
 
     await dispose_engine()
 
-    print(f"\nDone: {len(users) + len(contacts)} users, {len(chats)} chats, {total_messages} messages inserted.")
+    print(f"\nDone: {len(users)} users, {len(chats)} chats, {total_messages} messages inserted.")
     print("Log in from the PoC with any of these numbers (OTP prints to the server console):")
-    for phone_number, display_name in MOCK_USERS:
+    for phone_number, display_name in USERS:
         print(f"  {phone_number}  {display_name}")
-    print("Each of them already has a private chat with all ten mapped contacts (phone numbers \"1\"-\"10\").")
 
 
 if __name__ == "__main__":

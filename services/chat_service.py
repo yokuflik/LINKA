@@ -3,7 +3,7 @@ from typing import Optional, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.crud.crud_chat import create_chat, delete_chat, update_chat_details
-from database.crud.crud_message import compute_message_status
+from database.crud.crud_message import compute_message_status, count_unread_messages
 from database.crud.crud_participant import (
     add_participant_to_chat,
     get_chat_participants,
@@ -186,22 +186,28 @@ async def get_chat_list(
     limit: int = 30,
 ) -> Sequence[Participant]:
     """
-    Home screen. Each returned Participant has its Chat eagerly loaded, so
-    callers can also compute an unread count from
-    `chat.last_message_id != participant.last_read_message_id` without an
-    extra query.
+    Home screen. Each returned Participant has its Chat eagerly loaded and an
+    `unread_count` attached (see below), so callers don't need a separate
+    query per chat to render the WhatsApp-style unread badge.
     """
     participants = await get_user_chats(session, user_id, before=before, limit=limit)
 
-    # Attached rather than a stored column - same reasoning as MessageStatus.
-    # The chat is already loaded, and this is a plain comparison against its
-    # own last_message_id/all_delivered_up_to_message_id/
-    # all_read_up_to_message_id - no extra query per chat.
     for participant in participants:
         chat = participant.chat
+        # Attached rather than a stored column - same reasoning as
+        # MessageStatus. The chat is already loaded, and this is a plain
+        # comparison against its own last_message_id/
+        # all_delivered_up_to_message_id/all_read_up_to_message_id - no
+        # extra query per chat.
         chat.last_message_status = (
             compute_message_status(chat.last_message_id, chat) if chat.last_message_id is not None else None
         )
+        # Unlike last_message_status (chat-wide), this is genuinely
+        # per-viewer - how many messages *this* participant hasn't read yet
+        # - so it's attached to the Participant, not the Chat. One indexed
+        # COUNT query per chat (see count_unread_messages) - cheap via the
+        # (chat_id, id) index, but still a real query per chat in the list.
+        participant.unread_count = await count_unread_messages(session, chat.id, participant.last_read_message_id)
 
     return participants
 

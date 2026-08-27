@@ -33,7 +33,9 @@ async def list_my_chats(
     before = (before_last_message_at, before_chat_id) if before_last_message_at and before_chat_id else None
     participants = await chat_service.get_chat_list(session, user_id, before=before, limit=limit)
     return [
-        ChatListItemOut(chat=p.chat, role=p.role, last_read_message_id=p.last_read_message_id)
+        ChatListItemOut(
+            chat=p.chat, role=p.role, last_read_message_id=p.last_read_message_id, unread_count=p.unread_count
+        )
         for p in participants
     ]
 

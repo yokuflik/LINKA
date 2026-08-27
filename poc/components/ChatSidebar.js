@@ -14,18 +14,33 @@ const ChatSidebar = {
     activeChatId: { default: null },
     chatDisplayName: { type: Function, required: true },
     formatChatTime: { type: Function, required: true },
+    typingLabelForChat: { type: Function, required: true },
+    unreadCountByChatId: { type: Object, required: true },
   },
   emits: [
     'update:showNewPrivate', 'update:showNewGroup',
     'update:newPrivatePhone', 'update:newGroupTitle', 'update:newGroupMemberPhones',
     'create-private-chat', 'create-group-chat', 'select-chat',
   ],
+  methods: {
+    // Real methods (not chained inline-statement handlers) - a chained
+    // "$emit(a); $emit(b)" string is fragile in Vue's inline-handler
+    // compiler and can silently drop the second call.
+    openNewPrivate() {
+      this.$emit('update:showNewPrivate', !this.showNewPrivate);
+      this.$emit('update:showNewGroup', false);
+    },
+    openNewGroup() {
+      this.$emit('update:showNewGroup', !this.showNewGroup);
+      this.$emit('update:showNewPrivate', false);
+    },
+  },
   template: `
     <aside class="w-72 flex flex-col border-r border-slate-200 bg-white">
       <div class="p-3 border-b border-slate-200 flex gap-2">
-        <button @click="$emit('update:showNewPrivate', !showNewPrivate); $emit('update:showNewGroup', false)"
+        <button @click="openNewPrivate"
                 class="flex-1 text-xs px-2 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">+ Private</button>
-        <button @click="$emit('update:showNewGroup', !showNewGroup); $emit('update:showNewPrivate', false)"
+        <button @click="openNewGroup"
                 class="flex-1 text-xs px-2 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">+ Group</button>
       </div>
 
@@ -59,7 +74,16 @@ const ChatSidebar = {
             <span class="flex-1 min-w-0 text-sm font-medium truncate">{{ chatDisplayName(item.chat) }}</span>
             <span class="shrink-0 text-[11px] text-slate-400">{{ formatChatTime(item.chat.last_message_at) }}</span>
           </div>
-          <div class="min-h-[1rem] text-xs text-slate-500 truncate">{{ item.chat.last_message_preview }}</div>
+          <div class="flex items-center gap-2">
+            <div class="flex-1 min-w-0 text-xs truncate"
+                 :class="typingLabelForChat(item.chat.id) ? 'text-teal-600 italic' : 'text-slate-500'">
+              {{ typingLabelForChat(item.chat.id) || item.chat.last_message_preview }}
+            </div>
+            <span v-if="unreadCountByChatId[item.chat.id]"
+                  class="shrink-0 min-w-[1.25rem] h-5 px-1.5 rounded-full bg-teal-600 text-white text-[11px] font-semibold flex items-center justify-center">
+              {{ unreadCountByChatId[item.chat.id] }}
+            </span>
+          </div>
         </button>
         <p v-if="!chats.length" class="p-3 text-sm text-slate-400">No chats yet — create one above.</p>
       </div>

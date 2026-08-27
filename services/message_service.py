@@ -136,6 +136,7 @@ async def _fan_out(session: AsyncSession, message: Message) -> None:
         "sender_id": str(message.sender_id) if message.sender_id is not None else None,
         "type": message.type,
         "content": message.content,
+        "reply_to_message_id": str(message.reply_to_message_id) if message.reply_to_message_id is not None else None,
         "created_at": message.created_at.isoformat(),
         # Always SENT at the instant a message is created - the chat-wide
         # receipt cursors can't already cover an id that didn't exist a

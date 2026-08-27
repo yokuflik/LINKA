@@ -64,27 +64,38 @@
 <script src="components/ChatHeader.js"></script>
 <script src="components/MessageList.js"></script>
 <script src="components/MessageInput.js"></script>
+<script src="components/MessageContextMenu.js"></script>
 <script src="components/MembersModal.js"></script>
 <script src="components/ToastList.js"></script>
 <style>
-  /* Chat-bubble speech tail (WhatsApp-style), drawn with a CSS triangle
-     instead of an image so it inherits the bubble's own background color. */
+  /* Chat-bubble speech tail - a smooth curved shape (WhatsApp/Telegram/
+     iMessage-style), not a hard-cornered triangle. Drawn as a solid-color
+     box clipped through an inline SVG mask instead of a CSS border-triangle
+     trick, so the tail can be a curve instead of straight edges, while
+     still just inheriting a flat background-color per side (no image asset). */
   .bubble-tail { position: relative; }
   .bubble-tail::after {
     content: '';
     position: absolute;
     bottom: 0;
-    width: 0;
-    height: 0;
-    border-bottom: 8px solid transparent;
+    width: 8px;
+    height: 13px;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-size: 100% 100%;
+    mask-size: 100% 100%;
   }
   .bubble-tail-mine::after {
     right: -6px;
-    border-left: 8px solid #0f766e; /* teal-700, matches bg-teal-700 */
+    background-color: #0f766e; /* teal-700, matches bg-teal-700 */
+    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 13'%3E%3Cpath d='M0,0 C0,6 2,10 8,13 L0,13 Z'/%3E%3C/svg%3E");
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 13'%3E%3Cpath d='M0,0 C0,6 2,10 8,13 L0,13 Z'/%3E%3C/svg%3E");
   }
   .bubble-tail-theirs::after {
     left: -6px;
-    border-right: 8px solid #ffffff; /* matches bg-white */
+    background-color: #ffffff; /* matches bg-white */
+    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 13'%3E%3Cpath d='M8,0 C8,6 6,10 0,13 L8,13 Z'/%3E%3C/svg%3E");
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 13'%3E%3Cpath d='M8,0 C8,6 6,10 0,13 L8,13 Z'/%3E%3C/svg%3E");
   }
 </style>
 </head>
@@ -96,7 +107,7 @@ const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick
 
 createApp({
   components: {
-    AuthScreen, AppHeader, ChatSidebar, ChatHeader, MessageList, MessageInput, MembersModal, ToastList,
+    AuthScreen, AppHeader, ChatSidebar, ChatHeader, MessageList, MessageInput, MessageContextMenu, MembersModal, ToastList,
   },
   setup() {
     // ---------------------------------------------------------------
@@ -236,6 +247,9 @@ createApp({
       presenceSubscribedUserId = null;
       presenceByUserId.value = {};
       typingUsersByChatId.value = {};
+      unreadCountByChatId.value = {};
+      contextMenuMessage.value = null;
+      replyingToMessage.value = null;
       authStage.value = 'phone';
       phoneNumber.value = '';
       otpCode.value = '';
@@ -422,6 +436,17 @@ createApp({
       };
     }
 
+    // Sending a message implies you stopped typing - clear the sender's
+    // pending typing entry immediately instead of waiting for it to expire.
+    function clearUserTyping(chatId, userId) {
+      const existing = typingUsersByChatId.value[chatId];
+      if (!existing || !existing[userId]) return;
+      clearTimeout(existing[userId]);
+      const current = { ...existing };
+      delete current[userId];
+      typingUsersByChatId.value = { ...typingUsersByChatId.value, [chatId]: current };
+    }
+
     // Sends our own "typing" event, throttled so it goes out at most once
     // per TYPING_SEND_THROTTLE_MS while the user keeps typing continuously -
     // called on every keystroke in the message input, not just on send.
@@ -434,18 +459,55 @@ createApp({
     }
 
     // "X is typing" for exactly one typer, "N people are typing" for more -
-    // per product decision, a group never lists multiple names, only a count.
-    const activeChatTypingLabel = computed(() => {
-      if (!activeChatId.value) return '';
+    // per product decision, a group never lists multiple names, only a
+    // count. Used both for the active chat's header and for every row in
+    // the sidebar (replacing that chat's last-message preview) - a plain
+    // function, not a computed, since it needs a chatId argument; reading
+    // typingUsersByChatId.value here still tracks fine as a reactive
+    // dependency of whichever component's render is calling it.
+    function typingLabelForChat(chatId) {
       // Object keys are always strings - ids are kept as opaque strings
       // throughout this file (see the Snowflake/JSON-string note up top),
       // so no Number()/parseInt() coercion here.
-      const typists = Object.keys(typingUsersByChatId.value[activeChatId.value] || {})
+      const typists = Object.keys(typingUsersByChatId.value[chatId] || {})
         .filter((id) => id !== currentUser.value.id);
       if (!typists.length) return '';
       if (typists.length === 1) return `${userLabelById(typists[0])} is typing…`;
       return `${typists.length} people are typing…`;
+    }
+
+    const activeChatTypingLabel = computed(() => {
+      if (!activeChatId.value) return '';
+      return typingLabelForChat(activeChatId.value);
     });
+
+    // ---------------------------------------------------------------
+    // Unread count badge (WhatsApp-style number on each sidebar chat).
+    // Seeded from the server on every loadChats() call - GET /chats now
+    // returns each chat's real unread_count (chat_service.get_chat_list),
+    // so a fresh login/reload shows the true count, not just what arrived
+    // this session. Then kept current live: incremented in handleWsMessage
+    // for a real message (not a system message, not our own) arriving for
+    // a chat that isn't the active one, and reset to 0 the moment that chat
+    // is opened (mirrors the server: opening a chat sends mark_read, which
+    // is what the next loadChats() would compute unread_count from anyway -
+    // clearing it locally immediately just avoids the round trip).
+    // ---------------------------------------------------------------
+    const unreadCountByChatId = ref({});
+
+    function bumpUnreadCount(chatId) {
+      unreadCountByChatId.value = {
+        ...unreadCountByChatId.value,
+        [chatId]: (unreadCountByChatId.value[chatId] || 0) + 1,
+      };
+    }
+
+    function clearUnreadCount(chatId) {
+      if (!unreadCountByChatId.value[chatId]) return;
+      const next = { ...unreadCountByChatId.value };
+      delete next[chatId];
+      unreadCountByChatId.value = next;
+    }
 
     function handleWsMessage(msg) {
       // Acks/errors for actions *you* took use "type"; events fanned out
@@ -462,11 +524,14 @@ createApp({
       }
 
       if (msg.event === 'new_message') {
+        // A message from someone means they're no longer typing - drop their
+        // typing indicator now instead of leaving it to expire 5s later.
+        if (msg.sender_id != null) clearUserTyping(msg.chat_id, msg.sender_id);
         if (msg.chat_id === activeChatId.value) {
           messages.value.push({
             id: msg.message_id, chat_id: msg.chat_id, sender_id: msg.sender_id,
             type: msg.type, content: msg.content, created_at: msg.created_at, is_edited: false,
-            status: msg.status,
+            status: msg.status, reply_to_message_id: msg.reply_to_message_id,
           });
           nextTick(scrollMessagesToBottom);
         }
@@ -498,13 +563,29 @@ createApp({
           // separately catches up on anything sent while it wasn't (see selectChat).
           if (msg.chat_id === activeChatId.value) sendReceipt('mark_read', msg.chat_id, msg.message_id);
         }
+
+        // Unread badge: only real messages from someone else, and only for
+        // a chat that isn't the one currently open (an open chat is read
+        // the instant it arrives, same logic as the read receipt above).
+        if (msg.sender_id != null && msg.sender_id !== currentUser.value.id && msg.chat_id !== activeChatId.value) {
+          bumpUnreadCount(msg.chat_id);
+        }
         return;
       }
       if (msg.event === 'typing') {
         // Never our own echo back (the server fans this out to the whole
-        // chat, sender included, same as new_message) - and only tracked
-        // for chats we actually have state for.
-        if (msg.user_id !== currentUser.value.id) noteUserTyping(msg.chat_id, msg.user_id);
+        // chat, sender included, same as new_message).
+        if (msg.user_id !== currentUser.value.id) {
+          noteUserTyping(msg.chat_id, msg.user_id);
+          // The sidebar shows a name (not just a count) for a lone typer in
+          // any chat, including one never opened this session - userById
+          // only gets populated by resolveChatMemberPhones, which normally
+          // only runs on selectChat/openMembersModal. Lazily resolve here
+          // too so that name is available without requiring the chat to
+          // have been opened first. Harmless to call repeatedly - it's a
+          // plain overwrite of the same cached data.
+          if (!userById.value[msg.user_id]) resolveChatMemberPhones(msg.chat_id);
+        }
         return;
       }
       if (msg.event === 'message_edited') {
@@ -525,6 +606,18 @@ createApp({
         // already recomputed it (see crud_participant.
         // recompute_chat_receipt_cursors), rather than guess client-side.
         if (msg.chat_id === activeChatId.value) refreshMessageStatuses(msg.chat_id);
+
+        // Cross-tab/cross-device unread sync: a read_receipt's user_id is
+        // whoever just marked the chat read - if that's ME, it means one of
+        // MY OWN other open tabs/devices just read this chat (this event
+        // fans out to every connection subscribed to the chat, including
+        // every tab of mine, not just the one that sent mark_read), so this
+        // tab's unread badge for it should clear too, even though it isn't
+        // the active chat here. A receipt from someone else in a group must
+        // never affect my own unread count.
+        if (msg.event === 'read_receipt' && msg.user_id === currentUser.value.id) {
+          clearUnreadCount(msg.chat_id);
+        }
         return;
       }
 
@@ -660,6 +753,15 @@ createApp({
     const chatsError = ref('');
     const messagesError = ref('');
     const messagesEl = ref(null);
+    // Infinite-scroll-up pagination state: whether an older page might still
+    // exist, and whether a fetch is in flight (so a burst of scroll events
+    // doesn't fire several overlapping requests).
+    const hasMoreMessages = ref(false);
+    const loadingOlderMessages = ref(false);
+    const MESSAGE_PAGE_SIZE = 50;
+    // How close to the top (in messages still above the viewport) we get
+    // before pulling the next older page.
+    const LOAD_OLDER_THRESHOLD = 20;
 
     // chat_id -> the other participant's phone number, for private chats.
     // Resolved lazily via GET /chats/{id}/members (there's no participant
@@ -726,6 +828,15 @@ createApp({
       const user = userById.value[userId];
       if (!user) return userId;
       return contactDisplayName(user.phone_number) || user.display_name || user.phone_number;
+    }
+
+    // Same as senderLabel, but says "You" for the current user - matches
+    // WhatsApp's own reply-quote convention (never shows your own contact
+    // name back to yourself). Used only in reply-related UI (the compose
+    // bar's preview, and the quoted block inside a reply bubble).
+    function replySenderLabel(senderId) {
+      if (senderId === currentUser.value.id) return 'You';
+      return senderLabel(senderId);
     }
 
     // System messages are plain text ("X joined the group") EXCEPT the
@@ -1008,6 +1119,40 @@ createApp({
       if (el) el.scrollTop = el.scrollHeight;
     }
 
+    // Fetches the next older page (keyset: before_id = oldest loaded id) and
+    // prepends it, preserving the scroll position so the view doesn't jump.
+    async function loadOlderMessages() {
+      if (loadingOlderMessages.value || !hasMoreMessages.value) return;
+      if (!messages.value.length || !activeChatId.value) return;
+      const chatId = activeChatId.value;
+      const oldestId = messages.value[0].id;
+      const el = messagesEl.value && messagesEl.value.messagesEl;
+      const prevScrollHeight = el ? el.scrollHeight : 0;
+      loadingOlderMessages.value = true;
+      try {
+        const page = await apiFetch(`/chats/${chatId}/messages?limit=${MESSAGE_PAGE_SIZE}&before_id=${oldestId}`);
+        // Bail if the user switched chats while this was in flight.
+        if (activeChatId.value !== chatId) return;
+        hasMoreMessages.value = page.length === MESSAGE_PAGE_SIZE;
+        if (page.length) {
+          messages.value = page.slice().reverse().concat(messages.value);
+          await nextTick();
+          if (el) el.scrollTop = el.scrollHeight - prevScrollHeight;
+        }
+      } catch (err) {
+        logError('failed to load older messages:', err.message);
+      } finally {
+        loadingOlderMessages.value = false;
+      }
+    }
+
+    // Scroll handler from MessageList: it reports how many message rows are
+    // still scrolled above the top of the viewport. Pull the next older page
+    // once that drops below LOAD_OLDER_THRESHOLD (~20).
+    function onMessagesScroll(rowsAboveViewport) {
+      if (rowsAboveViewport <= LOAD_OLDER_THRESHOLD) loadOlderMessages();
+    }
+
     async function loadChats() {
       chatsError.value = '';
       try {
@@ -1016,6 +1161,23 @@ createApp({
         await Promise.all(
           chats.value.filter((c) => !c.chat.is_group).map((c) => resolvePrivateChatTitle(c.chat.id))
         );
+
+        // Seed the unread badge from the server's real count (see the
+        // block above) - always replaced wholesale here, not merged: the
+        // server value is always at least as fresh as anything counted
+        // live so far (any message a live increment counted is already
+        // persisted, so it's already reflected server-side too), and this
+        // also self-heals anything the live-only counting could have
+        // drifted on. The active chat is always forced to 0/absent - it's
+        // being read right now, regardless of what a stale snapshot says.
+        const nextUnread = {};
+        for (const item of chats.value) {
+          if (item.unread_count && item.chat.id !== activeChatId.value) {
+            nextUnread[item.chat.id] = item.unread_count;
+          }
+        }
+        unreadCountByChatId.value = nextUnread;
+
         // Covers the race with connectWebSocket()'s onopen handler, which
         // also calls this - whichever of the two (socket open, chat list
         // loaded) finishes last is the one that actually has both ready.
@@ -1029,6 +1191,11 @@ createApp({
       activeChatId.value = chatId;
       messages.value = [];
       messagesError.value = '';
+      hasMoreMessages.value = false;
+      loadingOlderMessages.value = false;
+      clearUnreadCount(chatId);
+      replyingToMessage.value = null;
+      closeMessageContextMenu();
       const item = chats.value.find((c) => c.chat.id === chatId);
       if (item && !item.chat.is_group) resolvePrivateChatTitle(chatId);
       resolveChatMemberPhones(chatId);
@@ -1040,9 +1207,11 @@ createApp({
       unsubscribeFromPresence();
       if (item && !item.chat.is_group) subscribeToPresenceForChat(chatId);
       try {
-        const history = await apiFetch(`/chats/${chatId}/messages?limit=50`);
+        const history = await apiFetch(`/chats/${chatId}/messages?limit=${MESSAGE_PAGE_SIZE}`);
         // The API returns newest-first (keyset pagination); the UI wants oldest-first.
         messages.value = history.slice().reverse();
+        // A full page back means there's probably an older page to fetch.
+        hasMoreMessages.value = history.length === MESSAGE_PAGE_SIZE;
         await nextTick();
         scrollMessagesToBottom();
 
@@ -1125,6 +1294,62 @@ createApp({
     }
 
     // ---------------------------------------------------------------
+    // Message right-click menu - only "Reply" is wired up (see CLAUDE.md's
+    // "not yet built" note for Forward/Edit/Delete, shown disabled in the
+    // menu itself so its final shape is visible without pretending they work).
+    // ---------------------------------------------------------------
+    const contextMenuMessage = ref(null); // the message the menu is open for, or null
+    const contextMenuRawPosition = ref({ x: 0, y: 0 });
+
+    // Clamped so the menu (fixed w-40 = 160px, ~170px tall for 4 rows) never
+    // renders partly off-screen when right-clicking near an edge.
+    const contextMenuPosition = computed(() => ({
+      x: Math.min(contextMenuRawPosition.value.x, window.innerWidth - 168),
+      y: Math.min(contextMenuRawPosition.value.y, window.innerHeight - 178),
+    }));
+
+    function openMessageContextMenu({ message, event }) {
+      contextMenuMessage.value = message;
+      contextMenuRawPosition.value = { x: event.clientX, y: event.clientY };
+    }
+
+    function closeMessageContextMenu() {
+      contextMenuMessage.value = null;
+    }
+
+    // ---------------------------------------------------------------
+    // Reply-to-message (WhatsApp-style) - the backend already fully
+    // supports reply_to_message_id end to end (persisted, returned in
+    // history, and now also on the live new_message event); this is just
+    // the compose-time UI for it.
+    // ---------------------------------------------------------------
+    const replyingToMessage = ref(null); // the message object being replied to, or null
+
+    function startReplyTo(message) {
+      replyingToMessage.value = message;
+      closeMessageContextMenu();
+    }
+
+    function cancelReply() {
+      replyingToMessage.value = null;
+    }
+
+    // Looks up the original message a reply (m) points to, purely from
+    // what's already loaded in this chat's message list - no extra fetch
+    // for a message that scrolled out of the loaded page/history. Falls
+    // back to a generic placeholder (rather than rendering nothing) so a
+    // reply-to-older-history message still visibly reads as a reply.
+    function quotedPreviewFor(m) {
+      if (m.reply_to_message_id == null) return null;
+      const original = messages.value.find((x) => x.id === m.reply_to_message_id);
+      if (!original) return { sender: '', snippet: 'Original message' };
+      return {
+        sender: original.sender_id != null ? replySenderLabel(original.sender_id) : 'System',
+        snippet: (original.content || '').slice(0, 80),
+      };
+    }
+
+    // ---------------------------------------------------------------
     // Sending a message (over the WebSocket, per the real /ws protocol)
     // ---------------------------------------------------------------
     function sendMessage() {
@@ -1141,9 +1366,11 @@ createApp({
         content,
         message_type: 1,
       };
+      if (replyingToMessage.value) payload.reply_to_message_id = replyingToMessage.value.id;
       log('WS →', payload);
       ws.send(JSON.stringify(payload));
       messageInput.value = '';
+      replyingToMessage.value = null;
     }
 
     // ---------------------------------------------------------------
@@ -1174,8 +1401,12 @@ createApp({
       chats, activeChatId, activeChatLabel, chatDisplayName, senderLabel, formatChatTime, messages, messageInput, chatsError, messagesError, messagesEl,
       activeChatIsGroup, visibleActiveChatMembers, hiddenActiveChatMemberCount, memberDisplayName, roleLabel,
       activeChatPresenceLabel,
-      activeChatTypingLabel, notifyTyping,
-      selectChat, sendMessage, statusTickSymbol, statusTickClass,
+      activeChatTypingLabel, typingLabelForChat, notifyTyping,
+      unreadCountByChatId,
+      quotedPreviewFor, replySenderLabel,
+      contextMenuMessage, contextMenuPosition, openMessageContextMenu, closeMessageContextMenu,
+      replyingToMessage, startReplyTo, cancelReply,
+      selectChat, sendMessage, onMessagesScroll, statusTickSymbol, statusTickClass,
       showNewPrivate, showNewGroup, newPrivatePhone, newGroupTitle, newGroupMemberPhones, chatFormError,
       createPrivateChat, createGroupChat,
       showMembersModal, openMembersModal, addMemberPhone, membersModalError, membersModalBusy,
@@ -1205,6 +1436,7 @@ createApp({
           v-model:newGroupMemberPhones="newGroupMemberPhones"
           :chatFormError="chatFormError" :chatsError="chatsError" :chats="chats" :activeChatId="activeChatId"
           :chatDisplayName="chatDisplayName" :formatChatTime="formatChatTime"
+          :typingLabelForChat="typingLabelForChat" :unreadCountByChatId="unreadCountByChatId"
           @create-private-chat="createPrivateChat" @create-group-chat="createGroupChat"
           @select-chat="selectChat" />
 
@@ -1221,13 +1453,21 @@ createApp({
             <MessageList ref="messagesEl"
               :messages="messages" :messagesError="messagesError" :currentUser="currentUser"
               :shouldShowSystemMessage="shouldShowSystemMessage" :systemMessageText="systemMessageText"
-              :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass" />
+              :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass"
+              :quotedPreviewFor="quotedPreviewFor"
+              @message-contextmenu="openMessageContextMenu" @load-older="onMessagesScroll" />
 
-            <MessageInput v-model:messageInput="messageInput" @send-message="sendMessage" @typing="notifyTyping" />
+            <MessageInput v-model:messageInput="messageInput" @send-message="sendMessage" @typing="notifyTyping"
+              :replyingToMessage="replyingToMessage" :senderLabel="replySenderLabel" @cancel-reply="cancelReply" />
           </template>
           <div v-else class="flex-1 flex items-center justify-center text-slate-400 text-sm">
             Select a chat, or create one from the sidebar.
           </div>
+
+          <MessageContextMenu v-if="contextMenuMessage"
+            :position="contextMenuPosition"
+            @close="closeMessageContextMenu"
+            @reply="startReplyTo(contextMenuMessage)" />
         </main>
       </div>
     </div>

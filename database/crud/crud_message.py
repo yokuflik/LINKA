@@ -158,6 +158,29 @@ async def get_chat_messages(
     return result.scalars().all()
 
 
+async def count_unread_messages(session: AsyncSession, chat_id: int, last_read_message_id: Optional[int]) -> int:
+    """
+    How many of this chat's messages come after the caller's own
+    last_read_message_id watermark - the number badge on the chat list
+    (see chat_service.get_chat_list). System messages (sender_id IS NULL)
+    aren't counted, mirroring what a client would actually consider
+    "unread" (nothing to read, no bubble is ever shown for them).
+
+    Time Complexity: O(log N + unread count)
+    Explanation: Same (chat_id, id) index as get_chat_messages - Postgres
+    seeks to the cursor and counts forward, not a full-table scan. A NULL
+    cursor (nothing read yet) counts every real message in the chat instead.
+    """
+    stmt = select(func.count()).select_from(Message).where(
+        Message.chat_id == chat_id, Message.deleted_at.is_(None), Message.sender_id.is_not(None)
+    )
+    if last_read_message_id is not None:
+        stmt = stmt.where(Message.id > last_read_message_id)
+
+    result = await session.execute(stmt)
+    return result.scalar_one()
+
+
 async def edit_message_content(
     session: AsyncSession,
     chat_id: int,

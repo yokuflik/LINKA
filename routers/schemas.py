@@ -82,6 +82,13 @@ class ChatListItemOut(BaseModel):
     role: int
     last_read_message_id: Optional[IdStr]
 
+    # How many of this chat's messages come after the viewer's own
+    # last_read_message_id - genuinely per-viewer (unlike ChatOut.
+    # last_message_status, which is chat-wide), so it lives here rather than
+    # on ChatOut. Only ever set by chat_service.get_chat_list (see its
+    # docstring) - not present on the create/update chat endpoints.
+    unread_count: int = 0
+
 
 class CreatePrivateChatIn(BaseModel):
     other_user_id: int

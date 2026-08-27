@@ -6,6 +6,7 @@ const MembersModal = {
     activeChatLabel: { type: String, required: true },
     activeChatMembers: { type: Array, required: true },
     memberDisplayName: { type: Function, required: true },
+    userAvatarUrl: { type: Function, required: true },
     roleLabel: { type: Function, required: true },
     hasMemberOptions: { type: Function, required: true },
     memberOptionsFor: { default: null },
@@ -38,7 +39,11 @@ const MembersModal = {
             <div class="py-2 flex items-center justify-between gap-2"
                  :class="hasMemberOptions(member) ? 'cursor-pointer hover:bg-slate-50 -mx-1 px-1 rounded' : ''"
                  @click="$emit('open-member-options', member)">
-              <span class="text-sm truncate">{{ memberDisplayName(member) }}</span>
+              <span class="flex items-center gap-2 min-w-0">
+                <Avatar :url="userAvatarUrl(member.user)" :name="memberDisplayName(member)"
+                        :colorKey="member.user.id" sizeClass="w-7 h-7 text-xs" />
+                <span class="text-sm truncate">{{ memberDisplayName(member) }}</span>
+              </span>
               <span v-if="roleLabel(member.role)" class="shrink-0 ml-2 text-[10px] font-medium px-2 py-0.5 rounded-full bg-teal-100 text-teal-700">{{ roleLabel(member.role) }}</span>
             </div>
 

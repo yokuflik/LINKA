@@ -9,8 +9,8 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/otp/request", status_code=status.HTTP_204_NO_CONTENT)
-async def request_otp(body: OTPRequestIn):
-    await auth_service.request_otp(body.phone_number)
+async def request_otp(body: OTPRequestIn, session: AsyncSession = Depends(get_db)):
+    await auth_service.request_otp(body.phone_number, intent=body.intent, session=session)
 
 
 @router.post("/otp/verify", response_model=LoginOut)

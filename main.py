@@ -13,10 +13,24 @@ from routers.users import router as users_router
 from routers.websocket import router as websocket_router
 from services import auth_service, chat_service, message_service
 from services.redis_client import close_redis
+from services.storage import media_service
+from services.storage.errors import (
+    MediaNotFoundError,
+    MediaValidationError,
+    StorageUnavailableError,
+)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Create the media / avatars buckets if they don't exist yet (dev
+    # convenience - a no-op against IaC-provisioned production buckets).
+    try:
+        await media_service.ensure_buckets()
+    except Exception as exc:  # storage being down must not stop the app booting
+        import logging
+
+        logging.getLogger(__name__).warning("ensure_buckets failed at startup: %s", exc)
     yield
     await dispose_engine()
     await close_redis()
@@ -63,6 +77,16 @@ async def _handle_invalid_otp(request: Request, exc: Exception):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
+@app.exception_handler(auth_service.PhoneAlreadyRegisteredError)
+async def _handle_phone_already_registered(request: Request, exc: Exception):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(auth_service.PhoneNotRegisteredError)
+async def _handle_phone_not_registered(request: Request, exc: Exception):
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
 @app.exception_handler(auth_service.InvalidRefreshTokenError)
 async def _handle_invalid_refresh_token(request: Request, exc: Exception):
     return JSONResponse(status_code=401, content={"detail": str(exc)})
@@ -96,3 +120,19 @@ async def _handle_not_a_participant(request: Request, exc: Exception):
 @app.exception_handler(message_service.MessageTooLongError)
 async def _handle_message_too_long(request: Request, exc: Exception):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+# --- Object storage (services.storage) ---
+@app.exception_handler(MediaValidationError)
+async def _handle_media_validation(request: Request, exc: Exception):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(MediaNotFoundError)
+async def _handle_media_not_found(request: Request, exc: Exception):
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(StorageUnavailableError)
+async def _handle_storage_unavailable(request: Request, exc: Exception):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})

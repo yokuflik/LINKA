@@ -58,6 +58,7 @@
      Vue.defineComponent objects loaded as sibling scripts, since this PoC
      has no build step and can't use .vue SFCs. All business logic/state
      stays in the root app below; these only own template markup. -->
+<script src="components/Avatar.js"></script>
 <script src="components/AuthScreen.js"></script>
 <script src="components/AppHeader.js"></script>
 <script src="components/ChatSidebar.js"></script>
@@ -66,6 +67,7 @@
 <script src="components/MessageInput.js"></script>
 <script src="components/MessageContextMenu.js"></script>
 <script src="components/MembersModal.js"></script>
+<script src="components/NewGroupModal.js"></script>
 <script src="components/ToastList.js"></script>
 <style>
   /* Chat-bubble speech tail - a smooth curved shape (WhatsApp/Telegram/
@@ -105,9 +107,9 @@
 <script>
 const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } = Vue;
 
-createApp({
+const app = createApp({
   components: {
-    AuthScreen, AppHeader, ChatSidebar, ChatHeader, MessageList, MessageInput, MessageContextMenu, MembersModal, ToastList,
+    AuthScreen, AppHeader, ChatSidebar, ChatHeader, MessageList, MessageInput, MessageContextMenu, MembersModal, NewGroupModal, ToastList,
   },
   setup() {
     // ---------------------------------------------------------------
@@ -127,11 +129,72 @@ createApp({
     const currentUser = ref(null);
     const isAuthed = computed(() => !!accessToken.value && !!currentUser.value);
 
+    const authMode = ref('login'); // 'login' | 'register'
     const authStage = ref('phone'); // 'phone' | 'otp'
     const phoneNumber = ref('');
     const otpCode = ref('');
+    const profileDraft = ref({ display_name: '', about_text: '' });
     const authError = ref('');
     const authBusy = ref(false);
+
+    // Sign-up profile photo. Client-side limits mirror the backend
+    // (config.MAX_UPLOAD_BYTES_AVATAR = 0.5MB, avatar MIME set) so the user
+    // gets an instant error instead of a 400 from the upload-ticket call.
+    const AVATAR_MAX_BYTES = 512 * 1024;
+    // Message media caps (config.MAX_UPLOAD_BYTES_IMAGE / _VIDEO) - mirrored
+    // here so the PoC can reject an oversize file before requesting a ticket.
+    const MEDIA_MAX_BYTES = { image: 5 * 1024 * 1024, video: 20 * 1024 * 1024 };
+    const AVATAR_MIME = ['image/jpeg', 'image/png', 'image/webp'];
+    const avatarFile = ref(null);
+    const avatarPreviewUrl = ref(null);
+    const avatarError = ref('');
+
+    function pickAvatar(file) {
+      avatarError.value = '';
+      if (!AVATAR_MIME.includes(file.type)) {
+        avatarError.value = 'Use a JPEG, PNG or WebP image.';
+        return;
+      }
+      if (file.size <= 0) {
+        avatarError.value = 'That file looks empty.';
+        return;
+      }
+      if (file.size > AVATAR_MAX_BYTES) {
+        avatarError.value = 'Profile picture must be 512 KB or smaller.';
+        return;
+      }
+      clearAvatar();
+      avatarFile.value = file;
+      avatarPreviewUrl.value = URL.createObjectURL(file);
+    }
+
+    function clearAvatar() {
+      if (avatarPreviewUrl.value) URL.revokeObjectURL(avatarPreviewUrl.value);
+      avatarFile.value = null;
+      avatarPreviewUrl.value = null;
+      avatarError.value = '';
+    }
+
+    // Direct-to-storage upload: ask the app for a presigned PUT ticket, PUT
+    // the bytes straight at MinIO, then tell the app the object key.
+    async function uploadPickedAvatar() {
+      const file = avatarFile.value;
+      if (!file) return;
+      const ticket = await apiFetch('/users/me/avatar/upload-ticket', {
+        method: 'POST',
+        body: JSON.stringify({ mime_type: file.type, size_bytes: file.size }),
+      });
+      const putResp = await fetch(ticket.upload_url, {
+        method: 'PUT',
+        headers: ticket.required_headers || { 'Content-Type': file.type },
+        body: file,
+      });
+      if (!putResp.ok) throw new Error('avatar upload failed (' + putResp.status + ')');
+      currentUser.value = await apiFetch('/users/me/avatar', {
+        method: 'PUT',
+        body: JSON.stringify({ storage_key: ticket.storage_key }),
+      });
+    }
 
     // ---------------------------------------------------------------
     // REST helper - JSON in/out, Bearer auth, one auto-refresh-and-retry
@@ -202,7 +265,10 @@ createApp({
       try {
         await apiFetch('/auth/otp/request', {
           method: 'POST',
-          body: JSON.stringify({ phone_number: phoneNumber.value }),
+          body: JSON.stringify({
+            phone_number: phoneNumber.value,
+            intent: authMode.value === 'register' ? 'register' : 'login',
+          }),
         });
         authStage.value = 'otp';
         log('OTP requested for', phoneNumber.value, '- no SMS provider is wired up, check the SERVER console/log for the code');
@@ -227,6 +293,32 @@ createApp({
         localStorage.setItem('linka_access_token', accessToken.value);
         localStorage.setItem('linka_refresh_token', refreshToken.value);
         log('logged in as', currentUser.value);
+
+        // On register, push the profile fields the user filled in on the
+        // sign-up form. Best-effort - a failure here shouldn't block login.
+        if (authMode.value === 'register') {
+          const patch = {};
+          const name = (profileDraft.value.display_name || '').trim();
+          const about = (profileDraft.value.about_text || '').trim();
+          if (name) patch.display_name = name;
+          if (about) patch.about_text = about;
+          if (Object.keys(patch).length) {
+            try {
+              currentUser.value = await apiFetch('/users/me', {
+                method: 'PATCH',
+                body: JSON.stringify(patch),
+              });
+            } catch (err) {
+              logError('failed to save profile on register:', err.message);
+            }
+          }
+          try {
+            await uploadPickedAvatar();
+          } catch (err) {
+            logError('failed to upload avatar on register:', err.message);
+          }
+        }
+
         connectWebSocket();
         await loadChats();
       } catch (err) {
@@ -251,6 +343,9 @@ createApp({
       contextMenuMessage.value = null;
       replyingToMessage.value = null;
       authStage.value = 'phone';
+      otpCode.value = '';
+      profileDraft.value = { display_name: '', about_text: '' };
+      clearAvatar();
       phoneNumber.value = '';
       otpCode.value = '';
       localStorage.removeItem('linka_access_token');
@@ -744,6 +839,48 @@ createApp({
     }
 
     // ---------------------------------------------------------------
+    // Profile-picture avatars (WhatsApp-style small circles).
+    //
+    // The <Avatar> component (poc/components/Avatar.js) renders the image
+    // directly with native loading="lazy" + fetchpriority="low", so the
+    // browser itself defers off-screen images and prioritises them below
+    // the chat list / message content - no custom preloader needed. On a
+    // failed load, or when there's no picture, it shows a colored circle
+    // with the name's first initial (a group shows a plain empty circle
+    // for now, per request). These helpers just resolve which URL / name /
+    // color-key each place should hand it.
+    //
+    // `profile_pic_url` on a UserOut is already an absolute public URL
+    // (avatars bucket is public-read, no signing); ChatOut.profile_pic_url
+    // is the group's, same shape. userById is populated for private chats
+    // by resolvePrivateChatTitle and for groups by resolveChatMemberPhones.
+    // ---------------------------------------------------------------
+    function chatAvatarName(chat) {
+      // Group: use the title so the fallback circle shows its first initial.
+      if (chat.is_group) return chat.title || '';
+      const phone = privateChatTitles.value[chat.id];
+      return phone ? contactDisplayName(phone) : '';
+    }
+    function chatAvatarColorKey(chat) {
+      return chat.is_group ? chat.id : (privateChatOtherUserId.value[chat.id] || chat.id);
+    }
+    function chatAvatarUrl(chat) {
+      // ChatOut.profile_pic_url is already an absolute public URL for groups
+      // (avatars bucket, same shape as a UserOut's).
+      if (chat.is_group) return chat.profile_pic_url || null;
+      const otherId = privateChatOtherUserId.value[chat.id];
+      const u = otherId ? userById.value[otherId] : null;
+      return u ? (u.profile_pic_url || null) : null;
+    }
+    function userAvatarUrl(user) {
+      return user ? (user.profile_pic_url || null) : null;
+    }
+    function senderAvatarUrl(senderId) {
+      return userAvatarUrl(userById.value[senderId]);
+    }
+    const currentUserAvatarUrl = computed(() => userAvatarUrl(currentUser.value));
+
+    // ---------------------------------------------------------------
     // Chats
     // ---------------------------------------------------------------
     const chats = ref([]);
@@ -782,6 +919,9 @@ createApp({
         if (other) {
           privateChatTitles.value[chatId] = other.user.phone_number;
           privateChatOtherUserId.value[chatId] = other.user.id;
+          // Cache the whole UserOut too (not just phone/id) so the avatar
+          // URL is available without a second lookup.
+          userById.value[other.user.id] = other.user;
         }
       } catch (err) {
         logError('failed to resolve private chat title for', chatId, err);
@@ -865,9 +1005,37 @@ createApp({
       return data.actor_id === me || data.target_id === me;
     }
 
+    // All the ways the current user's name can appear inside a plain-text
+    // system message the server already rendered (display name, phone, or
+    // the client-only mock contact name for that phone).
+    function currentUserNameVariants() {
+      const u = currentUser.value;
+      if (!u) return [];
+      const variants = [u.display_name, u.phone_number, contactDisplayName(u.phone_number)];
+      return variants.filter((v) => typeof v === 'string' && v.length > 0);
+    }
+
+    // Frontend-only personalization: the server renders group system messages
+    // like "Maya removed Daniel from the group" with a fixed 3rd-person name.
+    // If that name is actually me, rewrite it to "...removed you..." (and my
+    // own name at the start of a sentence to "You"). Pure string rewrite, no
+    // backend change.
+    function personalizeSystemMessage(text) {
+      if (typeof text !== 'string' || !text) return text;
+      let out = text;
+      for (const name of currentUserNameVariants()) {
+        const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // "<name> did ..." at the start -> "You did ..."
+        out = out.replace(new RegExp('^' + esc + '\\b'), 'You');
+        // "... to/as <name> ..." (object of the action) -> "you"
+        out = out.replace(new RegExp('\\b' + esc + '\\b', 'g'), 'you');
+      }
+      return out;
+    }
+
     function systemMessageText(m) {
       const data = parseSystemMessage(m.content);
-      if (!data) return m.content;
+      if (!data) return personalizeSystemMessage(m.content);
       if (data.kind === 'role_changed') {
         const actorName = data.actor_id === currentUser.value.id ? 'You' : userLabelById(data.actor_id);
         const targetName = data.target_id === currentUser.value.id ? 'you' : userLabelById(data.target_id);
@@ -887,6 +1055,11 @@ createApp({
       const item = chats.value.find((c) => c.chat.id === activeChatId.value);
       return !!(item && item.chat.is_group);
     });
+
+    const activeChatItem = computed(() => chats.value.find((c) => c.chat.id === activeChatId.value) || null);
+    const activeChatAvatarUrl = computed(() => activeChatItem.value ? chatAvatarUrl(activeChatItem.value.chat) : null);
+    const activeChatAvatarName = computed(() => activeChatItem.value ? chatAvatarName(activeChatItem.value.chat) : '');
+    const activeChatAvatarColorKey = computed(() => activeChatItem.value ? chatAvatarColorKey(activeChatItem.value.chat) : '');
 
     // How many names fit before the header would get crowded - the rest
     // collapse into a single "..." marker, same idea as WhatsApp's group row.
@@ -1232,10 +1405,10 @@ createApp({
     // New chat / group forms
     // ---------------------------------------------------------------
     const showNewPrivate = ref(false);
-    const showNewGroup = ref(false);
+    const showNewGroupModal = ref(false);
+    const newGroupBusy = ref(false);
+    const newGroupError = ref('');
     const newPrivatePhone = ref('');
-    const newGroupTitle = ref('');
-    const newGroupMemberPhones = ref('');
     const chatFormError = ref('');
 
     async function createPrivateChat() {
@@ -1251,7 +1424,13 @@ createApp({
           method: 'POST',
           body: JSON.stringify({ other_user_id: target.id }),
         });
-        privateChatTitles.value[chat.id] = target.phone_number; // already known - skip the round trip
+        // Cache everything resolvePrivateChatTitle would have fetched - it
+        // early-returns once the title is set, so without this the new chat
+        // has no privateChatOtherUserId / userById entry and its avatar
+        // (and presence) never resolve until the next full reload.
+        privateChatTitles.value[chat.id] = target.phone_number;
+        privateChatOtherUserId.value[chat.id] = target.id;
+        userById.value[target.id] = target;
         newPrivatePhone.value = '';
         showNewPrivate.value = false;
         await loadChats();
@@ -1261,16 +1440,44 @@ createApp({
       }
     }
 
-    async function createGroupChat() {
-      chatFormError.value = '';
-      if (!newGroupTitle.value.trim()) { chatFormError.value = 'Enter a group title.'; return; }
-      const phones = newGroupMemberPhones.value
+    // Upload a picked photo straight to storage and return its object key.
+    // `ticketPath` is the presigned-PUT endpoint (chat-less for group
+    // creation, chat-scoped for an existing group). The app never sees the
+    // bytes - it only mints the URL and, later, records the key.
+    async function uploadAvatarBytes(ticketPath, file) {
+      const ticket = await apiFetch(ticketPath, {
+        method: 'POST',
+        body: JSON.stringify({ mime_type: file.type, size_bytes: file.size }),
+      });
+      // fetch() won't let JS set Content-Length, but the browser sets it
+      // itself to the body's byte length - which matches the signed
+      // size_bytes since we declared file.size. The header in the dict is a
+      // harmless no-op.
+      const putResp = await fetch(ticket.upload_url, {
+        method: 'PUT',
+        headers: ticket.required_headers || { 'Content-Type': file.type },
+        body: file,
+      });
+      if (!putResp.ok) {
+        const detail = await putResp.text().catch(() => '');
+        throw new Error('storage rejected the upload (' + putResp.status + ') ' + detail.slice(0, 200));
+      }
+      return ticket.storage_key;
+    }
+
+    // payload: { title, about, memberPhones, photoFile } from NewGroupModal.
+    async function createGroupChat(payload) {
+      newGroupError.value = '';
+      const title = (payload.title || '').trim();
+      if (!title) { newGroupError.value = 'Enter a group name.'; return; }
+      const phones = (payload.memberPhones || '')
         .split(',')
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
+      newGroupBusy.value = true;
       try {
-        // Same two-step flow as creating a private chat: resolve each phone
-        // number to a user id first (/chats/groups itself only knows ids).
+        // Resolve each member phone number to a user id first (/chats/groups
+        // itself only knows ids), same as creating a private chat.
         const targets = await Promise.all(
           phones.map((phone) => apiFetch(`/users/by-phone?phone_number=${encodeURIComponent(phone)}`).catch((err) => {
             throw err.status === 404 ? new Error(`No user with phone number ${phone}`) : err;
@@ -1279,17 +1486,28 @@ createApp({
         const memberIds = targets.map((t) => t.id);
         for (const t of targets) userById.value[t.id] = t; // already known - skip a later round trip
 
+        const body = { title, initial_member_ids: memberIds };
+        const about = (payload.about || '').trim();
+        if (about) body.about_text = about;
+
+        // Upload the photo BEFORE creating the group, so the group is born
+        // with its avatar in one atomic POST (the backend HEAD-validates the
+        // key). A failed upload aborts creation - nothing half-made.
+        if (payload.photoFile) {
+          body.avatar_storage_key = await uploadAvatarBytes('/chats/groups/avatar/upload-ticket', payload.photoFile);
+        }
+
         const chat = await apiFetch('/chats/groups', {
           method: 'POST',
-          body: JSON.stringify({ title: newGroupTitle.value.trim(), initial_member_ids: memberIds }),
+          body: JSON.stringify(body),
         });
-        newGroupTitle.value = '';
-        newGroupMemberPhones.value = '';
-        showNewGroup.value = false;
+        showNewGroupModal.value = false;
         await loadChats();
         await selectChat(chat.id);
       } catch (err) {
-        chatFormError.value = err.message;
+        newGroupError.value = err.message;
+      } finally {
+        newGroupBusy.value = false;
       }
     }
 
@@ -1378,6 +1596,13 @@ createApp({
     // ---------------------------------------------------------------
     watch(apiBase, (v) => localStorage.setItem('linka_api_base', v));
 
+    // Switching between Log in / Register restarts the flow at the phone step.
+    watch(authMode, () => {
+      authStage.value = 'phone';
+      otpCode.value = '';
+      authError.value = '';
+    });
+
     onMounted(async () => {
       if (accessToken.value) {
         try {
@@ -1396,9 +1621,12 @@ createApp({
 
     return {
       apiBase, isAuthed, currentUser,
-      authStage, phoneNumber, otpCode, authError, authBusy, requestOtp, verifyOtp, logout,
+      authMode, authStage, phoneNumber, otpCode, profileDraft, authError, authBusy, requestOtp, verifyOtp, logout,
+      avatarPreviewUrl, avatarError, pickAvatar, clearAvatar,
       wsStatus,
       chats, activeChatId, activeChatLabel, chatDisplayName, senderLabel, formatChatTime, messages, messageInput, chatsError, messagesError, messagesEl,
+      chatAvatarUrl, chatAvatarName, chatAvatarColorKey, userAvatarUrl, senderAvatarUrl, currentUserAvatarUrl,
+      activeChatAvatarUrl, activeChatAvatarName, activeChatAvatarColorKey,
       activeChatIsGroup, visibleActiveChatMembers, hiddenActiveChatMemberCount, memberDisplayName, roleLabel,
       activeChatPresenceLabel,
       activeChatTypingLabel, typingLabelForChat, notifyTyping,
@@ -1407,7 +1635,8 @@ createApp({
       contextMenuMessage, contextMenuPosition, openMessageContextMenu, closeMessageContextMenu,
       replyingToMessage, startReplyTo, cancelReply,
       selectChat, sendMessage, onMessagesScroll, statusTickSymbol, statusTickClass,
-      showNewPrivate, showNewGroup, newPrivatePhone, newGroupTitle, newGroupMemberPhones, chatFormError,
+      showNewPrivate, newPrivatePhone, chatFormError,
+      showNewGroupModal, newGroupBusy, newGroupError,
       createPrivateChat, createGroupChat,
       showMembersModal, openMembersModal, addMemberPhone, membersModalError, membersModalBusy,
       canManageActiveChatMembers, addMemberToActiveGroup, activeChatMembers,
@@ -1422,22 +1651,26 @@ createApp({
 
   template: `
     <AuthScreen v-if="!isAuthed"
-      v-model:apiBase="apiBase" v-model:phoneNumber="phoneNumber" v-model:otpCode="otpCode"
+      v-model:authMode="authMode" v-model:phoneNumber="phoneNumber" v-model:otpCode="otpCode"
+      v-model:profileDraft="profileDraft"
+      :avatarPreviewUrl="avatarPreviewUrl" :avatarError="avatarError"
       :authStage="authStage" :authError="authError" :authBusy="authBusy"
+      @pick-avatar="pickAvatar" @clear-avatar="clearAvatar"
       @request-otp="requestOtp" @verify-otp="verifyOtp" @back-to-phone="authStage = 'phone'" />
 
     <div class="h-full flex flex-col" v-else>
-      <AppHeader :wsStatus="wsStatus" :currentUser="currentUser" @logout="logout" />
+      <AppHeader :wsStatus="wsStatus" :currentUser="currentUser" :avatarUrl="currentUserAvatarUrl" @logout="logout" />
 
       <div class="flex flex-1 min-h-0">
         <ChatSidebar
-          v-model:showNewPrivate="showNewPrivate" v-model:showNewGroup="showNewGroup"
-          v-model:newPrivatePhone="newPrivatePhone" v-model:newGroupTitle="newGroupTitle"
-          v-model:newGroupMemberPhones="newGroupMemberPhones"
+          v-model:showNewPrivate="showNewPrivate"
+          v-model:newPrivatePhone="newPrivatePhone"
           :chatFormError="chatFormError" :chatsError="chatsError" :chats="chats" :activeChatId="activeChatId"
           :chatDisplayName="chatDisplayName" :formatChatTime="formatChatTime"
+          :chatAvatarUrl="chatAvatarUrl" :chatAvatarName="chatAvatarName" :chatAvatarColorKey="chatAvatarColorKey"
           :typingLabelForChat="typingLabelForChat" :unreadCountByChatId="unreadCountByChatId"
-          @create-private-chat="createPrivateChat" @create-group-chat="createGroupChat"
+          @create-private-chat="createPrivateChat"
+          @open-new-group="newGroupError = ''; showNewGroupModal = true"
           @select-chat="selectChat" />
 
         <main class="flex-1 flex flex-col min-w-0">
@@ -1448,12 +1681,14 @@ createApp({
               :hiddenActiveChatMemberCount="hiddenActiveChatMemberCount"
               :memberDisplayName="memberDisplayName" :activeChatPresenceLabel="activeChatPresenceLabel"
               :activeChatTypingLabel="activeChatTypingLabel"
+              :avatarUrl="activeChatAvatarUrl" :avatarName="activeChatAvatarName" :avatarColorKey="activeChatAvatarColorKey"
               @open-members-modal="openMembersModal" />
 
             <MessageList ref="messagesEl"
               :messages="messages" :messagesError="messagesError" :currentUser="currentUser"
               :shouldShowSystemMessage="shouldShowSystemMessage" :systemMessageText="systemMessageText"
               :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass"
+              :senderAvatarUrl="senderAvatarUrl"
               :quotedPreviewFor="quotedPreviewFor"
               @message-contextmenu="openMessageContextMenu" @load-older="onMessagesScroll" />
 
@@ -1474,7 +1709,7 @@ createApp({
 
     <MembersModal v-if="showMembersModal"
       :activeChatLabel="activeChatLabel" :activeChatMembers="activeChatMembers"
-      :memberDisplayName="memberDisplayName" :roleLabel="roleLabel"
+      :memberDisplayName="memberDisplayName" :roleLabel="roleLabel" :userAvatarUrl="userAvatarUrl"
       :hasMemberOptions="hasMemberOptions" :memberOptionsFor="memberOptionsFor"
       :canChangeActiveChatRoles="canChangeActiveChatRoles" :canRemoveMember="canRemoveMember"
       :showOwnerTransferPicker="showOwnerTransferPicker" :leaveGroupBusy="leaveGroupBusy"
@@ -1490,9 +1725,16 @@ createApp({
       @cancel-owner-transfer-picker="cancelOwnerTransferPicker"
       @add-member-to-active-group="addMemberToActiveGroup" />
 
+    <NewGroupModal v-if="showNewGroupModal"
+      :busy="newGroupBusy" :error="newGroupError"
+      @close="showNewGroupModal = false"
+      @create="createGroupChat" />
+
     <ToastList :toasts="toasts" />
   `,
-}).mount('#app');
+});
+app.component('Avatar', Avatar);
+app.mount('#app');
 </script>
 </body>
 </html>

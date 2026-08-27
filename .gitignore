@@ -17,6 +17,7 @@ sdist/
 var/
 wheels/
 share/python-wheels/
+mock_photos/
 *.egg-info/
 .installed.cfg
 *.egg
@@ -40,6 +41,7 @@ env/
 *.swp
 *.swo
 *~
+*.md
 
 # Testing & Coverage
 .pytest_cache/

@@ -11,6 +11,7 @@ const MessageList = {
     shouldShowSystemMessage: { type: Function, required: true },
     systemMessageText: { type: Function, required: true },
     senderLabel: { type: Function, required: true },
+    senderAvatarUrl: { type: Function, required: true },
     statusTickSymbol: { type: Function, required: true },
     statusTickClass: { type: Function, required: true },
     quotedPreviewFor: { type: Function, required: true },
@@ -49,7 +50,13 @@ const MessageList = {
           <span class="inline-block px-2.5 py-1 rounded-full text-[11px] bg-slate-200 text-slate-600">{{ systemMessageText(m) }}</span>
         </div>
       <div v-else-if="m.sender_id != null"
-           class="max-w-md" :class="m.sender_id === currentUser.id ? 'ml-auto text-right' : ''">
+           class="max-w-md w-fit flex items-end gap-2"
+           :class="m.sender_id === currentUser.id ? 'ml-auto text-right' : ''">
+        <Avatar v-if="m.sender_id !== currentUser.id"
+                :url="senderAvatarUrl(m.sender_id)" :name="senderLabel(m.sender_id)"
+                :colorKey="m.sender_id" sizeClass="w-7 h-7 text-xs"
+                class="shrink-0 mb-[18px]" />
+        <div class="min-w-0">
         <div class="inline-block px-3 py-2 rounded-2xl text-sm bubble-tail cursor-pointer"
              :class="m.sender_id === currentUser.id ? 'bg-teal-700 text-white rounded-br-none bubble-tail-mine' : 'bg-white border border-slate-200 rounded-bl-none bubble-tail-theirs'"
              @contextmenu.prevent="$emit('message-contextmenu', { message: m, event: $event })">
@@ -70,6 +77,7 @@ const MessageList = {
              :class="m.sender_id === currentUser.id ? 'justify-end' : ''">
           <span>{{ new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
           <span v-if="m.sender_id === currentUser.id" class="text-sm font-bold leading-none" :class="statusTickClass(m.status)">{{ statusTickSymbol(m.status) }}</span>
+        </div>
         </div>
       </div>
       </template>

@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import random
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -36,7 +37,14 @@ from database.models.chat import Chat
 from database.models.message import Message
 from database.models.participant import Participant
 from database.models.user import User
+from config import S3_BUCKET_AVATARS
+from services.storage.client import async_session as s3_async_session, build_object_key, client_kwargs
+from services.storage.media_service import ensure_buckets
 from utils.snowflake import next_id
+
+# mock_photos/p{N}.png (N = user's phone number "1".."10") for user avatars,
+# mock_photos/g{N}.jpg for group photos (mapped per group in GROUP_CHATS).
+MOCK_PHOTOS_DIR = Path(__file__).resolve().parent.parent / "mock_photos"
 
 ROLE_MEMBER = 1
 ROLE_OWNER = 3
@@ -68,12 +76,12 @@ PRIVATE_PAIRS = [
     (0, 9), (2, 7),
 ]
 
-# (title, owner index, other member indices)
+# (title, owner index, other member indices, group photo file in mock_photos/)
 GROUP_CHATS = [
-    ("Linka Devs", 0, [1, 2, 3]),
-    ("Weekend Trip", 3, [0, 4, 5]),
-    ("Cohen Family", 2, [1, 4, 9]),
-    ("Book Club", 6, [7, 8, 9]),
+    ("Linka Devs", 0, [1, 2, 3], "g1.jpg"),
+    ("Weekend Trip", 3, [0, 4, 5], "g2.jpg"),
+    ("Cohen Family", 2, [1, 4, 9], "g3.jpg"),
+    ("Book Club", 6, [7, 8, 9], "g4.jpg"),
 ]
 
 # Nothing here matters beyond being varied in length - a few are long enough
@@ -136,6 +144,63 @@ async def _ensure_users(session) -> list[User]:
             print(f"  backfilled display_name for {phone_number} -> {display_name}")
         users.append(user)
     return users
+
+
+async def _ensure_avatars(session, users: list[User]) -> None:
+    """
+    Give every seeded user a profile picture: upload mock_photos/p{N}.png
+    (N = phone number) to the avatars bucket and point profile_pic_url at the
+    resulting storage key - the same key shape the real upload flow produces
+    (build_object_key), so UserOut resolves it exactly the same way.
+
+    Re-runnable: a user who already has a profile_pic_url is left alone. The
+    script writes bytes directly rather than through a presigned PUT - it's a
+    dev fixture, not a client.
+    """
+    await ensure_buckets()
+    async with s3_async_session().client("s3", **client_kwargs()) as s3:
+        for user in users:
+            if user.profile_pic_url:
+                continue
+            photo = MOCK_PHOTOS_DIR / f"p{user.phone_number}.png"
+            if not photo.is_file():
+                print(f"  no photo file {photo.name} for {user.display_name} - skipped")
+                continue
+            key = build_object_key("avatar", "image/png")
+            await s3.put_object(
+                Bucket=S3_BUCKET_AVATARS,
+                Key=key,
+                Body=photo.read_bytes(),
+                ContentType="image/png",
+            )
+            await update_user_profile(session, user_id=user.id, profile_pic_url=key)
+            print(f"  avatar for {user.display_name} ({photo.name}) -> {key}")
+
+
+_GROUP_PHOTO_MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+
+
+async def _ensure_group_avatar(session, s3, chat: Chat, photo_name: str) -> None:
+    """
+    Give a group a profile picture: upload mock_photos/<photo_name> to the
+    avatars bucket and point Chat.profile_pic_url at the resulting storage key
+    - same key shape (build_object_key) the real group-avatar upload flow
+    produces, so ChatOut resolves it identically. Re-runnable: a group that
+    already has a profile_pic_url is left alone.
+    """
+    if chat.profile_pic_url:
+        return
+    photo = MOCK_PHOTOS_DIR / photo_name
+    if not photo.is_file():
+        print(f"  no photo file {photo.name} for group '{chat.title}' - skipped")
+        return
+    mime = _GROUP_PHOTO_MIME.get(photo.suffix.lower(), "image/jpeg")
+    key = build_object_key("avatar", mime)
+    await s3.put_object(Bucket=S3_BUCKET_AVATARS, Key=key, Body=photo.read_bytes(), ContentType=mime)
+    await session.execute(update(Chat).where(Chat.id == chat.id).values(profile_pic_url=key))
+    await session.commit()
+    chat.profile_pic_url = key
+    print(f"  group photo for '{chat.title}' ({photo.name}) -> {key}")
 
 
 async def _ensure_private_chat(session, user_a: User, user_b: User) -> Chat:
@@ -248,6 +313,9 @@ async def main(messages_per_chat: int, days: int) -> None:
         print("Users:")
         users = await _ensure_users(session)
 
+        print("Avatars:")
+        await _ensure_avatars(session, users)
+
         print("Chats:")
         # (label, chat, sender_ids, message_count)
         chats: list[tuple[str, Chat, list[int], int]] = []
@@ -257,11 +325,19 @@ async def main(messages_per_chat: int, days: int) -> None:
             label = f"{users[a].display_name} <-> {users[b].display_name}"
             chats.append((label, chat, [users[a].id, users[b].id], messages_per_chat))
 
-        for title, owner_index, member_indices in GROUP_CHATS:
+        group_photo_jobs: list[tuple[Chat, str]] = []
+        for title, owner_index, member_indices, photo_name in GROUP_CHATS:
             owner = users[owner_index]
             members = [users[i] for i in member_indices]
             chat = await _ensure_group_chat(session, title, owner, members)
             chats.append((title, chat, [owner.id] + [m.id for m in members], messages_per_chat))
+            group_photo_jobs.append((chat, photo_name))
+
+        print("Group photos:")
+        await ensure_buckets()
+        async with s3_async_session().client("s3", **client_kwargs()) as s3:
+            for chat, photo_name in group_photo_jobs:
+                await _ensure_group_avatar(session, s3, chat, photo_name)
 
         print(f"Messages ({messages_per_chat} per chat):")
         total_messages = 0

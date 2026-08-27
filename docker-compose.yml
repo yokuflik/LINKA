@@ -19,3 +19,25 @@ services:
       # Maps port 6379 on your MacBook to port 6379 inside the container
       - "6380:6379"
     restart: unless-stopped
+
+  # Local object storage - S3-API compatible, stands in for AWS S3 in dev.
+  # Message attachments and avatars are uploaded here directly by the client
+  # via presigned URLs; the app server never proxies the bytes.
+  test_minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: linka_dev
+      MINIO_ROOT_PASSWORD: linka_dev_secret
+    ports:
+      # S3 API on 9100, web console on 9101 - offset from the standard
+      # 9000/9001 to match this project's 5433/6380 convention and avoid
+      # clashing with any MinIO already running locally.
+      - "9100:9000"
+      - "9101:9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+volumes:
+  minio_data:

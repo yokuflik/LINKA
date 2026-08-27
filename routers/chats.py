@@ -8,6 +8,9 @@ from database.connection import get_db
 from routers.dependencies import get_current_user_id
 from routers.schemas import (
     AddMemberIn,
+    AvatarCommitIn,
+    AvatarUploadTicketIn,
+    AvatarUploadTicketOut,
     ChangeRoleIn,
     ChatListItemOut,
     ChatMemberOut,
@@ -17,7 +20,7 @@ from routers.schemas import (
     ParticipantOut,
     UpdateGroupDetailsIn,
 )
-from services import chat_service
+from services import avatar_service, chat_service
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 
@@ -49,6 +52,23 @@ async def create_private_chat(
     return await chat_service.get_or_create_private_chat(session, user_id, body.other_user_id)
 
 
+@router.post("/groups/avatar/upload-ticket", response_model=AvatarUploadTicketOut)
+async def create_new_group_avatar_upload_ticket(
+    body: AvatarUploadTicketIn,
+    user_id: int = Depends(get_current_user_id),
+):
+    """Presigned PUT for a photo to attach to a group that doesn't exist yet
+    (the group-creation form). No role check - the returned key is inert until
+    it's committed, which POST /chats/groups does (validating it first)."""
+    ticket = avatar_service.request_upload(body.mime_type, body.size_bytes)
+    return AvatarUploadTicketOut(
+        storage_key=ticket.storage_key,
+        upload_url=ticket.upload_url,
+        required_headers=ticket.required_headers,
+        expires_in=ticket.expires_in,
+    )
+
+
 @router.post("/groups", response_model=ChatOut)
 async def create_group_chat(
     body: CreateGroupChatIn,
@@ -56,7 +76,12 @@ async def create_group_chat(
     session: AsyncSession = Depends(get_db),
 ):
     return await chat_service.create_group_chat(
-        session, creator_id=user_id, title=body.title, initial_member_ids=body.initial_member_ids, about_text=body.about_text
+        session,
+        creator_id=user_id,
+        title=body.title,
+        initial_member_ids=body.initial_member_ids,
+        about_text=body.about_text,
+        avatar_storage_key=body.avatar_storage_key,
     )
 
 
@@ -68,8 +93,53 @@ async def update_group_details(
     session: AsyncSession = Depends(get_db),
 ):
     chat = await chat_service.update_group_details(
-        session, actor_id=user_id, chat_id=chat_id, title=body.title, about_text=body.about_text, profile_pic_url=body.profile_pic_url
+        session, actor_id=user_id, chat_id=chat_id, title=body.title, about_text=body.about_text
     )
+    if chat is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    return chat
+
+
+@router.post("/{chat_id}/avatar/upload-ticket", response_model=AvatarUploadTicketOut)
+async def create_group_avatar_upload_ticket(
+    chat_id: int,
+    body: AvatarUploadTicketIn,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Step 1: presigned PUT the client uploads the group photo directly to.
+    Requires the caller to be an admin/owner of the group."""
+    await chat_service.ensure_can_manage_details(session, actor_id=user_id, chat_id=chat_id)
+    ticket = avatar_service.request_upload(body.mime_type, body.size_bytes)
+    return AvatarUploadTicketOut(
+        storage_key=ticket.storage_key,
+        upload_url=ticket.upload_url,
+        required_headers=ticket.required_headers,
+        expires_in=ticket.expires_in,
+    )
+
+
+@router.put("/{chat_id}/avatar", response_model=ChatOut)
+async def set_group_avatar(
+    chat_id: int,
+    body: AvatarCommitIn,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Step 2: commit the uploaded object as the group's photo."""
+    chat = await chat_service.set_group_avatar(session, actor_id=user_id, chat_id=chat_id, storage_key=body.storage_key)
+    if chat is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+    return chat
+
+
+@router.delete("/{chat_id}/avatar", response_model=ChatOut)
+async def delete_group_avatar(
+    chat_id: int,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    chat = await chat_service.clear_group_avatar(session, actor_id=user_id, chat_id=chat_id)
     if chat is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
     return chat

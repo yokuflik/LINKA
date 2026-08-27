@@ -18,7 +18,7 @@ from database.models.chat import Chat
 from database.models.participant import Participant
 from database.models.user import User
 from config import MAX_INITIAL_GROUP_MEMBERS
-from services import message_service, realtime_service
+from services import avatar_service, message_service, realtime_service
 from utils.snowflake import next_id
 
 ROLE_MEMBER = 1
@@ -144,6 +144,7 @@ async def create_group_chat(
     title: str,
     initial_member_ids: Sequence[int] = (),
     about_text: Optional[str] = None,
+    avatar_storage_key: Optional[str] = None,
 ) -> Chat:
     # Each member is its own sequential DB round trip below - an unbounded
     # list is an easy way to turn one call into millions of inserts.
@@ -170,6 +171,16 @@ async def create_group_chat(
             if participant is None:
                 await delete_chat(session, chat_id)
                 raise UserNotFoundError(f"User {member_id} does not exist")
+
+    # Optional group photo: the client uploaded the bytes straight to storage
+    # via POST /chats/groups/avatar/upload-ticket and handed us the key.
+    # avatar_service validates it (HEAD + avatar limits) before storing, so a
+    # bad/forged key raises here rather than silently sticking. No system
+    # message - a brand-new group has nobody to notify.
+    if avatar_storage_key:
+        updated = await avatar_service.set_group_avatar(session, chat_id, avatar_storage_key)
+        if updated is not None:
+            chat = updated
 
     await _notify_added_to_chat(creator_id, chat_id)
     for member_id in initial_member_ids:
@@ -241,6 +252,46 @@ async def update_group_details(
     return await update_chat_details(
         session, chat_id=chat_id, title=title, about_text=about_text, profile_pic_url=profile_pic_url
     )
+
+
+async def ensure_can_manage_details(session: AsyncSession, actor_id: int, chat_id: int) -> None:
+    """
+    Public guard for endpoints that change group details (e.g. minting a
+    group-avatar upload ticket) but don't go through update_group_details /
+    set_group_avatar themselves. Raises PermissionDeniedError (-> 403).
+    """
+    await _require_role(session, chat_id, actor_id, min_role=ROLE_ADMIN)
+
+
+async def set_group_avatar(session: AsyncSession, actor_id: int, chat_id: int, storage_key: str) -> Optional[Chat]:
+    """
+    Set a group's profile picture. Requires ROLE_ADMIN (same as any other
+    group-detail change). The object-storage validation + old-object cleanup
+    lives in avatar_service; this layer only owns the authorization and the
+    "X changed the group photo" system message.
+    """
+    await _require_role(session, chat_id, actor_id, min_role=ROLE_ADMIN)
+    chat = await avatar_service.set_group_avatar(session, chat_id, storage_key)
+    if chat is None:
+        return None
+    actor_name = await _display_name_for(session, actor_id)
+    await message_service.send_system_message(
+        session, chat_id=chat_id, content=f"{actor_name} changed the group photo"
+    )
+    return chat
+
+
+async def clear_group_avatar(session: AsyncSession, actor_id: int, chat_id: int) -> Optional[Chat]:
+    """Remove a group's profile picture. Requires ROLE_ADMIN."""
+    await _require_role(session, chat_id, actor_id, min_role=ROLE_ADMIN)
+    chat = await avatar_service.clear_group_avatar(session, chat_id)
+    if chat is None:
+        return None
+    actor_name = await _display_name_for(session, actor_id)
+    await message_service.send_system_message(
+        session, chat_id=chat_id, content=f"{actor_name} removed the group photo"
+    )
+    return chat
 
 
 async def _display_name_for(session: AsyncSession, user_id: int) -> str:

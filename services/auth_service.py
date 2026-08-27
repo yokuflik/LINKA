@@ -40,19 +40,40 @@ class OTPRequestRateLimitedError(Exception):
     pass
 
 
+class PhoneAlreadyRegisteredError(Exception):
+    pass
+
+
+class PhoneNotRegisteredError(Exception):
+    pass
+
+
 def _otp_key(phone_number: str) -> str:
     return f"{_OTP_KEY_PREFIX}{phone_number}"
 
 
-async def request_otp(phone_number: str) -> None:
+async def request_otp(phone_number: str, intent: str | None = None, session: AsyncSession | None = None) -> None:
     """
     Generates a one-time login code and hands it to the SMS provider.
+
+    When ``intent`` and ``session`` are supplied, the phone number is checked
+    against the users table first: 'register' fails if the number already has
+    an account, 'login' fails if it doesn't - so the caller can't silently
+    register by "logging in", or hit "verify & create account" on a number
+    that's already taken.
 
     Rate-limited per phone number - otherwise this endpoint alone is an open
     invitation to SMS-bomb any number (cost abuse against the SMS provider,
     and a real annoyance/attack vector against the phone's owner), since
     nothing about it requires an account or a token yet.
     """
+    if intent and session is not None:
+        existing = await get_user_by_phone(session, phone_number)
+        if intent == "register" and existing is not None:
+            raise PhoneAlreadyRegisteredError("This phone number is already registered - log in instead")
+        if intent == "login" and existing is None:
+            raise PhoneNotRegisteredError("No account found for this phone number - sign up first")
+
     allowed = await rate_limit_service.check_and_increment(
         phone_number, "otp_request", max_per_window=OTP_REQUEST_RATE_LIMIT_MAX, window_seconds=OTP_REQUEST_RATE_LIMIT_WINDOW_SECONDS
     )

@@ -11,10 +11,15 @@ const ChatHeader = {
     memberDisplayName: { type: Function, required: true },
     activeChatPresenceLabel: { type: String, required: true },
     activeChatTypingLabel: { type: String, required: true },
+    avatarUrl: { default: null },
+    avatarName: { default: '' },
+    avatarColorKey: { default: '' },
   },
   emits: ['open-members-modal'],
   template: `
-    <div class="px-4 py-2 border-b border-slate-200 bg-white">
+    <div class="px-4 py-2 border-b border-slate-200 bg-white flex items-center gap-3">
+      <Avatar :url="avatarUrl" :name="avatarName" :colorKey="avatarColorKey" sizeClass="w-9 h-9 text-sm" />
+      <div class="min-w-0 flex-1">
       <div class="text-sm font-medium"
            :class="activeChatIsGroup ? 'cursor-pointer hover:underline' : ''"
            @click="activeChatIsGroup && $emit('open-members-modal')">{{ activeChatLabel }}</div>
@@ -29,6 +34,7 @@ const ChatHeader = {
       </div>
       <div v-else-if="!activeChatIsGroup && activeChatPresenceLabel" class="mt-0.5 text-xs text-teal-600 truncate">
         {{ activeChatPresenceLabel }}
+      </div>
       </div>
     </div>
   `,

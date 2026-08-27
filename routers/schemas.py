@@ -1,7 +1,10 @@
 from datetime import datetime
 from typing import Annotated, Optional
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict
+from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator, model_validator
+
+from config import ALLOWED_UPLOAD_MIME, MAX_UPLOAD_BYTES_BY_KIND, MIN_UPLOAD_BYTES_BY_KIND
+from services.storage.media_service import public_avatar_url
 
 # Every id in this codebase is a 64-bit Snowflake. JavaScript's JSON.parse
 # (and fetch().json(), and JSON.parse on a WebSocket message) decodes JSON
@@ -18,6 +21,10 @@ IdStr = Annotated[str, BeforeValidator(str)]
 
 class OTPRequestIn(BaseModel):
     phone_number: str
+    # 'login' | 'register' - lets the server reject "register an existing
+    # number" / "log in with an unknown number" before an OTP is even sent.
+    # Optional so existing callers keep working (no intent = no pre-check).
+    intent: str | None = None
 
 
 class OTPVerifyIn(BaseModel):
@@ -43,6 +50,16 @@ class UserOut(BaseModel):
     about_text: Optional[str]
     profile_pic_url: Optional[str]
 
+    @model_validator(mode="after")
+    def _resolve_avatar_url(self):
+        # profile_pic_url is stored as a storage key; expose it as a public
+        # URL. Values that are already absolute URLs (legacy / seed data)
+        # pass through untouched.
+        key = self.profile_pic_url
+        if key and not key.startswith(("http://", "https://")):
+            self.profile_pic_url = public_avatar_url(key)
+        return self
+
 
 class LoginOut(BaseModel):
     user: UserOut
@@ -53,7 +70,44 @@ class LoginOut(BaseModel):
 class UserProfileUpdateIn(BaseModel):
     display_name: Optional[str] = None
     about_text: Optional[str] = None
-    profile_pic_url: Optional[str] = None
+    # The avatar is set through the dedicated /users/me/avatar endpoints, not
+    # here - a raw client-supplied URL/key can't be trusted or cleaned up.
+
+
+class AvatarUploadTicketIn(BaseModel):
+    mime_type: str
+    size_bytes: int
+
+    @field_validator("mime_type")
+    @classmethod
+    def _mime_allowed(cls, v: str) -> str:
+        if v not in ALLOWED_UPLOAD_MIME["avatar"]:
+            raise ValueError(f"content type {v!r} is not allowed for profile pictures")
+        return v
+
+    @field_validator("size_bytes")
+    @classmethod
+    def _size_in_range(cls, v: int) -> int:
+        ceiling = MAX_UPLOAD_BYTES_BY_KIND["avatar"]
+        floor = MIN_UPLOAD_BYTES_BY_KIND.get("avatar", 1)
+        if v < floor:
+            raise ValueError(f"declared size {v} is below the {floor}-byte minimum")
+        if v > ceiling:
+            raise ValueError(
+                f"profile picture must be at most {ceiling} bytes ({ceiling // 1024} KB)"
+            )
+        return v
+
+
+class AvatarUploadTicketOut(BaseModel):
+    storage_key: str
+    upload_url: str
+    required_headers: dict
+    expires_in: int
+
+
+class AvatarCommitIn(BaseModel):
+    storage_key: str
 
 
 class ChatOut(BaseModel):
@@ -65,6 +119,16 @@ class ChatOut(BaseModel):
     about_text: Optional[str]
     profile_pic_url: Optional[str]
     last_message_at: datetime
+
+    @model_validator(mode="after")
+    def _resolve_avatar_url(self):
+        # Same as UserOut: profile_pic_url is stored as an avatars-bucket
+        # object key; expose it as a public URL. Absolute URLs (legacy / seed
+        # data) pass through untouched.
+        key = self.profile_pic_url
+        if key and not key.startswith(("http://", "https://")):
+            self.profile_pic_url = public_avatar_url(key)
+        return self
     last_message_id: Optional[IdStr]
     last_message_preview: Optional[str]
 
@@ -98,12 +162,19 @@ class CreateGroupChatIn(BaseModel):
     title: str
     initial_member_ids: list[int] = []
     about_text: Optional[str] = None
+    # Object-storage key of a photo the client already uploaded via
+    # POST /chats/{id}/avatar/upload-ticket's presigned PUT. Validated
+    # (HEAD + limits) server-side before it's stored - a raw client key is
+    # never trusted. Optional; omit for a photo-less group.
+    avatar_storage_key: Optional[str] = None
 
 
 class UpdateGroupDetailsIn(BaseModel):
     title: Optional[str] = None
     about_text: Optional[str] = None
-    profile_pic_url: Optional[str] = None
+    # The group photo is set through the dedicated
+    # /chats/{id}/avatar endpoints, not here - a raw client-supplied key/URL
+    # can't be trusted or cleaned up (same rationale as UserProfileUpdateIn).
 
 
 class AddMemberIn(BaseModel):

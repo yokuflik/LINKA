@@ -30,14 +30,20 @@ from sqlalchemy import insert, select, update
 from database.connection import dispose_engine, session_scope
 from database.crud.crud_chat import create_chat
 from database.crud.crud_message import build_last_message_preview
-from database.crud.crud_participant import add_participant_to_chat
+from database.crud.crud_participant import add_participant_to_chat, recompute_chat_receipt_cursors
 from database.crud.crud_private_chat_pair import create_pair, get_pair_chat_id
 from database.crud.crud_user import create_user, get_user_by_phone, update_user_profile
 from database.models.chat import Chat
 from database.models.message import Message
+from database.models.message_receipt_log import MessageReceiptLog
 from database.models.participant import Participant
 from database.models.user import User
-from config import S3_BUCKET_AVATARS
+from config import (
+    RECEIPT_KIND_DELIVERED,
+    RECEIPT_KIND_PLAYED,
+    RECEIPT_KIND_READ,
+    S3_BUCKET_AVATARS,
+)
 from services.storage.client import async_session as s3_async_session, build_object_key, client_kwargs
 from services.storage.media_service import ensure_buckets
 from utils.snowflake import next_id
@@ -308,6 +314,90 @@ async def _seed_messages(session, chat: Chat, sender_ids: list[int], count: int,
     await session.commit()
 
 
+async def _seed_receipts(session, chat: Chat) -> None:
+    """
+    Give each chat a plausible receipt state: some participants fully caught
+    up, some partway, some who've never opened it. Writes the fast-path
+    watermarks (+ coarse *_at) AND a few message_receipt_log rows per
+    participant, so the per-message "info" view has real data to show.
+
+    Idempotent-ish: skips a chat that already has receipt-log rows.
+    """
+    existing = await session.scalar(
+        select(MessageReceiptLog.id).where(MessageReceiptLog.chat_id == chat.id).limit(1)
+    )
+    if existing is not None:
+        return
+
+    msg_rows = (
+        await session.execute(
+            select(Message.id, Message.created_at, Message.sender_id, Message.type)
+            .where(Message.chat_id == chat.id)
+            .order_by(Message.id)
+        )
+    ).all()
+    if len(msg_rows) < 4:
+        return
+
+    participants = (
+        await session.execute(select(Participant).where(Participant.chat_id == chat.id))
+    ).scalars().all()
+
+    log_rows = []
+    for p in participants:
+        # 0 = never opened, 1 = read all, else = somewhere in the middle.
+        roll = random.random()
+        if roll < 0.2:
+            continue
+        if roll > 0.75:
+            cut = len(msg_rows) - 1
+        else:
+            cut = random.randint(len(msg_rows) // 3, len(msg_rows) - 2)
+
+        read_msg = msg_rows[cut]
+        deliv_idx = min(len(msg_rows) - 1, cut + random.randint(0, 2))
+        deliv_msg = msg_rows[deliv_idx]
+        read_at = read_msg.created_at + timedelta(minutes=random.randint(1, 240))
+        deliv_at = deliv_msg.created_at + timedelta(seconds=random.randint(5, 300))
+
+        await session.execute(
+            update(Participant)
+            .where(Participant.chat_id == chat.id, Participant.user_id == p.user_id)
+            .values(
+                last_delivered_message_id=deliv_msg.id,
+                last_read_message_id=read_msg.id,
+                last_delivered_at=deliv_at,
+                last_read_at=read_at,
+            )
+        )
+        log_rows.append(dict(id=next_id(), occurred_at=deliv_at, chat_id=chat.id,
+                             user_id=p.user_id, kind=RECEIPT_KIND_DELIVERED, up_to_message_id=deliv_msg.id))
+        log_rows.append(dict(id=next_id(), occurred_at=read_at, chat_id=chat.id,
+                             user_id=p.user_id, kind=RECEIPT_KIND_READ, up_to_message_id=read_msg.id))
+
+        # A played row for the last voice message at/under the read cut, if any.
+        played = next(
+            (m for m in reversed(msg_rows[: cut + 1]) if m.type == 4 and m.sender_id != p.user_id),
+            None,
+        )
+        if played is not None and random.random() < 0.7:
+            await session.execute(
+                update(Participant)
+                .where(Participant.chat_id == chat.id, Participant.user_id == p.user_id)
+                .values(last_played_message_id=played.id,
+                        last_played_at=played.created_at + timedelta(minutes=random.randint(1, 120)))
+            )
+            log_rows.append(dict(id=next_id(),
+                                 occurred_at=played.created_at + timedelta(minutes=random.randint(1, 120)),
+                                 chat_id=chat.id, user_id=p.user_id,
+                                 kind=RECEIPT_KIND_PLAYED, up_to_message_id=played.id))
+
+    if log_rows:
+        await session.execute(insert(MessageReceiptLog), log_rows)
+    await recompute_chat_receipt_cursors(session, chat.id)
+    await session.commit()
+
+
 async def main(messages_per_chat: int, days: int) -> None:
     async with session_scope() as session:
         print("Users:")
@@ -343,6 +433,7 @@ async def main(messages_per_chat: int, days: int) -> None:
         total_messages = 0
         for label, chat, sender_ids, count in chats:
             await _seed_messages(session, chat, sender_ids, count, days)
+            await _seed_receipts(session, chat)
             total_messages += count
             print(f"  {count:>6} -> {label}")
 

@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -12,6 +14,7 @@ from routers.messages import router as messages_router
 from routers.users import router as users_router
 from routers.websocket import router as websocket_router
 from services import auth_service, chat_service, message_service
+from services.receipts import worker as receipt_worker
 from services.redis_client import close_redis
 from services.storage import media_service
 from services.storage.errors import (
@@ -31,7 +34,19 @@ async def lifespan(app: FastAPI):
         import logging
 
         logging.getLogger(__name__).warning("ensure_buckets failed at startup: %s", exc)
+
+    # Background consumer draining the receipt Redis Stream into
+    # message_receipt_log (see services/receipts). One task per process;
+    # the shared consumer group spreads the load across replicas.
+    receipt_task = asyncio.create_task(receipt_worker.run_forever())
+
     yield
+
+    receipt_task.cancel()
+    try:
+        await receipt_task
+    except asyncio.CancelledError:
+        pass
     await dispose_engine()
     await close_redis()
 

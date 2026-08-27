@@ -33,6 +33,25 @@ class Participant(Base):
     # sent/delivered/read status without ever writing to the message itself.
     last_delivered_message_id = Column(BigInteger, nullable=True)
 
+    # Same watermark pattern again, one step *past* read and only meaningful
+    # for voice recordings: the id of the last message this participant has
+    # actually listened to ("נשמעה"). A client bumps it via the mark_played
+    # WebSocket action when a voice note finishes / is scrubbed to the end.
+    # Rolls up into Chat.all_played_up_to_message_id (see MessageStatus.PLAYED)
+    # so a group's "everyone heard it" is one O(1) comparison, not a row per
+    # (recording, listener). NULL until the participant plays their first one.
+    last_played_message_id = Column(BigInteger, nullable=True)
+
+    # Coarse "when did this participant last acknowledge anything" timestamps,
+    # bumped alongside the *_message_id watermarks above. Unlike
+    # message_receipt_log (the detailed, time-partitioned, 30-day history),
+    # these are single columns that never expire - so "last read at" still has
+    # an answer for a message older than the log's retention window. Not used
+    # for the per-message detail view; that reads the log.
+    last_delivered_at = Column(DateTime(timezone=True), nullable=True)
+    last_read_at = Column(DateTime(timezone=True), nullable=True)
+    last_played_at = Column(DateTime(timezone=True), nullable=True)
+
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # SQLAlchemy ORM relationships

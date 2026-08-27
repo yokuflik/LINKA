@@ -44,6 +44,7 @@ async def add_participant_to_chat(
         role=role,
         last_delivered_message_id=chat_last_message_id,
         last_read_message_id=chat_last_message_id,
+        last_played_message_id=chat_last_message_id,
     )
     session.add(new_participant)
     try:
@@ -176,9 +177,10 @@ async def get_chat_participants_with_users(session: AsyncSession, chat_id: int) 
 
 async def recompute_chat_receipt_cursors(session: AsyncSession, chat_id: int) -> None:
     """
-    Rolls Chat.all_delivered_up_to_message_id / all_read_up_to_message_id up
-    to MIN(watermark) across this chat's current participants - "the
-    highest message id that literally everyone has delivered/read". Shared
+    Rolls Chat.all_delivered_up_to_message_id / all_read_up_to_message_id /
+    all_played_up_to_message_id up to MIN(watermark) across this chat's
+    current participants - "the highest message id that literally everyone
+    has delivered/read/played". Shared
     by update_last_delivered_message/update_last_read_message/
     remove_participant below and by crud_message.create_message (sending
     implies having seen the chat up to that point, which can itself unstick
@@ -201,14 +203,64 @@ async def recompute_chat_receipt_cursors(session: AsyncSession, chat_id: int) ->
     stmt = select(
         func.min(func.coalesce(Participant.last_delivered_message_id, 0)),
         func.min(func.coalesce(Participant.last_read_message_id, 0)),
+        func.min(func.coalesce(Participant.last_played_message_id, 0)),
     ).where(Participant.chat_id == chat_id)
-    min_delivered, min_read = (await session.execute(stmt)).one()
+    min_delivered, min_read, min_played = (await session.execute(stmt)).one()
 
     await session.execute(
         update(Chat)
         .where(Chat.id == chat_id)
-        .values(all_delivered_up_to_message_id=min_delivered, all_read_up_to_message_id=min_read)
+        .values(
+            all_delivered_up_to_message_id=min_delivered,
+            all_read_up_to_message_id=min_read,
+            all_played_up_to_message_id=min_played,
+        )
     )
+
+
+async def _advance_watermark(
+    session: AsyncSession,
+    chat_id: int,
+    user_id: int,
+    message_id: int,
+    id_column,
+    at_column,
+    occurred_at: Optional[datetime],
+) -> Optional[Participant]:
+    """
+    Shared body of the three update_last_*_message functions: move one
+    participant's watermark forward, only if `message_id` is actually ahead
+    of where it already is, and stamp the matching coarse *_at timestamp.
+
+    Returns the updated Participant, or None when the watermark did not move
+    (the participant isn't in the chat, or has already acknowledged past
+    `message_id`). A None return means callers can skip the receipt-cursor
+    recompute, the fan-out event, and the detailed-log append entirely -
+    nothing changed.
+    """
+    values = {id_column: message_id}
+    if occurred_at is not None:
+        values[at_column] = occurred_at
+
+    stmt = (
+        update(Participant)
+        .where(
+            Participant.chat_id == chat_id,
+            Participant.user_id == user_id,
+            func.coalesce(id_column, 0) < message_id,
+        )
+        .values(values)
+        .returning(Participant)
+    )
+
+    result = await session.execute(stmt)
+    participant = result.scalar_one_or_none()
+
+    if participant is not None:
+        await recompute_chat_receipt_cursors(session, chat_id)
+
+    await session.commit()
+    return participant
 
 
 async def update_last_delivered_message(
@@ -216,58 +268,60 @@ async def update_last_delivered_message(
     chat_id: int,
     user_id: int,
     message_id: int,
+    occurred_at: Optional[datetime] = None,
 ) -> Optional[Participant]:
     """
     Same watermark pattern as update_last_read_message, one step earlier in
     the pipeline: a message reaching this participant's device, not
-    necessarily opened/read yet.
+    necessarily opened/read yet. No-op (returns None) if the watermark is
+    already at/past `message_id`.
     """
-    stmt = (
-        update(Participant)
-        .where(Participant.chat_id == chat_id, Participant.user_id == user_id)
-        .values(last_delivered_message_id=message_id)
-        .returning(Participant)
+    return await _advance_watermark(
+        session, chat_id, user_id, message_id,
+        Participant.last_delivered_message_id, Participant.last_delivered_at, occurred_at,
     )
-
-    result = await session.execute(stmt)
-    participant = result.scalar_one_or_none()
-
-    if participant is not None:
-        await recompute_chat_receipt_cursors(session, chat_id)
-
-    await session.commit()
-    return participant
 
 
 async def update_last_read_message(
     session: AsyncSession,
     chat_id: int,
     user_id: int,
-    message_id: int
+    message_id: int,
+    occurred_at: Optional[datetime] = None,
 ) -> Optional[Participant]:
     """
-    Update the watermark (last read message) for a user in a chat.
+    Update the watermark (last read message) for a user in a chat. No-op
+    (returns None) if the watermark is already at/past `message_id`.
 
     Time Complexity: O(log N) + O(1)
     Explanation: B-Tree lookup takes O(log N). The update is an O(1) heap operation.
     Using RETURNING prevents a secondary SELECT query.
     """
-    stmt = (
-        update(Participant)
-        .where(Participant.chat_id == chat_id, Participant.user_id == user_id)
-        .values(last_read_message_id=message_id)
-        .returning(Participant)
+    return await _advance_watermark(
+        session, chat_id, user_id, message_id,
+        Participant.last_read_message_id, Participant.last_read_at, occurred_at,
     )
 
-    result = await session.execute(stmt)
-    participant = result.scalar_one_or_none()
 
-    if participant is not None:
-        await recompute_chat_receipt_cursors(session, chat_id)
-
-    await session.commit()
-
-    return participant
+async def update_last_played_message(
+    session: AsyncSession,
+    chat_id: int,
+    user_id: int,
+    message_id: int,
+    occurred_at: Optional[datetime] = None,
+) -> Optional[Participant]:
+    """
+    Same watermark pattern as update_last_read_message, one step past it and
+    voice-recording-specific: this participant has actually listened to the
+    recording at `message_id` (and, by the watermark's nature, any earlier
+    one). Bumps Chat.all_played_up_to_message_id via the shared recompute so
+    a message's PLAYED status is a single O(1) comparison, group or 1:1.
+    No-op (returns None) if the watermark is already at/past `message_id`.
+    """
+    return await _advance_watermark(
+        session, chat_id, user_id, message_id,
+        Participant.last_played_message_id, Participant.last_played_at, occurred_at,
+    )
 
 
 async def remove_participant(session: AsyncSession, chat_id: int, user_id: int) -> bool:

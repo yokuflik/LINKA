@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from typing import Sequence, Optional
 import logging
 
-from database.models.message import Message, MessageStatus
+from database.models.message import AUDIO_MESSAGE_TYPE, Message, MessageStatus
 from database.models.chat import Chat, LAST_MESSAGE_PREVIEW_LENGTH
 from database.models.participant import Participant
 from database.crud.crud_participant import recompute_chat_receipt_cursors
@@ -35,12 +35,22 @@ def build_last_message_preview(content: Optional[str], type: int = 1) -> Optiona
     return None if content is None else content[:LAST_MESSAGE_PREVIEW_LENGTH]
 
 
-def compute_message_status(message_id: int, chat: Chat) -> MessageStatus:
+def compute_message_status(message_id: int, chat: Chat, message_type: Optional[int] = None) -> MessageStatus:
     """
     Derived, not stored - see MessageStatus. O(1) regardless of chat size,
-    group size, or how much history this chat has: just two integer
+    group size, or how much history this chat has: just a few integer
     comparisons against the chat's own receipt-watermark columns.
+
+    `message_type` is only consulted to unlock the PLAYED state, which is
+    voice-recording-specific (AUDIO_MESSAGE_TYPE); omit it and the result
+    tops out at READ, exactly as before.
     """
+    if (
+        message_type == AUDIO_MESSAGE_TYPE
+        and chat.all_played_up_to_message_id is not None
+        and message_id <= chat.all_played_up_to_message_id
+    ):
+        return MessageStatus.PLAYED
     if chat.all_read_up_to_message_id is not None and message_id <= chat.all_read_up_to_message_id:
         return MessageStatus.READ
     if chat.all_delivered_up_to_message_id is not None and message_id <= chat.all_delivered_up_to_message_id:
@@ -120,10 +130,31 @@ async def create_message(
             # all_read_up_to_message_id for messages they'd actually already
             # seen from others, forever, until they explicitly re-opened the
             # chat. System messages (sender_id=None) have no one to bump.
+            # last_played is bumped alongside delivered/read for the same
+            # anti-deadlock reason: MIN(last_played_message_id) rolls up into
+            # Chat.all_played_up_to_message_id, so a sender whose own
+            # watermark never moved would pin every voice note's status below
+            # PLAYED forever. A sender is treated as having "played" their own
+            # outgoing recording; the minor imprecision (their watermark also
+            # covering an older recording from someone else they never opened)
+            # is invisible in practice - a client only renders receipts on its
+            # own outgoing messages.
             await session.execute(
                 update(Participant)
                 .where(Participant.chat_id == chat_id, Participant.user_id == sender_id)
-                .values(last_delivered_message_id=new_message.id, last_read_message_id=new_message.id)
+                .values(
+                    last_delivered_message_id=new_message.id,
+                    last_read_message_id=new_message.id,
+                    last_played_message_id=new_message.id,
+                    # Coarse "last acknowledged at" - kept in step with the
+                    # watermark ids above. No message_receipt_log row is
+                    # written for the sender's own message: a client never
+                    # renders receipts on someone else's outgoing bubble, and
+                    # "who read X" deliberately excludes X's own sender.
+                    last_delivered_at=func.now(),
+                    last_read_at=func.now(),
+                    last_played_at=func.now(),
+                )
             )
             await recompute_chat_receipt_cursors(session, chat_id)
 

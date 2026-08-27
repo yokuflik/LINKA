@@ -7,10 +7,17 @@ from sqlalchemy.orm import relationship
 from database.base import Base
 
 
+# type == 4. Voice recordings are the only message kind that can additionally
+# reach the PLAYED receipt state below ("נשמעה" - the recipient actually
+# listened to it), on top of the sent/delivered/read a text message can have.
+AUDIO_MESSAGE_TYPE = 4
+
+
 class MessageStatus(enum.IntEnum):
     """
     A message's receipt state from the sender's point of view - WhatsApp's
-    one grey check / two grey checks / two blue checks.
+    one grey check / two grey checks / two blue checks, plus PLAYED for a
+    voice recording the recipient(s) have actually listened to.
 
     Deliberately not a column on Message: it's derived on the fly by
     crud_message.compute_message_status(), by comparing this message's id
@@ -25,6 +32,14 @@ class MessageStatus(enum.IntEnum):
     SENT = 1
     DELIVERED = 2
     READ = 3
+
+    # Voice recordings only (AUDIO_MESSAGE_TYPE). Ranks above READ: playing a
+    # voice note implies having seen it. Derived exactly like the others, by
+    # comparing the message id against Chat.all_played_up_to_message_id
+    # (MIN(Participant.last_played_message_id) across the chat's participants),
+    # so a group where every member has listened rolls up to PLAYED with no
+    # per-message, per-recipient write.
+    PLAYED = 4
 
 
 class Message(Base):

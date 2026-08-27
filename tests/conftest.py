@@ -21,6 +21,7 @@ from database.base import Base
 from database.models import chat as _chat  # noqa: F401
 from database.models import participant as _participant  # noqa: F401
 from database.models import message as _message  # noqa: F401
+from database.models import message_receipt_log as _message_receipt_log  # noqa: F401
 from database.models import user as _user  # noqa: F401
 from database.models import private_chat_pair as _private_chat_pair  # noqa: F401
 
@@ -44,6 +45,12 @@ async def session_factory():
         # without pre-creating one partition per month.
         await conn.execute(text(
             "CREATE TABLE IF NOT EXISTS messages_default PARTITION OF messages DEFAULT"
+        ))
+        # message_receipt_log is RANGE partitioned by occurred_at, same as
+        # messages - a DEFAULT partition lets tests insert receipt rows freely.
+        await conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS message_receipt_log_default "
+            "PARTITION OF message_receipt_log DEFAULT"
         ))
 
     async_session = sessionmaker(

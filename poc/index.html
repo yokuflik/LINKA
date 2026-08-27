@@ -63,9 +63,11 @@
 <script src="components/AppHeader.js"></script>
 <script src="components/ChatSidebar.js"></script>
 <script src="components/ChatHeader.js"></script>
+<script src="components/VoiceMessage.js"></script>
 <script src="components/MessageList.js"></script>
 <script src="components/MessageInput.js"></script>
 <script src="components/MessageContextMenu.js"></script>
+<script src="components/MessageDetailsModal.js"></script>
 <script src="components/MembersModal.js"></script>
 <script src="components/NewGroupModal.js"></script>
 <script src="components/ToastList.js"></script>
@@ -109,7 +111,7 @@ const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick
 
 const app = createApp({
   components: {
-    AuthScreen, AppHeader, ChatSidebar, ChatHeader, MessageList, MessageInput, MessageContextMenu, MembersModal, NewGroupModal, ToastList,
+    AuthScreen, AppHeader, ChatSidebar, ChatHeader, MessageList, MessageInput, MessageContextMenu, MessageDetailsModal, MembersModal, NewGroupModal, ToastList,
   },
   setup() {
     // ---------------------------------------------------------------
@@ -143,7 +145,7 @@ const app = createApp({
     const AVATAR_MAX_BYTES = 512 * 1024;
     // Message media caps (config.MAX_UPLOAD_BYTES_IMAGE / _VIDEO) - mirrored
     // here so the PoC can reject an oversize file before requesting a ticket.
-    const MEDIA_MAX_BYTES = { image: 5 * 1024 * 1024, video: 20 * 1024 * 1024 };
+    const MEDIA_MAX_BYTES = { image: 5 * 1024 * 1024, audio: 5 * 1024 * 1024, video: 20 * 1024 * 1024 };
     const AVATAR_MIME = ['image/jpeg', 'image/png', 'image/webp'];
     const avatarFile = ref(null);
     const avatarPreviewUrl = ref(null);
@@ -428,6 +430,13 @@ const app = createApp({
       ws.send(JSON.stringify({ type, chat_id: chatId, message_id: messageId }));
     }
 
+    // The listener finished (or nearly finished) a voice message - tell the
+    // server so it counts as "played" ("נשמעה"). Never for your own recording.
+    function onVoicePlayed(message) {
+      if (!message || message.sender_id === currentUser.value.id) return;
+      sendReceipt('mark_played', activeChatId.value, message.id);
+    }
+
     // Catches up "delivered" on every chat's latest message, not just the
     // one that happens to be open - otherwise a login/reconnect only ever
     // marked delivered live (new_message events) or for whichever single
@@ -511,23 +520,27 @@ const app = createApp({
     // a steady typist never has their indicator lapse on other clients.
     const TYPING_SEND_THROTTLE_MS = 3000;
 
-    // chat_id -> Map<user_id, expiry timeout handle>, who's currently typing
-    // in each chat we know about (not just the active one - a background
-    // chat's count could still matter if the UI ever surfaces it there too).
+    // chat_id -> Map<user_id, { handle, kind }>, who's currently doing an
+    // ephemeral activity ("typing" or "recording_audio") in each chat we
+    // know about (not just the active one - a background chat's label is
+    // surfaced in the sidebar too). "kind" comes from the server event's
+    // "kind" field (defaults to "typing" for older servers).
     const typingUsersByChatId = ref({});
     let lastTypingSentAt = 0;
+    let lastRecordingSentAt = 0;
 
-    function noteUserTyping(chatId, userId) {
+    function noteUserTyping(chatId, userId, kind) {
+      kind = kind || 'typing';
       const existing = typingUsersByChatId.value[chatId] || {};
-      if (existing[userId]) clearTimeout(existing[userId]);
-      const timeoutHandle = setTimeout(() => {
+      if (existing[userId]) clearTimeout(existing[userId].handle);
+      const handle = setTimeout(() => {
         const current = { ...(typingUsersByChatId.value[chatId] || {}) };
         delete current[userId];
         typingUsersByChatId.value = { ...typingUsersByChatId.value, [chatId]: current };
       }, TYPING_EXPIRY_MS);
       typingUsersByChatId.value = {
         ...typingUsersByChatId.value,
-        [chatId]: { ...existing, [userId]: timeoutHandle },
+        [chatId]: { ...existing, [userId]: { handle, kind } },
       };
     }
 
@@ -536,7 +549,7 @@ const app = createApp({
     function clearUserTyping(chatId, userId) {
       const existing = typingUsersByChatId.value[chatId];
       if (!existing || !existing[userId]) return;
-      clearTimeout(existing[userId]);
+      clearTimeout(existing[userId].handle);
       const current = { ...existing };
       delete current[userId];
       typingUsersByChatId.value = { ...typingUsersByChatId.value, [chatId]: current };
@@ -553,22 +566,44 @@ const app = createApp({
       ws.send(JSON.stringify({ type: 'typing', chat_id: activeChatId.value }));
     }
 
-    // "X is typing" for exactly one typer, "N people are typing" for more -
-    // per product decision, a group never lists multiple names, only a
-    // count. Used both for the active chat's header and for every row in
-    // the sidebar (replacing that chat's last-message preview) - a plain
-    // function, not a computed, since it needs a chatId argument; reading
-    // typingUsersByChatId.value here still tracks fine as a reactive
-    // dependency of whichever component's render is calling it.
+    // Same throttle/shape as notifyTyping, but for the "recording_audio"
+    // activity kind - called on a 1s tick while a mic recording is running.
+    function notifyRecording() {
+      if (!activeChatId.value || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const now = Date.now();
+      if (now - lastRecordingSentAt < TYPING_SEND_THROTTLE_MS) return;
+      lastRecordingSentAt = now;
+      ws.send(JSON.stringify({ type: 'recording', chat_id: activeChatId.value }));
+    }
+
+    // Builds the "X is typing…" / "N people are typing…" line, now with two
+    // activity kinds. Rules per product decision, applied *per kind*:
+    //   - exactly one person of a kind -> their name ("X is typing…")
+    //   - two or more of a kind         -> a count ("3 people are typing…")
+    // When both kinds are active at once, the two phrases are joined with a
+    // comma ("X is typing, Y is recording…"). Used for the active chat's
+    // header and every sidebar row (replacing the last-message preview).
+    // A plain function, not a computed, since it takes a chatId; reading
+    // typingUsersByChatId.value here still tracks as a reactive dependency.
     function typingLabelForChat(chatId) {
       // Object keys are always strings - ids are kept as opaque strings
-      // throughout this file (see the Snowflake/JSON-string note up top),
-      // so no Number()/parseInt() coercion here.
-      const typists = Object.keys(typingUsersByChatId.value[chatId] || {})
-        .filter((id) => id !== currentUser.value.id);
-      if (!typists.length) return '';
-      if (typists.length === 1) return `${userLabelById(typists[0])} is typing…`;
-      return `${typists.length} people are typing…`;
+      // throughout this file (see the Snowflake/JSON-string note up top).
+      const entries = typingUsersByChatId.value[chatId] || {};
+      const byKind = { typing: [], recording_audio: [] };
+      for (const id of Object.keys(entries)) {
+        if (id === currentUser.value.id) continue;
+        const kind = (entries[id] && entries[id].kind) || 'typing';
+        (byKind[kind] || byKind.typing).push(id);
+      }
+      const parts = [];
+      const phrase = (ids, verbOne, verbMany) => {
+        if (ids.length === 1) return `${userLabelById(ids[0])} is ${verbOne}`;
+        return `${ids.length} people are ${verbMany}`;
+      };
+      if (byKind.typing.length) parts.push(phrase(byKind.typing, 'typing', 'typing'));
+      if (byKind.recording_audio.length) parts.push(phrase(byKind.recording_audio, 'recording', 'recording'));
+      if (!parts.length) return '';
+      return parts.join(', ') + '…';
     }
 
     const activeChatTypingLabel = computed(() => {
@@ -681,7 +716,7 @@ const app = createApp({
         // Never our own echo back (the server fans this out to the whole
         // chat, sender included, same as new_message).
         if (msg.user_id !== currentUser.value.id) {
-          noteUserTyping(msg.chat_id, msg.user_id);
+          noteUserTyping(msg.chat_id, msg.user_id, msg.kind);
           // The sidebar shows a name (not just a count) for a lone typer in
           // any chat, including one never opened this session - userById
           // only gets populated by resolveChatMemberPhones, which normally
@@ -704,7 +739,13 @@ const app = createApp({
         updateChatPreviewIfLast(msg.chat_id, msg.message_id, null);
         return;
       }
-      if (msg.event === 'delivery_receipt' || msg.event === 'read_receipt') {
+      if (msg.event === 'delivery_receipt' || msg.event === 'read_receipt' || msg.event === 'played_receipt') {
+        // If the message-info popup is open on this chat, re-pull it so the
+        // per-person "read at / played at" list stays current live.
+        if (detailsModalMessage.value && msg.chat_id === activeChatId.value) {
+          loadMessageReceipts(msg.chat_id, detailsModalMessage.value.id);
+        }
+        if (msg.event === 'played_receipt') return;
         // Which of *my* sent messages this actually changed the tick on
         // depends on every other participant's own watermark, not just this
         // one event - simplest correct move is to ask the server, which
@@ -780,7 +821,7 @@ const app = createApp({
     // in the sidebar. A media message WITH a caption shows the caption.
     function previewText(content, type) {
       if (content) return content;
-      return { 2: '📷 Photo', 3: '🎥 Video', 4: '📎 File', 5: '🎤 Voice message' }[type] || content || '';
+      return { 2: '📷 Photo', 3: '🎥 Video', 4: '🎤 Voice message', 5: '📎 File' }[type] || content || '';
     }
 
     // Keeps the sidebar's preview line in sync with what the server already
@@ -1578,11 +1619,12 @@ const app = createApp({
     const contextMenuMessage = ref(null); // the message the menu is open for, or null
     const contextMenuRawPosition = ref({ x: 0, y: 0 });
 
-    // Clamped so the menu (fixed w-40 = 160px, ~170px tall for 4 rows) never
-    // renders partly off-screen when right-clicking near an edge.
+    // Clamped so the menu (fixed w-40 = 160px, up to ~215px tall with the
+    // optional "Details" row) never renders partly off-screen when
+    // right-clicking near an edge.
     const contextMenuPosition = computed(() => ({
       x: Math.min(contextMenuRawPosition.value.x, window.innerWidth - 168),
-      y: Math.min(contextMenuRawPosition.value.y, window.innerHeight - 178),
+      y: Math.min(contextMenuRawPosition.value.y, window.innerHeight - 224),
     }));
 
     function openMessageContextMenu({ message, event }) {
@@ -1593,6 +1635,68 @@ const app = createApp({
     function closeMessageContextMenu() {
       contextMenuMessage.value = null;
     }
+
+    // ---------------------------------------------------------------
+    // Message "Details" popup - the sent/delivered/read receipt progress
+    // for one of your own sent messages. The backend only exposes a single
+    // chat-wide MessageStatus per message (see crud_message.
+    // compute_message_status), so this renders that one value as a
+    // checklist rather than a per-recipient breakdown. Voice-recording
+    // "played" (status 4) support is added in a later step.
+    // ---------------------------------------------------------------
+    const detailsModalMessage = ref(null); // the message whose details are shown, or null
+    const messageReceipts = ref(null);      // MessageReceiptsOut for that message, or null
+    const messageReceiptsLoading = ref(false);
+    const messageReceiptsError = ref('');
+
+    // Any real, non-deleted message - in a group every member may see who
+    // read/played a message (Telegram-style), not just its sender. The
+    // backend enforces "participant only" regardless.
+    function canShowMessageDetails(m) {
+      return !!m && m.sender_id != null && m.deleted_at == null;
+    }
+
+    // Pulls the per-person receipt breakdown for one message from the
+    // message_receipt_log-backed endpoint. Also re-run live (see
+    // handleWsMessage) whenever a receipt event lands for the open chat.
+    async function loadMessageReceipts(chatId, messageId) {
+      messageReceiptsLoading.value = messageReceipts.value == null;
+      messageReceiptsError.value = '';
+      try {
+        // Make sure names are resolvable for group members not yet in userById.
+        if (groupChatMembers.value[chatId] == null) await resolveChatMemberPhones(chatId);
+        const data = await apiFetch(`/chats/${chatId}/messages/${messageId}/receipts`);
+        // Guard against a late response after the user closed / switched.
+        if (detailsModalMessage.value && detailsModalMessage.value.id === messageId) {
+          messageReceipts.value = data;
+        }
+      } catch (err) {
+        logError('failed to load message receipts', chatId, messageId, err);
+        messageReceiptsError.value = 'Could not load message info';
+      } finally {
+        messageReceiptsLoading.value = false;
+      }
+    }
+
+    async function openMessageDetails(message) {
+      detailsModalMessage.value = message;
+      messageReceipts.value = null;
+      messageReceiptsError.value = '';
+      closeMessageContextMenu();
+      if (activeChatId.value) await loadMessageReceipts(activeChatId.value, message.id);
+    }
+
+    function closeMessageDetails() {
+      detailsModalMessage.value = null;
+      messageReceipts.value = null;
+      messageReceiptsError.value = '';
+    }
+
+    const messageDetailsSnippet = computed(() => {
+      const m = detailsModalMessage.value;
+      if (!m) return '';
+      return previewText(m.content, m.type);
+    });
 
     // ---------------------------------------------------------------
     // Reply-to-message (WhatsApp-style) - the backend already fully
@@ -1770,6 +1874,103 @@ const app = createApp({
       }
     }
 
+    // Voice recording. First mic press starts a MediaRecorder; second press
+    // stops it, uploads the blob as an audio (message_type 4) media message
+    // via the same direct-to-storage path as sendMediaMessage. MediaRecorder
+    // emits audio/webm by default (in config.ALLOWED_UPLOAD_MIME['audio']).
+    const isRecording = ref(false);
+    const recordingSeconds = ref(0);
+    let mediaRecorder = null;
+    let recordedChunks = [];
+    let recordingStream = null;
+    let recordingTimer = null;
+
+    async function startRecording() {
+      messagesError.value = '';
+      if (!activeChatId.value) return;
+      if (isRecording.value) return;
+      if (!navigator.mediaDevices || !window.MediaRecorder) {
+        messagesError.value = 'Voice recording is not supported in this browser.';
+        return;
+      }
+      try {
+        recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        messagesError.value = 'Microphone access denied.';
+        return;
+      }
+      recordedChunks = [];
+      const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+      mediaRecorder = new MediaRecorder(recordingStream, mime ? { mimeType: mime } : undefined);
+      mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) recordedChunks.push(e.data); };
+      mediaRecorder.onstop = onRecordingStopped;
+      mediaRecorder.start();
+      isRecording.value = true;
+      recordingSeconds.value = 0;
+      lastRecordingSentAt = 0;
+      notifyRecording(); // tell the chat immediately, then on every tick
+      recordingTimer = setInterval(() => {
+        recordingSeconds.value += 1;
+        notifyRecording();
+      }, 1000);
+    }
+
+    function stopRecording() {
+      if (!isRecording.value || !mediaRecorder) return;
+      if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
+      mediaRecorder.stop(); // fires onRecordingStopped
+    }
+
+    async function onRecordingStopped() {
+      isRecording.value = false;
+      if (recordingStream) { recordingStream.getTracks().forEach((t) => t.stop()); recordingStream = null; }
+      const duration = recordingSeconds.value;
+      const type = mediaRecorder && mediaRecorder.mimeType ? mediaRecorder.mimeType.split(';')[0] : 'audio/webm';
+      mediaRecorder = null;
+      const blob = new Blob(recordedChunks, { type });
+      recordedChunks = [];
+      if (blob.size <= 0) { messagesError.value = 'Recording was empty.'; return; }
+      if (blob.size > MEDIA_MAX_BYTES.audio) {
+        messagesError.value = 'Voice message must be ' + (MEDIA_MAX_BYTES.audio / 1024 / 1024) + ' MB or smaller.';
+        return;
+      }
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        messagesError.value = 'Cannot send - WebSocket is not connected.';
+        return;
+      }
+      const ext = type === 'audio/webm' ? 'webm' : (type === 'audio/mp4' ? 'm4a' : 'ogg');
+      const name = 'voice-' + Date.now() + '.' + ext;
+      mediaUploadBusy.value = true;
+      try {
+        const ticket = await apiFetch(`/chats/${activeChatId.value}/messages/upload-ticket`, {
+          method: 'POST',
+          body: JSON.stringify({ kind: 'audio', mime_type: type, size_bytes: blob.size }),
+        });
+        const putResp = await fetch(ticket.upload_url, {
+          method: 'PUT',
+          headers: ticket.required_headers || { 'Content-Type': type },
+          body: blob,
+        });
+        if (!putResp.ok) throw new Error('upload failed (' + putResp.status + ')');
+        const payload = {
+          type: 'send_message',
+          chat_id: activeChatId.value,
+          client_message_id: crypto.randomUUID(),
+          message_type: MEDIA_MESSAGE_TYPE.audio,
+          media: { key: ticket.storage_key, name, duration_seconds: duration },
+        };
+        if (replyingToMessage.value) payload.reply_to_message_id = replyingToMessage.value.id;
+        log('WS →', payload);
+        ws.send(JSON.stringify(payload));
+        replyingToMessage.value = null;
+      } catch (err) {
+        logError('voice send failed', err);
+        messagesError.value = 'Could not send that recording: ' + (err.message || err);
+      } finally {
+        mediaUploadBusy.value = false;
+      }
+    }
+
     // ---------------------------------------------------------------
     // Lifecycle
     // ---------------------------------------------------------------
@@ -1812,8 +2013,11 @@ const app = createApp({
       unreadCountByChatId,
       quotedPreviewFor, replySenderLabel, imageOrientation,
       contextMenuMessage, contextMenuPosition, openMessageContextMenu, closeMessageContextMenu,
+      canShowMessageDetails, detailsModalMessage, openMessageDetails, closeMessageDetails,
+      messageReceipts, messageReceiptsLoading, messageReceiptsError, messageDetailsSnippet, userLabelById, onVoicePlayed,
       replyingToMessage, startReplyTo, cancelReply,
       selectChat, sendMessage, sendMediaMessage, mediaUploadBusy, onMessagesScroll, statusTickSymbol, statusTickClass,
+      isRecording, recordingSeconds, startRecording, stopRecording,
       showNewPrivate, newPrivatePhone, chatFormError,
       showNewGroupModal, newGroupBusy, newGroupError,
       createPrivateChat, createGroupChat,
@@ -1869,10 +2073,13 @@ const app = createApp({
               :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass"
               :senderAvatarUrl="senderAvatarUrl"
               :quotedPreviewFor="quotedPreviewFor" :imageOrientation="imageOrientation"
-              @message-contextmenu="openMessageContextMenu" @load-older="onMessagesScroll" />
+              @message-contextmenu="openMessageContextMenu" @load-older="onMessagesScroll"
+              @voice-played="onVoicePlayed" />
 
             <MessageInput v-model:messageInput="messageInput" @send-message="sendMessage" @typing="notifyTyping"
               :replyingToMessage="replyingToMessage" :senderLabel="replySenderLabel" @cancel-reply="cancelReply"
+              :isRecording="isRecording" :recordingSeconds="recordingSeconds"
+              @start-recording="startRecording" @stop-recording="stopRecording"
               @pick-media="sendMediaMessage" />
           </template>
           <div v-else class="flex-1 flex items-center justify-center text-slate-400 text-sm">
@@ -1881,8 +2088,10 @@ const app = createApp({
 
           <MessageContextMenu v-if="contextMenuMessage"
             :position="contextMenuPosition"
+            :canShowDetails="canShowMessageDetails(contextMenuMessage)"
             @close="closeMessageContextMenu"
-            @reply="startReplyTo(contextMenuMessage)" />
+            @reply="startReplyTo(contextMenuMessage)"
+            @details="openMessageDetails(contextMenuMessage)" />
         </main>
       </div>
     </div>
@@ -1905,6 +2114,11 @@ const app = createApp({
       @cancel-owner-transfer-picker="cancelOwnerTransferPicker"
       @add-member-to-active-group="addMemberToActiveGroup" />
 
+    <MessageDetailsModal v-if="detailsModalMessage"
+      :message="detailsModalMessage" :receipts="messageReceipts" :loading="messageReceiptsLoading"
+      :error="messageReceiptsError" :snippet="messageDetailsSnippet" :name-for="userLabelById"
+      @close="closeMessageDetails" />
+
     <NewGroupModal v-if="showNewGroupModal"
       :busy="newGroupBusy" :error="newGroupError"
       @close="showNewGroupModal = false"
@@ -1914,6 +2128,7 @@ const app = createApp({
   `,
 });
 app.component('Avatar', Avatar);
+app.component('VoiceMessage', VoiceMessage);
 app.mount('#app');
 </script>
 </body>

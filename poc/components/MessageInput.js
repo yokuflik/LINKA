@@ -9,12 +9,16 @@
 // Videos" is active for now (opens a native file picker filtered to image/
 // video types); "Documents" is rendered disabled - wired later.
 const MessageInput = {
+  emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'pick-media', 'start-recording', 'stop-recording'],
   props: {
     messageInput: { type: String, required: true },
-    replyingToMessage: { default: null }, // the message object being replied to, or null
+    replyingToMessage: { default: null },
     senderLabel: { type: Function, required: true },
+    // true while a mic recording is in progress (root owns MediaRecorder)
+    isRecording: { type: Boolean, default: false },
+    // seconds elapsed in the current recording, shown WhatsApp-style
+    recordingSeconds: { type: Number, default: 0 },
   },
-  emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'pick-media'],
   data() {
     return { attachMenuOpen: false };
   },
@@ -37,6 +41,19 @@ const MessageInput = {
     onMediaFileChosen(event) {
       const file = event.target.files && event.target.files[0];
       if (file) this.$emit('pick-media', file);
+    },
+    // Single toggle button: first press starts recording, second press stops
+    // and sends (root owns the MediaRecorder + upload).
+    toggleRecording() {
+      this.closeAttachMenu();
+      if (this.isRecording) this.$emit('stop-recording');
+      else this.$emit('start-recording');
+    },
+  },
+  computed: {
+    recordingClock() {
+      const s = Math.max(0, Math.floor(this.recordingSeconds));
+      return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
     },
   },
   template: `
@@ -66,10 +83,36 @@ const MessageInput = {
             </button>
           </div>
         </div>
-        <input :value="messageInput" @input="onInput" @focus="closeAttachMenu"
-               @keyup.enter="$emit('send-message')" placeholder="Message…"
-               class="flex-1 min-w-0 px-3 py-2 border border-slate-300 rounded-lg" />
-        <button @click="$emit('send-message')" class="shrink-0 px-4 py-2 bg-teal-700 text-white rounded-lg font-medium">Send</button>
+        <template v-if="isRecording">
+          <div class="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 text-sm text-red-600">
+            <span class="w-2.5 h-2.5 rounded-full bg-red-600 animate-pulse"></span>
+            <span>Recording…</span>
+            <span class="ml-auto tabular-nums text-slate-500">{{ recordingClock }}</span>
+          </div>
+        </template>
+        <template v-else>
+          <input :value="messageInput" @input="onInput" @focus="closeAttachMenu"
+                 @keyup.enter="$emit('send-message')" placeholder="Message…"
+                 class="flex-1 min-w-0 px-3 py-2 border border-slate-300 rounded-lg" />
+          <button v-if="messageInput.trim()" @click="$emit('send-message')"
+                  class="shrink-0 px-4 py-2 bg-teal-700 text-white rounded-lg font-medium">Send</button>
+        </template>
+        <!-- Mic toggle: 1st press records, 2nd press stops & sends. Plain
+             black line-art mic (WhatsApp-style), no button background. -->
+        <button type="button" @click="toggleRecording"
+                class="shrink-0 w-9 h-9 flex items-center justify-center text-slate-700 hover:text-slate-900"
+                :title="isRecording ? 'Stop & send' : 'Record voice message'">
+          <svg v-if="!isRecording" viewBox="0 0 24 24" class="w-6 h-6" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="2" width="6" height="12" rx="3" />
+            <path d="M5 11a7 7 0 0 0 14 0" />
+            <line x1="12" y1="18" x2="12" y2="22" />
+            <line x1="8" y1="22" x2="16" y2="22" />
+          </svg>
+          <svg v-else viewBox="0 0 24 24" class="w-6 h-6" fill="currentColor">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
+          </svg>
+        </button>
         <input ref="mediaFileInput" type="file" class="hidden"
                accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
                @change="onMediaFileChosen" />

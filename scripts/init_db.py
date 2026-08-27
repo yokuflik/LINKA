@@ -22,7 +22,14 @@ from database.base import Base
 from database.connection import DATABASE_URL
 # Registers every model on Base.metadata - importing database.connection alone
 # doesn't import the model modules themselves.
-from database.models import chat, message, participant, private_chat_pair, user  # noqa: F401
+from database.models import (  # noqa: F401
+    chat,
+    message,
+    message_receipt_log,
+    participant,
+    private_chat_pair,
+    user,
+)
 
 
 async def main(drop: bool) -> None:
@@ -37,6 +44,15 @@ async def main(drop: bool) -> None:
             await conn.execute(text(
                 "CREATE TABLE IF NOT EXISTS messages_default PARTITION OF messages DEFAULT"
             ))
+            # Same story for message_receipt_log (RANGE by occurred_at). In
+            # production this DEFAULT partition should be replaced by real
+            # monthly partitions + a partition-creation cron + the retention
+            # prune (scripts/prune_receipt_log.py) - see CLAUDE.md's
+            # no-migrations / no-partition-management gap.
+            await conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS message_receipt_log_default "
+                "PARTITION OF message_receipt_log DEFAULT"
+            ))
             # create_all never ALTERs an existing table - add media columns
             # explicitly so an already-initialised dev DB picks them up
             # without a --drop (see CLAUDE.md "no DB migrations").
@@ -46,9 +62,22 @@ async def main(drop: bool) -> None:
                 "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_size BIGINT",
                 "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_name TEXT",
                 "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_duration_seconds BIGINT",
+                # Voice-recording "played" receipt watermarks (see
+                # MessageStatus.PLAYED / crud_participant.recompute_chat_receipt_cursors).
+                "ALTER TABLE participants ADD COLUMN IF NOT EXISTS last_played_message_id BIGINT",
+                "ALTER TABLE chats ADD COLUMN IF NOT EXISTS all_played_up_to_message_id BIGINT",
+                # Coarse per-participant "last acknowledged at" timestamps
+                # (see database/models/participant.py) - the never-expiring
+                # fallback next to the 30-day message_receipt_log.
+                "ALTER TABLE participants ADD COLUMN IF NOT EXISTS last_delivered_at TIMESTAMPTZ",
+                "ALTER TABLE participants ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMPTZ",
+                "ALTER TABLE participants ADD COLUMN IF NOT EXISTS last_played_at TIMESTAMPTZ",
             ):
                 await conn.execute(text(ddl))
-            print("Created all tables (+ messages_default partition, + media columns).")
+            print(
+                "Created all tables (+ messages_default / message_receipt_log_default "
+                "partitions, + media/receipt columns)."
+            )
 
     await engine.dispose()
 

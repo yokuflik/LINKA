@@ -163,7 +163,8 @@ class ChatOut(BaseModel):
     last_message_id: Optional[IdStr]
     last_message_preview: Optional[str]
 
-    # MessageStatus for last_message_id (1=sent, 2=delivered, 3=read - see
+    # MessageStatus for last_message_id (1=sent, 2=delivered, 3=read; 4=played
+    # is voice-recording-only and not computed here - see
     # database/models/message.py), for the chat list's own tick next to your
     # last sent message. Only ever set by chat_service.get_chat_list - the
     # create/update endpoints that also return a ChatOut don't have the
@@ -253,9 +254,45 @@ class MessageOut(BaseModel):
     deleted_at: Optional[datetime]
     created_at: datetime
 
-    # MessageStatus (1=sent, 2=delivered, 3=read - see database/models/
-    # message.py), always attached by message_service.get_message_history
+    # MessageStatus (1=sent, 2=delivered, 3=read, 4=played [voice recordings
+    # only]) - see database/models/message.py; always attached by
+    # message_service.get_message_history
     # before this model is built. Only meaningful for a message the
     # requesting user themselves sent - same as WhatsApp, a client should
     # only render the check marks on its own outgoing messages.
     status: int
+
+
+class MessageReceiptEntryOut(BaseModel):
+    """One participant's acknowledgement of a message, with its timestamp."""
+    user_id: IdStr
+    occurred_at: datetime
+
+
+class MessageReceiptsOut(BaseModel):
+    """
+    The per-message "info" view (GET /chats/{id}/messages/{mid}/receipts).
+
+    `counts` is always populated (delivered / read / played - the number of
+    *other* participants, i.e. excluding the sender, who reached each state).
+    The per-member `*_by` lists and `pending` are populated only when
+    `truncated` is False - a group larger than
+    config.RECEIPT_NAMED_LIST_MAX_MEMBERS returns counts only.
+
+    Timestamps are "when that participant's watermark crossed this message"
+    (the same semantics as WhatsApp's read time), accurate to the receipt
+    log's batching window.
+    """
+    chat_id: IdStr
+    message_id: IdStr
+    is_group: bool
+    message_type: int
+    # Participants eligible to acknowledge (everyone but the sender).
+    participant_count: int
+    truncated: bool
+    counts: dict[str, int]
+    delivered_by: list[MessageReceiptEntryOut] = []
+    read_by: list[MessageReceiptEntryOut] = []
+    played_by: list[MessageReceiptEntryOut] = []
+    # Current participants (excluding sender) with no read row yet.
+    pending: list[IdStr] = []

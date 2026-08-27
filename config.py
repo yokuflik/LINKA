@@ -141,6 +141,51 @@ MIN_UPLOAD_BYTES_BY_KIND = {
     "avatar": 1,
 }
 
+# --- Detailed receipt log (per-user delivered/read/played history) ---
+# On top of the O(1) watermark rollup that drives the sent/delivered/read/
+# played tick (see database/models/message.py MessageStatus), every genuine
+# watermark advance is also appended to message_receipt_log with its
+# timestamp. That log answers "when exactly did user U read message X" and,
+# in a group, "who has read/played message X" - neither of which the
+# watermark model can. It is never touched by the chat list or the
+# per-bubble check mark.
+#
+# Integer kind values deliberately mirror MessageStatus (2/3/4).
+RECEIPT_KIND_DELIVERED = 2
+RECEIPT_KIND_READ = 3
+RECEIPT_KIND_PLAYED = 4
+RECEIPT_KINDS = {RECEIPT_KIND_DELIVERED, RECEIPT_KIND_READ, RECEIPT_KIND_PLAYED}
+
+# A message's "seen by" / "played by" detail view returns a per-member name
+# list only for chats at or below this participant count; above it, only
+# aggregate counts ("read by 812 of 1200"). Keeps the detail query and its
+# payload bounded for very large groups.
+RECEIPT_NAMED_LIST_MAX_MEMBERS = int(os.environ.get("RECEIPT_NAMED_LIST_MAX_MEMBERS", "256"))
+
+# How long the append-only detailed log is retained. Older rows are dropped
+# a whole partition at a time (scripts/prune_receipt_log.py); the coarse
+# Participant.last_delivered_at/last_read_at/last_played_at columns are not
+# on this clock and stay as a "last activity" fallback for old messages.
+RECEIPT_LOG_RETENTION_DAYS = int(os.environ.get("RECEIPT_LOG_RETENTION_DAYS", "30"))
+
+# The write path never INSERTs into message_receipt_log inline: it XADDs a
+# tiny event onto this Redis Stream, and a background worker
+# (services/receipts/worker.py) batch-drains it, collapsing many events for
+# the same (chat, user, kind) into one row - so a 1000-member group opening
+# a chat is a single multi-row INSERT, not 1000 transactions on a
+# billion-row-scale table.
+RECEIPT_STREAM_KEY = os.environ.get("RECEIPT_STREAM_KEY", "receipt_log_stream")
+RECEIPT_STREAM_GROUP = os.environ.get("RECEIPT_STREAM_GROUP", "receipt_writers")
+# Approximate MAXLEN cap (backpressure safety valve - a wedged worker can't
+# grow the stream without bound).
+RECEIPT_STREAM_MAXLEN = int(os.environ.get("RECEIPT_STREAM_MAXLEN", "1000000"))
+RECEIPT_WORKER_BATCH = int(os.environ.get("RECEIPT_WORKER_BATCH", "500"))
+RECEIPT_WORKER_BLOCK_MS = int(os.environ.get("RECEIPT_WORKER_BLOCK_MS", "2000"))
+# Pending entries idle longer than this (a worker crashed mid-batch) are
+# reclaimed by another worker via XAUTOCLAIM.
+RECEIPT_STREAM_CLAIM_IDLE_MS = int(os.environ.get("RECEIPT_STREAM_CLAIM_IDLE_MS", "60000"))
+
+
 # --- Message media <-> upload-kind mapping ---
 # Message.type integer -> the storage upload kind it corresponds to.
 # 2=image, 3=video, 4=audio, 5=file (1=text, 6=system carry no media).

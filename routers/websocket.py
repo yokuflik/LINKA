@@ -107,8 +107,18 @@ async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: 
                 )
             await websocket.send_json({"type": "ack", "for": "mark_read"})
 
+        elif message_type == "mark_played":
+            async with session_scope() as session:
+                await message_service.mark_as_played(
+                    session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
+                )
+            await websocket.send_json({"type": "ack", "for": "mark_played"})
+
         elif message_type == "typing":
             await _handle_typing(user_id, payload)
+
+        elif message_type == "recording":
+            await _handle_typing(user_id, payload, kind="recording_audio")
 
         elif message_type == "subscribe_presence":
             await _handle_subscribe_presence(user_id, connection_id, payload, websocket)
@@ -122,7 +132,7 @@ async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: 
 
     except message_service.NotAParticipantError as e:
         await websocket.send_json({"type": "error", "code": "forbidden", "message": str(e)})
-    except message_service.MessageTooLongError as e:
+    except (message_service.MessageTooLongError, message_service.NotAVoiceMessageError) as e:
         await websocket.send_json({"type": "error", "code": "bad_request", "message": str(e)})
     except MediaNotFoundError as e:
         await websocket.send_json({"type": "error", "code": "not_found", "message": str(e)})
@@ -180,15 +190,21 @@ async def _handle_send_message(user_id: int, payload: dict, websocket: WebSocket
     })
 
 
-async def _handle_typing(user_id: int, payload: dict) -> None:
+async def _handle_typing(user_id: int, payload: dict, kind: str = "typing") -> None:
     """
     Fully ephemeral - no DB persistence, no ack. Fanned out to the chat like
     any other chat event (new_message, receipts, ...) via the same
     realtime_service/connection_manager pipeline, so it reuses the existing
     per-chat Redis channel instead of a new mechanism. The client is
-    responsible for expiring a "typing" state on its own (~5s) rather than
-    the server ever sending a matching "stopped typing" event - see
-    CLAUDE.md's typing-indicator section.
+    responsible for expiring the state on its own (~5s) rather than the
+    server ever sending a matching "stopped" event - see CLAUDE.md's
+    typing-indicator section.
+
+    Same handler covers both the text-composing ("typing") and the
+    voice-recording ("recording_audio") activity kinds - identical
+    authorization and fan-out, only the "kind" field differs. The wire
+    event stays "typing" so existing clients keep working; a client that
+    doesn't understand a kind can treat it as plain typing.
     """
     chat_id = int(payload["chat_id"])
 
@@ -198,6 +214,7 @@ async def _handle_typing(user_id: int, payload: dict) -> None:
 
     await realtime_service.publish_event(chat_id, {
         "event": "typing",
+        "kind": kind,
         "chat_id": str(chat_id),
         "user_id": str(user_id),
     })

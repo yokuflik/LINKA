@@ -70,6 +70,13 @@ class Chat(Base):
     all_delivered_up_to_message_id = Column(BigInteger, nullable=True)
     all_read_up_to_message_id = Column(BigInteger, nullable=True)
 
+    # Same rollup, one step further: MIN(Participant.last_played_message_id)
+    # across current participants - the highest message id every participant
+    # has actually listened to. Only ever compared against voice-recording
+    # messages (see MessageStatus.PLAYED); for any other message type it's
+    # irrelevant. NULL/0 means "nobody has played anything yet".
+    all_played_up_to_message_id = Column(BigInteger, nullable=True)
+
     # SQLAlchemy ORM relationship for easy joins with participants
     # Assuming Participant model will be created next
     participants = relationship("Participant", back_populates="chat", cascade="all, delete-orphan")

@@ -21,7 +21,7 @@ const MessageList = {
     // the image decodes.
     imageOrientation: { type: Function, required: true },
   },
-  emits: ['message-contextmenu', 'load-older'],
+  emits: ['message-contextmenu', 'load-older', 'voice-played'],
   // Exposes the scrollable element so the root's scrollMessagesToBottom()
   // (which needs messagesEl.value.scrollTop/scrollHeight) keeps working
   // unchanged across the component boundary.
@@ -112,14 +112,20 @@ const MessageList = {
                      class="w-full h-full object-contain"></video>
             </div>
           </div>
-          <!-- File / audio: a row that reads as an attachment (icon + name +
-               size), styled distinctly from a plain text bubble. -->
-          <a v-else-if="m.media_url && (m.type === 4 || m.type === 5)" :href="m.media_url" target="_blank" rel="noopener"
+          <!-- Voice message (type 4): clean custom player - play/pause toggle
+               + progress track + elapsed/total time. -->
+          <VoiceMessage v-else-if="m.media_url && m.type === 4"
+                        :src="m.media_url"
+                        :durationSeconds="m.media_duration_seconds || 0"
+                        :mine="m.sender_id === currentUser.id" class="mb-1"
+                        @played="$emit('voice-played', m)" />
+          <!-- File (type 5): a row that reads as an attachment. -->
+          <a v-else-if="m.media_url && m.type === 5" :href="m.media_url" target="_blank" rel="noopener"
              class="mb-1 flex items-center gap-2 px-2 py-2 rounded-lg no-underline"
              :class="m.sender_id === currentUser.id ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-700'">
-            <span class="text-lg leading-none">{{ m.type === 5 ? '🎤' : '📎' }}</span>
+            <span class="text-lg leading-none">📎</span>
             <span class="min-w-0">
-              <span class="block truncate text-sm font-medium">{{ m.media_name || (m.type === 5 ? 'Voice message' : 'File') }}</span>
+              <span class="block truncate text-sm font-medium">{{ m.media_name || 'File' }}</span>
               <span class="block text-[11px] opacity-70">{{ m.media_size ? (Math.max(1, Math.round(m.media_size / 1024)) + ' KB') : 'Download' }}</span>
             </span>
           </a>

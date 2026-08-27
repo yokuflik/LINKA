@@ -1,13 +1,18 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import get_db
 from database.crud.crud_participant import is_participant
 from routers.dependencies import get_current_user_id
-from routers.schemas import MediaUploadTicketIn, MediaUploadTicketOut, MessageOut
+from routers.schemas import (
+    MediaUploadTicketIn,
+    MediaUploadTicketOut,
+    MessageOut,
+    MessageReceiptsOut,
+)
 from services import message_service
 from services.storage import media_service
 
@@ -23,6 +28,26 @@ async def get_message_history(
     session: AsyncSession = Depends(get_db),
 ):
     return await message_service.get_message_history(session, user_id=user_id, chat_id=chat_id, before_id=before_id, limit=limit)
+
+
+@router.get("/{message_id}/receipts", response_model=MessageReceiptsOut)
+async def get_message_receipts(
+    chat_id: int,
+    message_id: int,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """
+    Per-message "info": when each participant received / read / played this
+    message, and (in a group at or below RECEIPT_NAMED_LIST_MAX_MEMBERS
+    members) who has. Any participant may view it for any message.
+    """
+    try:
+        return await message_service.get_message_receipts(
+            session, user_id=user_id, chat_id=chat_id, message_id=message_id
+        )
+    except message_service.MessageNotFoundError:
+        raise HTTPException(status_code=404, detail="Message not found")
 
 
 @router.post("/upload-ticket", response_model=MediaUploadTicketOut)

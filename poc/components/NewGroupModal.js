@@ -35,8 +35,10 @@ const NewGroupModal = {
         return;
       }
       if (file.size <= 0) { this.photoError = 'That file looks empty.'; return; }
-      if (file.size > 512 * 1024) {
-        this.photoError = 'Group photo must be 512 KB or smaller.';
+      // Larger images are downscaled/recompressed in-browser before upload
+      // (see core.js shrinkImageToFit); only reject the absurdly large.
+      if (file.size > 25 * 1024 * 1024) {
+        this.photoError = 'Group photo is too large (max 25 MB before compression).';
         return;
       }
       this.clearPhoto();

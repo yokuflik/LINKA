@@ -1,18 +1,21 @@
 // Bottom bar: an optional reply-preview strip (WhatsApp-style, showing what
-// you're replying to with a cancel button) above the row of [+] media button
+// you're replying to with a cancel button) - or an "Editing message" strip
+// when editing an existing text message - above the row of [+] media button
 // + message text input + send button. Emits "typing" on every keystroke (not
 // just on send) - the root throttles the actual WS send. onInput is a real
 // method (not a chained inline-statement handler) so both emits reliably fire
 // on every keystroke, not just the first one.
 //
-// The [+] button opens a small WhatsApp-style attach menu. Only "Photos &
-// Videos" is active for now (opens a native file picker filtered to image/
-// video types); "Documents" is rendered disabled - wired later.
+// The [+] button opens a small WhatsApp-style attach menu: "Photos & Videos"
+// (native picker filtered to image/video types -> pick-media) and "Documents"
+// (picker filtered to the backend's allowed document MIME set -> pick-document).
 const MessageInput = {
-  emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'pick-media', 'start-recording', 'stop-recording'],
+  emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'cancel-edit', 'pick-media', 'pick-document', 'start-recording', 'stop-recording'],
   props: {
     messageInput: { type: String, required: true },
     replyingToMessage: { default: null },
+    // the message currently being edited (composer prefilled), or null
+    editingMessage: { default: null },
     senderLabel: { type: Function, required: true },
     // true while a mic recording is in progress (root owns MediaRecorder)
     isRecording: { type: Boolean, default: false },
@@ -42,6 +45,15 @@ const MessageInput = {
       const file = event.target.files && event.target.files[0];
       if (file) this.$emit('pick-media', file);
     },
+    openDocumentPicker() {
+      this.closeAttachMenu();
+      this.$refs.documentFileInput.value = '';
+      this.$refs.documentFileInput.click();
+    },
+    onDocumentFileChosen(event) {
+      const file = event.target.files && event.target.files[0];
+      if (file) this.$emit('pick-document', file);
+    },
     // Single toggle button: first press starts recording, second press stops
     // and sends (root owns the MediaRecorder + upload).
     toggleRecording() {
@@ -58,7 +70,14 @@ const MessageInput = {
   },
   template: `
     <div class="border-t border-slate-200 bg-white">
-      <div v-if="replyingToMessage" class="px-3 pt-2 flex items-start gap-2">
+      <div v-if="editingMessage" class="px-3 pt-2 flex items-start gap-2">
+        <div class="flex-1 min-w-0 pl-2 border-l-4 border-amber-500 text-xs">
+          <div class="font-semibold text-amber-600">Editing message</div>
+          <div class="truncate text-slate-500">{{ editingMessage.content }}</div>
+        </div>
+        <button @click="$emit('cancel-edit')" class="text-slate-400 hover:text-slate-600 text-lg leading-none px-1">&times;</button>
+      </div>
+      <div v-else-if="replyingToMessage" class="px-3 pt-2 flex items-start gap-2">
         <div class="flex-1 min-w-0 pl-2 border-l-4 border-teal-600 text-xs">
           <div class="font-semibold text-teal-700">{{ senderLabel(replyingToMessage.sender_id) }}</div>
           <div class="truncate text-slate-500">{{ replyingToMessage.content }}</div>
@@ -77,9 +96,9 @@ const MessageInput = {
                     class="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
               <span>🖼️</span><span>Photos &amp; Videos</span>
             </button>
-            <button type="button" disabled
-                    class="w-full text-left px-3 py-2 flex items-center gap-2 text-slate-400 cursor-not-allowed">
-              <span>📄</span><span>Documents</span><span class="ml-auto text-xs">🔒</span>
+            <button type="button" @click="openDocumentPicker"
+                    class="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
+              <span>📄</span><span>Documents</span>
             </button>
           </div>
         </div>
@@ -116,6 +135,9 @@ const MessageInput = {
         <input ref="mediaFileInput" type="file" class="hidden"
                accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
                @change="onMediaFileChosen" />
+        <input ref="documentFileInput" type="file" class="hidden"
+               accept=".pdf,.txt,.zip,.doc,.docx,.xls,.xlsx,application/pdf,text/plain,application/zip,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+               @change="onDocumentFileChosen" />
       </div>
     </div>
   `,

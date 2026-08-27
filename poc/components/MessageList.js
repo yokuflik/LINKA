@@ -44,7 +44,8 @@ const MessageList = {
     // with no bubble background/padding so only the media's own black border
     // shows, not the green/white bubble.
     function isBareMedia(m) {
-      return (m.type === 2 || m.type === 3) && m.media_url && !m.content && m.reply_to_message_id == null;
+      return (m.type === 2 || m.type === 3) && m.media_url && !m.content && m.reply_to_message_id == null
+        && m.deleted_at == null;
     }
     return { messagesEl, onScroll, isBareMedia };
   },
@@ -77,6 +78,11 @@ const MessageList = {
                      : 'px-3 py-2 rounded-2xl bubble-tail bg-white border border-slate-200 rounded-bl-none bubble-tail-theirs')
              ]"
              @contextmenu.prevent="$emit('message-contextmenu', { message: m, event: $event })">
+          <!-- Soft-deleted message: a "This message was deleted" tombstone in
+               place of the original content (WhatsApp-style). -->
+          <span v-if="m.deleted_at" class="italic opacity-70"
+                :class="m.sender_id === currentUser.id ? 'text-white/80' : 'text-slate-400'">🚫 This message was deleted</span>
+          <template v-else>
           <div v-if="m.sender_id !== currentUser.id && !isBareMedia(m)" class="text-[11px] opacity-60 mb-0.5">{{ senderLabel(m.sender_id) }}</div>
           <!-- Quoted reply preview (WhatsApp-style) - only when this message
                is itself a reply (reply_to_message_id set). quotedPreviewFor
@@ -119,21 +125,31 @@ const MessageList = {
                         :durationSeconds="m.media_duration_seconds || 0"
                         :mine="m.sender_id === currentUser.id" class="mb-1"
                         @played="$emit('voice-played', m)" />
-          <!-- File (type 5): a row that reads as an attachment. -->
+          <!-- File (type 5): an attachment card, a touch larger than a normal
+               bubble. Clicking opens the presigned GET in a new tab - the
+               browser previews what it can (PDF, text, images) and downloads
+               the rest. -->
           <a v-else-if="m.media_url && m.type === 5" :href="m.media_url" target="_blank" rel="noopener"
-             class="mb-1 flex items-center gap-2 px-2 py-2 rounded-lg no-underline"
-             :class="m.sender_id === currentUser.id ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-700'">
-            <span class="text-lg leading-none">📎</span>
-            <span class="min-w-0">
+             class="mb-1 flex items-center gap-3 px-3 py-3 rounded-xl no-underline min-w-[15rem] max-w-[18rem] transition-colors"
+             :class="m.sender_id === currentUser.id ? 'bg-white/15 text-white hover:bg-white/25' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'"
+             :title="'Open ' + (m.media_name || 'file')">
+            <span class="shrink-0 w-10 h-10 flex items-center justify-center rounded-lg text-xl"
+                  :class="m.sender_id === currentUser.id ? 'bg-white/20' : 'bg-white'">📄</span>
+            <span class="min-w-0 flex-1">
               <span class="block truncate text-sm font-medium">{{ m.media_name || 'File' }}</span>
-              <span class="block text-[11px] opacity-70">{{ m.media_size ? (Math.max(1, Math.round(m.media_size / 1024)) + ' KB') : 'Download' }}</span>
+              <span class="block text-[11px] opacity-70">{{ (m.media_size ? (m.media_size < 1048576
+                ? Math.max(1, Math.round(m.media_size / 1024)) + ' KB'
+                : (m.media_size / 1048576).toFixed(1) + ' MB') + ' · ' : '') + 'Tap to open' }}</span>
             </span>
           </a>
           <div v-else-if="m.type >= 2 && m.type <= 5" class="mb-1 text-xs italic opacity-70">
             [attachment unavailable]
           </div>
           <span v-if="m.content">{{ m.content }}</span>
-          <span v-if="m.is_edited" class="text-[10px] opacity-60"> (edited)</span>
+          <span v-if="m.is_edited" class="text-[10px] opacity-60">{{ m.edited_at
+            ? ' (edited ' + new Date(m.edited_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ')'
+            : ' (edited)' }}
+          </template>
         </div>
         <div class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
              :class="m.sender_id === currentUser.id ? 'justify-end' : ''">

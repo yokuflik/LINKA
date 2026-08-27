@@ -21,6 +21,10 @@ MAX_PAGE_SIZE = 100
 # Chat-list preview text for a media message that carries no caption.
 _MEDIA_PREVIEW_BY_TYPE = {2: "\U0001F4F7 Photo", 3: "\U0001F3A5 Video", 4: "\U0001F3A4 Voice message", 5: "\U0001F4CE File"}
 
+# Chat-list preview text left behind when the chat's last message is deleted,
+# so a fresh GET /chats (which can't otherwise tell) still shows it as removed.
+DELETED_MESSAGE_PREVIEW = "\U0001F6AB Message deleted"
+
 
 def build_last_message_preview(content: Optional[str], type: int = 1) -> Optional[str]:
     """
@@ -292,15 +296,16 @@ async def soft_delete_message(session: AsyncSession, chat_id: int, message_id: i
     deleted = result.rowcount > 0
 
     # Same reasoning as the edit path: leaving the snippet behind would keep
-    # deleted text visible in every participant's chat list. It's cleared
-    # rather than backfilled from the previous message - finding that one
-    # means a scan back through the chat's history, and the recency ordering
-    # (last_message_at) is unaffected either way.
+    # deleted text visible in every participant's chat list. Rather than
+    # blanking it (indistinguishable from "no preview yet") or backfilling
+    # from the previous message (a scan back through history), we drop in a
+    # fixed tombstone marker the client renders as "message deleted". The
+    # recency ordering (last_message_at) is unaffected either way.
     if deleted:
         await session.execute(
             update(Chat)
             .where(Chat.id == chat_id, Chat.last_message_id == message_id)
-            .values(last_message_preview=None)
+            .values(last_message_preview=DELETED_MESSAGE_PREVIEW)
         )
 
     await session.commit()

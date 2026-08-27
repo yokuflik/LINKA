@@ -291,7 +291,11 @@ async def get_message_history(
         raise NotAParticipantError(f"User {user_id} is not a participant of chat {chat_id}")
 
     chat = await get_chat_by_id(session, chat_id)
-    messages = await get_chat_messages(session, chat_id=chat_id, before_id=before_id, limit=limit)
+    # Include soft-deleted rows: the client renders them as a "message deleted"
+    # tombstone in place, so they must survive a chat reload / history paging.
+    messages = await get_chat_messages(
+        session, chat_id=chat_id, before_id=before_id, limit=limit, include_deleted=True
+    )
 
     # Attached rather than a stored column - see MessageStatus. One extra
     # row fetch (the chat) for the whole page, then an O(1) comparison per
@@ -314,7 +318,14 @@ async def edit_message(session: AsyncSession, user_id: int, chat_id: int, messag
 
     message = await edit_message_content(session, chat_id=chat_id, message_id=message_id, new_content=new_content)
     await realtime_service.publish_event(
-        chat_id, {"event": "message_edited", "chat_id": str(chat_id), "message_id": str(message_id), "content": new_content}
+        chat_id,
+        {
+            "event": "message_edited",
+            "chat_id": str(chat_id),
+            "message_id": str(message_id),
+            "content": new_content,
+            "edited_at": message.edited_at.isoformat() if message and message.edited_at else None,
+        },
     )
     return message
 

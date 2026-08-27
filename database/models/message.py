@@ -51,6 +51,20 @@ class Message(Base):
 
     content = Column(Text, nullable=True)
 
+    # --- Media attachment (image/video/audio/file messages) ---
+    # The app server never touches file bytes: the client uploads directly to
+    # object storage via a presigned PUT, then sends the message carrying the
+    # resulting object key here. media_key is the private-media-bucket key;
+    # media_mime / media_size are the client's declared values (authoritative
+    # type/size come from a storage HEAD, off the hot path). media_name is the
+    # original filename (for `file` messages). media_duration_seconds is for
+    # audio/video. All NULL for a plain text or system message.
+    media_key = Column(Text, nullable=True)
+    media_mime = Column(Text, nullable=True)
+    media_size = Column(BigInteger, nullable=True)
+    media_name = Column(Text, nullable=True)
+    media_duration_seconds = Column(BigInteger, nullable=True)
+
     # Loosely-referenced on purpose: a strict FK here would need to include
     # the partition key (created_at) of the replied-to row, which is awkward
     # across partitions at this scale. Validated at the application layer instead.

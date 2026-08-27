@@ -18,8 +18,20 @@ logger = logging.getLogger(__name__)
 MAX_PAGE_SIZE = 100
 
 
-def build_last_message_preview(content: Optional[str]) -> Optional[str]:
-    """The Chat.last_message_preview value a given message's content maps to."""
+# Chat-list preview text for a media message that carries no caption.
+_MEDIA_PREVIEW_BY_TYPE = {2: "\U0001F4F7 Photo", 3: "\U0001F3A5 Video", 4: "\U0001F3A4 Voice message", 5: "\U0001F4CE File"}
+
+
+def build_last_message_preview(content: Optional[str], type: int = 1) -> Optional[str]:
+    """
+    The Chat.last_message_preview value a given message maps to. A media
+    message with no caption shows a generic label ("Photo", "Video", ...)
+    instead of an empty preview line.
+    """
+    if content:
+        return content[:LAST_MESSAGE_PREVIEW_LENGTH]
+    if type in _MEDIA_PREVIEW_BY_TYPE:
+        return _MEDIA_PREVIEW_BY_TYPE[type]
     return None if content is None else content[:LAST_MESSAGE_PREVIEW_LENGTH]
 
 
@@ -43,6 +55,11 @@ async def create_message(
     type: int = 1,
     content: Optional[str] = None,
     reply_to_message_id: Optional[int] = None,
+    media_key: Optional[str] = None,
+    media_mime: Optional[str] = None,
+    media_size: Optional[int] = None,
+    media_name: Optional[str] = None,
+    media_duration_seconds: Optional[int] = None,
 ) -> Optional[Message]:
     """
     Insert a new message into the chat and bump the chat's recency
@@ -65,6 +82,11 @@ async def create_message(
         type=type,
         content=content,
         reply_to_message_id=reply_to_message_id,
+        media_key=media_key,
+        media_mime=media_mime,
+        media_size=media_size,
+        media_name=media_name,
+        media_duration_seconds=media_duration_seconds,
     )
 
     session.add(new_message)
@@ -85,7 +107,9 @@ async def create_message(
         # role change. Leaving last_message_preview untouched here keeps it
         # on the last real user message.
         if sender_id is not None:
-            chat_update_values["last_message_preview"] = build_last_message_preview(new_message.content)
+            chat_update_values["last_message_preview"] = build_last_message_preview(
+                new_message.content, new_message.type
+            )
 
         await session.execute(update(Chat).where(Chat.id == chat_id).values(**chat_update_values))
 

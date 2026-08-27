@@ -37,7 +37,18 @@ async def main(drop: bool) -> None:
             await conn.execute(text(
                 "CREATE TABLE IF NOT EXISTS messages_default PARTITION OF messages DEFAULT"
             ))
-            print("Created all tables (+ messages_default partition).")
+            # create_all never ALTERs an existing table - add media columns
+            # explicitly so an already-initialised dev DB picks them up
+            # without a --drop (see CLAUDE.md "no DB migrations").
+            for ddl in (
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_key TEXT",
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_mime TEXT",
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_size BIGINT",
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_name TEXT",
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_duration_seconds BIGINT",
+            ):
+                await conn.execute(text(ddl))
+            print("Created all tables (+ messages_default partition, + media columns).")
 
     await engine.dispose()
 

@@ -95,8 +95,8 @@ DOWNLOAD_URL_EXPIRY_SECONDS = int(os.environ.get("DOWNLOAD_URL_EXPIRY_SECONDS", 
 # upload that exceeds what the client declared - not just an app-layer check.
 MAX_UPLOAD_BYTES_IMAGE = int(os.environ.get("MAX_UPLOAD_BYTES_IMAGE", str(5 * 1024 * 1024)))
 MAX_UPLOAD_BYTES_VIDEO = int(os.environ.get("MAX_UPLOAD_BYTES_VIDEO", str(20 * 1024 * 1024)))
-MAX_UPLOAD_BYTES_AUDIO = int(os.environ.get("MAX_UPLOAD_BYTES_AUDIO", str(20 * 1024 * 1024)))
-MAX_UPLOAD_BYTES_FILE = int(os.environ.get("MAX_UPLOAD_BYTES_FILE", str(100 * 1024 * 1024)))
+MAX_UPLOAD_BYTES_AUDIO = int(os.environ.get("MAX_UPLOAD_BYTES_AUDIO", str(5 * 1024 * 1024)))
+MAX_UPLOAD_BYTES_FILE = int(os.environ.get("MAX_UPLOAD_BYTES_FILE", str(20 * 1024 * 1024)))
 # Profile pictures (user + group avatars): 0.5 MB.
 MAX_UPLOAD_BYTES_AVATAR = int(os.environ.get("MAX_UPLOAD_BYTES_AVATAR", str(512 * 1024)))
 
@@ -140,6 +140,16 @@ MIN_UPLOAD_BYTES_BY_KIND = {
     "file": 1,
     "avatar": 1,
 }
+
+# --- Message media <-> upload-kind mapping ---
+# Message.type integer -> the storage upload kind it corresponds to.
+# 2=image, 3=video, 4=audio, 5=file (1=text, 6=system carry no media).
+MEDIA_MESSAGE_TYPES = {2, 3, 4, 5}
+MEDIA_KIND_BY_MESSAGE_TYPE = {2: "image", 3: "video", 4: "audio", 5: "file"}
+MESSAGE_TYPE_BY_MEDIA_KIND = {v: k for k, v in MEDIA_KIND_BY_MESSAGE_TYPE.items()}
+
+# Cap on the client-supplied original filename kept on a media message.
+MAX_MEDIA_FILENAME_LENGTH = int(os.environ.get("MAX_MEDIA_FILENAME_LENGTH", "255"))
 
 # Which bucket each kind lands in.
 UPLOAD_BUCKET_BY_KIND = {

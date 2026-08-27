@@ -10,6 +10,7 @@ from database.crud.crud_participant import get_all_chat_ids_for_user, is_partici
 from database.crud.crud_private_chat_pair import get_pair_chat_id
 from services import auth_service, message_service, presence_service, rate_limit_service, realtime_service
 from services.connection_manager import connection_manager
+from services.storage.errors import MediaNotFoundError, MediaValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,10 @@ async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: 
         await websocket.send_json({"type": "error", "code": "forbidden", "message": str(e)})
     except message_service.MessageTooLongError as e:
         await websocket.send_json({"type": "error", "code": "bad_request", "message": str(e)})
+    except MediaNotFoundError as e:
+        await websocket.send_json({"type": "error", "code": "not_found", "message": str(e)})
+    except MediaValidationError as e:
+        await websocket.send_json({"type": "error", "code": "bad_request", "message": str(e)})
     except (KeyError, ValueError, TypeError) as e:
         # KeyError: a required field is missing. ValueError/TypeError: an id
         # field was present but not parseable as an int (e.g. garbage, or a
@@ -147,6 +152,13 @@ async def _handle_send_message(user_id: int, payload: dict, websocket: WebSocket
 
     reply_to_message_id = payload.get("reply_to_message_id")
 
+    # Media message payload: {"media": {"key", "name"?, "duration_seconds"?}}
+    # plus message_type 2/3/4/5. The key is HEAD-verified against storage in
+    # message_service - a raw client key is never trusted.
+    media = payload.get("media")
+    if media is not None and not isinstance(media, dict):
+        raise ValueError("media must be an object")
+
     async with session_scope() as session:
         message = await message_service.send_message(
             session,
@@ -156,6 +168,7 @@ async def _handle_send_message(user_id: int, payload: dict, websocket: WebSocket
             content=payload.get("content"),
             type=payload.get("message_type", 1),
             reply_to_message_id=int(reply_to_message_id) if reply_to_message_id is not None else None,
+            media=media,
         )
 
     await websocket.send_json({

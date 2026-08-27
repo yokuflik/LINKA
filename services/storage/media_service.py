@@ -153,6 +153,17 @@ def download_url(storage_key: str, bucket: str = S3_BUCKET_MEDIA) -> str:
     )
 
 
+def message_media_download_url(storage_key: str | None) -> str | None:
+    """
+    Presigned GET for a media-message attachment (private media bucket).
+    Returns None for a message with no attachment so callers can pass
+    ``message.media_key`` straight through.
+    """
+    if not storage_key:
+        return None
+    return download_url(storage_key, bucket=S3_BUCKET_MEDIA)
+
+
 def public_avatar_url(storage_key: str | None) -> str | None:
     """
     Public URL for an avatar object. No signing - the avatars bucket is

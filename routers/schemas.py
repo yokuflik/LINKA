@@ -110,6 +110,37 @@ class AvatarCommitIn(BaseModel):
     storage_key: str
 
 
+class MediaUploadTicketIn(BaseModel):
+    # 'image' | 'video' | 'audio' | 'file'
+    kind: str
+    mime_type: str
+    size_bytes: int
+
+    @model_validator(mode="after")
+    def _validate(self):
+        kind = self.kind
+        if kind not in ("image", "video", "audio", "file"):
+            raise ValueError(f"unknown media kind {kind!r}")
+        if self.mime_type not in ALLOWED_UPLOAD_MIME.get(kind, set()):
+            raise ValueError(f"content type {self.mime_type!r} is not allowed for {kind!r}")
+        ceiling = MAX_UPLOAD_BYTES_BY_KIND[kind]
+        floor = MIN_UPLOAD_BYTES_BY_KIND.get(kind, 1)
+        if self.size_bytes < floor:
+            raise ValueError(f"declared size {self.size_bytes} is below the {floor}-byte minimum")
+        if self.size_bytes > ceiling:
+            raise ValueError(
+                f"declared size {self.size_bytes} exceeds the {ceiling}-byte limit for {kind!r}"
+            )
+        return self
+
+
+class MediaUploadTicketOut(BaseModel):
+    storage_key: str
+    upload_url: str
+    required_headers: dict
+    expires_in: int
+
+
 class ChatOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -207,6 +238,16 @@ class MessageOut(BaseModel):
     type: int
     content: Optional[str]
     reply_to_message_id: Optional[IdStr]
+
+    # Media attachment (all None for a text / system message). media_url is a
+    # short-lived presigned GET attached by message_service (get_message_history
+    # / the live new_message event) - it is not a stored column.
+    media_url: Optional[str] = None
+    media_mime: Optional[str] = None
+    media_size: Optional[int] = None
+    media_name: Optional[str] = None
+    media_duration_seconds: Optional[int] = None
+
     is_edited: bool
     edited_at: Optional[datetime]
     deleted_at: Optional[datetime]

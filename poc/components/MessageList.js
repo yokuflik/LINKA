@@ -15,6 +15,11 @@ const MessageList = {
     statusTickSymbol: { type: Function, required: true },
     statusTickClass: { type: Function, required: true },
     quotedPreviewFor: { type: Function, required: true },
+    // (url) => 'portrait' | 'landscape' - resolved frontend-side by the root
+    // (probes naturalWidth/Height once per url, defaults 'landscape'). Drives
+    // the fixed reserved box below so the bubble has its final height before
+    // the image decodes.
+    imageOrientation: { type: Function, required: true },
   },
   emits: ['message-contextmenu', 'load-older'],
   // Exposes the scrollable element so the root's scrollMessagesToBottom()
@@ -35,7 +40,13 @@ const MessageList = {
       }
       emit('load-older', rowsAbove);
     }
-    return { messagesEl, onScroll };
+    // A pure image/video message (no caption, not a reply) - rendered flush
+    // with no bubble background/padding so only the media's own black border
+    // shows, not the green/white bubble.
+    function isBareMedia(m) {
+      return (m.type === 2 || m.type === 3) && m.media_url && !m.content && m.reply_to_message_id == null;
+    }
+    return { messagesEl, onScroll, isBareMedia };
   },
   expose: ['messagesEl'],
   template: `
@@ -57,10 +68,16 @@ const MessageList = {
                 :colorKey="m.sender_id" sizeClass="w-7 h-7 text-xs"
                 class="shrink-0 mb-[18px]" />
         <div class="min-w-0">
-        <div class="inline-block px-3 py-2 rounded-2xl text-sm bubble-tail cursor-pointer"
-             :class="m.sender_id === currentUser.id ? 'bg-teal-700 text-white rounded-br-none bubble-tail-mine' : 'bg-white border border-slate-200 rounded-bl-none bubble-tail-theirs'"
+        <div class="inline-block text-sm cursor-pointer"
+             :class="[
+               isBareMedia(m)
+                 ? 'p-0 bg-transparent rounded-lg'
+                 : (m.sender_id === currentUser.id
+                     ? 'px-3 py-2 rounded-2xl bubble-tail bg-teal-700 text-white rounded-br-none bubble-tail-mine'
+                     : 'px-3 py-2 rounded-2xl bubble-tail bg-white border border-slate-200 rounded-bl-none bubble-tail-theirs')
+             ]"
              @contextmenu.prevent="$emit('message-contextmenu', { message: m, event: $event })">
-          <div v-if="m.sender_id !== currentUser.id" class="text-[11px] opacity-60 mb-0.5">{{ senderLabel(m.sender_id) }}</div>
+          <div v-if="m.sender_id !== currentUser.id && !isBareMedia(m)" class="text-[11px] opacity-60 mb-0.5">{{ senderLabel(m.sender_id) }}</div>
           <!-- Quoted reply preview (WhatsApp-style) - only when this message
                is itself a reply (reply_to_message_id set). quotedPreviewFor
                looks the original message up client-side (it's a lookup, not
@@ -70,7 +87,46 @@ const MessageList = {
             <div class="font-semibold truncate">{{ quotedPreviewFor(m).sender }}</div>
             <div class="truncate opacity-90">{{ quotedPreviewFor(m).snippet }}</div>
           </div>
-          {{ m.content }}
+          <!-- Media attachment (image / video). media_url is a short-lived
+               presigned GET attached by the backend to both history and the
+               live new_message event. -->
+          <!-- Image: fixed reserved box in one of two shapes (portrait /
+               landscape). The box has its final size immediately (bg-white
+               placeholder), so scrollHeight is right before the <img>
+               decodes; the image fades in on load, filling the box
+               (object-cover). Two shapes only, by design. -->
+          <div v-if="m.media_url && m.type === 2" class="mb-1">
+            <div class="rounded-lg overflow-hidden bg-white border border-black"
+                 :class="imageOrientation(m.media_url) === 'portrait' ? 'w-48 aspect-[3/4]' : 'w-64 aspect-[4/3]'">
+              <img :src="m.media_url" :alt="m.media_name || 'image'" loading="lazy"
+                   class="w-full h-full object-cover opacity-0 transition-opacity duration-200"
+                   @load="$event.target.classList.remove('opacity-0')" />
+            </div>
+          </div>
+          <!-- Video: same fixed two-shape reserved box as images, so
+               scrollHeight is right before metadata loads. -->
+          <div v-else-if="m.media_url && m.type === 3" class="mb-1">
+            <div class="rounded-lg overflow-hidden bg-black/80 border border-black"
+                 :class="imageOrientation(m.media_url) === 'portrait' ? 'w-48 aspect-[3/4]' : 'w-64 aspect-[4/3]'">
+              <video :src="m.media_url" controls preload="metadata"
+                     class="w-full h-full object-contain"></video>
+            </div>
+          </div>
+          <!-- File / audio: a row that reads as an attachment (icon + name +
+               size), styled distinctly from a plain text bubble. -->
+          <a v-else-if="m.media_url && (m.type === 4 || m.type === 5)" :href="m.media_url" target="_blank" rel="noopener"
+             class="mb-1 flex items-center gap-2 px-2 py-2 rounded-lg no-underline"
+             :class="m.sender_id === currentUser.id ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-700'">
+            <span class="text-lg leading-none">{{ m.type === 5 ? '🎤' : '📎' }}</span>
+            <span class="min-w-0">
+              <span class="block truncate text-sm font-medium">{{ m.media_name || (m.type === 5 ? 'Voice message' : 'File') }}</span>
+              <span class="block text-[11px] opacity-70">{{ m.media_size ? (Math.max(1, Math.round(m.media_size / 1024)) + ' KB') : 'Download' }}</span>
+            </span>
+          </a>
+          <div v-else-if="m.type >= 2 && m.type <= 5" class="mb-1 text-xs italic opacity-70">
+            [attachment unavailable]
+          </div>
+          <span v-if="m.content">{{ m.content }}</span>
           <span v-if="m.is_edited" class="text-[10px] opacity-60"> (edited)</span>
         </div>
         <div class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"

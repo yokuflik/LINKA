@@ -623,12 +623,22 @@ const app = createApp({
         // typing indicator now instead of leaving it to expire 5s later.
         if (msg.sender_id != null) clearUserTyping(msg.chat_id, msg.sender_id);
         if (msg.chat_id === activeChatId.value) {
+          // Decide before pushing: was the user already at the bottom?
+          const wasPinned = isPinnedToBottom();
           messages.value.push({
             id: msg.message_id, chat_id: msg.chat_id, sender_id: msg.sender_id,
             type: msg.type, content: msg.content, created_at: msg.created_at, is_edited: false,
             status: msg.status, reply_to_message_id: msg.reply_to_message_id,
+            media_url: msg.media_url, media_mime: msg.media_mime, media_size: msg.media_size,
+            media_name: msg.media_name, media_duration_seconds: msg.media_duration_seconds,
           });
-          nextTick(scrollMessagesToBottom);
+          if (msg.type === 2 && msg.media_url) probeMediaOrientation(msg.media_url, 'image');
+          else if (msg.type === 3 && msg.media_url) probeMediaOrientation(msg.media_url, 'video');
+          // Always follow your own message down; for someone else's, only
+          // if the user was already reading the latest (not scrolled up).
+          if (msg.sender_id === currentUser.value.id || wasPinned) {
+            nextTick(scrollMessagesToBottom);
+          }
         }
         // System messages ("X joined the group", or a private "role_changed"
         // notice - see shouldShowSystemMessage) must never become the
@@ -636,7 +646,7 @@ const app = createApp({
         // per-viewer filtering, so a "role_changed" preview would leak to
         // every participant, not just the actor/target it's meant for.
         if (msg.sender_id != null) {
-          bumpChatPreview(msg.chat_id, msg.message_id, msg.created_at, msg.content, msg.status);
+          bumpChatPreview(msg.chat_id, msg.message_id, msg.created_at, previewText(msg.content, msg.type), msg.status);
         }
 
         if (msg.sender_id == null) {
@@ -763,6 +773,14 @@ const app = createApp({
       const id = crypto.randomUUID();
       toasts.value.push({ id, text });
       setTimeout(() => { toasts.value = toasts.value.filter((t) => t.id !== id); }, 4000);
+    }
+
+    // Mirrors the backend's crud_message.build_last_message_preview: a
+    // caption-less media message shows a "kind" label, not an empty string,
+    // in the sidebar. A media message WITH a caption shows the caption.
+    function previewText(content, type) {
+      if (content) return content;
+      return { 2: '📷 Photo', 3: '🎥 Video', 4: '📎 File', 5: '🎤 Voice message' }[type] || content || '';
     }
 
     // Keeps the sidebar's preview line in sync with what the server already
@@ -1287,9 +1305,49 @@ const app = createApp({
     // messagesEl now refs the MessageList component instance (it exposes
     // its own scrollable element as `messagesEl`) rather than a raw div,
     // since that markup moved into a child component.
+    function messagesScrollEl() {
+      return messagesEl.value && messagesEl.value.messagesEl;
+    }
+
+    // True when the pane is scrolled to (or very near) the bottom. Used to
+    // decide whether an incoming message from someone else should pull the
+    // view down - if the user has scrolled up to read history, don't yank them.
+    function isPinnedToBottom() {
+      const el = messagesScrollEl();
+      if (!el) return true;
+      return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    }
+
+    // Scroll to the bottom now, and keep re-pinning as late-sizing content
+    // (images/videos) finishes loading. Media that isn't decoded yet reports
+    // zero height, so a single scrollTop = scrollHeight lands short whenever
+    // the last messages are photos (e.g. opening a chat whose last two
+    // messages are someone else's images). We re-run on the next frame and
+    // attach one-shot load/error listeners to every not-yet-complete media
+    // element so each one nudges us back down as it resolves.
     function scrollMessagesToBottom() {
-      const el = messagesEl.value && messagesEl.value.messagesEl;
-      if (el) el.scrollTop = el.scrollHeight;
+      const el = messagesScrollEl();
+      if (!el) return;
+      const jump = () => { el.scrollTop = el.scrollHeight; };
+      jump();
+      requestAnimationFrame(jump);
+      const media = el.querySelectorAll('img, video');
+      media.forEach((node) => {
+        const done = node.tagName === 'IMG'
+          ? node.complete
+          : node.readyState >= 1; // HAVE_METADATA
+        if (done) return;
+        const onSettled = () => {
+          node.removeEventListener('load', onSettled);
+          node.removeEventListener('loadedmetadata', onSettled);
+          node.removeEventListener('error', onSettled);
+          // Only re-pin if the user hasn't scrolled away in the meantime.
+          if (isPinnedToBottom()) jump();
+        };
+        node.addEventListener('load', onSettled);
+        node.addEventListener('loadedmetadata', onSettled);
+        node.addEventListener('error', onSettled);
+      });
     }
 
     // Fetches the next older page (keyset: before_id = oldest loaded id) and
@@ -1385,6 +1443,7 @@ const app = createApp({
         messages.value = history.slice().reverse();
         // A full page back means there's probably an older page to fetch.
         hasMoreMessages.value = history.length === MESSAGE_PAGE_SIZE;
+        probeLoadedImageOrientations();
         await nextTick();
         scrollMessagesToBottom();
 
@@ -1568,6 +1627,55 @@ const app = createApp({
     }
 
     // ---------------------------------------------------------------
+    // Image message orientation (option A: frontend-only, no backend)
+    // ---------------------------------------------------------------
+    // We only ever render an image/video bubble in one of two fixed shapes -
+    // 'landscape' (default, also covers square) or 'portrait'. The bubble
+    // reserves that fixed box up front (see MessageList's aspect-ratio
+    // container), so scrollHeight is correct before the media decodes and
+    // the last-messages-are-photos case scrolls to the bottom properly.
+    // We learn the real orientation by probing intrinsic dimensions once
+    // per media_url (Image() for photos, a throwaway <video> for videos).
+    const imageOrientationByUrl = ref({});
+    const probedMediaUrls = new Set();
+
+    function imageOrientation(url) {
+      return imageOrientationByUrl.value[url] || 'landscape';
+    }
+
+    function setOrientationFromDims(url, w, h) {
+      const orient = h > w * 1.1 ? 'portrait' : 'landscape';
+      imageOrientationByUrl.value = { ...imageOrientationByUrl.value, [url]: orient };
+      // If the shape changed and the user is still at the bottom, re-pin -
+      // the reserved box just resized.
+      if (isPinnedToBottom()) nextTick(scrollMessagesToBottom);
+    }
+
+    function probeMediaOrientation(url, kind) {
+      if (!url || probedMediaUrls.has(url)) return;
+      probedMediaUrls.add(url);
+      if (kind === 'video') {
+        const probe = document.createElement('video');
+        probe.preload = 'metadata';
+        probe.onloadedmetadata = () => setOrientationFromDims(url, probe.videoWidth, probe.videoHeight);
+        probe.src = url;
+      } else {
+        const probe = new Image();
+        probe.onload = () => setOrientationFromDims(url, probe.naturalWidth, probe.naturalHeight);
+        probe.src = url;
+      }
+    }
+
+    // Kick off probes for every image/video message currently loaded (called
+    // after history load and on each new_message).
+    function probeLoadedImageOrientations() {
+      for (const m of messages.value) {
+        if (m.type === 2 && m.media_url) probeMediaOrientation(m.media_url, 'image');
+        else if (m.type === 3 && m.media_url) probeMediaOrientation(m.media_url, 'video');
+      }
+    }
+
+    // ---------------------------------------------------------------
     // Sending a message (over the WebSocket, per the real /ws protocol)
     // ---------------------------------------------------------------
     function sendMessage() {
@@ -1589,6 +1697,77 @@ const app = createApp({
       ws.send(JSON.stringify(payload));
       messageInput.value = '';
       replyingToMessage.value = null;
+      // Jump to the bottom right away so the composer stays pinned to the
+      // newest message; the WS echo will land there a moment later.
+      nextTick(scrollMessagesToBottom);
+    }
+
+    // Media messages. Same direct-to-storage model as avatars: ask the app
+    // for a presigned PUT ticket, PUT the bytes straight at MinIO, then send
+    // a send_message WS frame carrying the object key (message_type 2/3/4/5).
+    // MEDIA_MAX_BYTES is declared once near AVATAR_MAX_BYTES above.
+    const MEDIA_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    const MEDIA_VIDEO_MIME = ['video/mp4', 'video/webm', 'video/quicktime'];
+    const MEDIA_MESSAGE_TYPE = { image: 2, video: 3, audio: 4, file: 5 };
+    const mediaUploadBusy = ref(false);
+
+    function mediaKindForMime(mime) {
+      if (MEDIA_IMAGE_MIME.includes(mime)) return 'image';
+      if (MEDIA_VIDEO_MIME.includes(mime)) return 'video';
+      return null;
+    }
+
+    async function sendMediaMessage(file) {
+      messagesError.value = '';
+      if (!activeChatId.value) return;
+      const kind = mediaKindForMime(file.type);
+      if (!kind) {
+        messagesError.value = 'Unsupported file type: ' + (file.type || 'unknown');
+        return;
+      }
+      if (file.size <= 0) { messagesError.value = 'That file looks empty.'; return; }
+      if (file.size > MEDIA_MAX_BYTES[kind]) {
+        messagesError.value = (kind === 'image' ? 'Images' : 'Videos')
+          + ' must be ' + (MEDIA_MAX_BYTES[kind] / 1024 / 1024) + ' MB or smaller.';
+        return;
+      }
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        messagesError.value = 'Cannot send - WebSocket is not connected.';
+        return;
+      }
+      mediaUploadBusy.value = true;
+      try {
+        const ticket = await apiFetch(`/chats/${activeChatId.value}/messages/upload-ticket`, {
+          method: 'POST',
+          body: JSON.stringify({ kind, mime_type: file.type, size_bytes: file.size }),
+        });
+        const putResp = await fetch(ticket.upload_url, {
+          method: 'PUT',
+          headers: ticket.required_headers || { 'Content-Type': file.type },
+          body: file,
+        });
+        if (!putResp.ok) throw new Error('upload failed (' + putResp.status + ')');
+
+        const payload = {
+          type: 'send_message',
+          chat_id: activeChatId.value,
+          client_message_id: crypto.randomUUID(),
+          message_type: MEDIA_MESSAGE_TYPE[kind],
+          media: { key: ticket.storage_key, name: file.name },
+        };
+        const caption = messageInput.value.trim();
+        if (caption) payload.content = caption;
+        if (replyingToMessage.value) payload.reply_to_message_id = replyingToMessage.value.id;
+        log('WS →', payload);
+        ws.send(JSON.stringify(payload));
+        messageInput.value = '';
+        replyingToMessage.value = null;
+      } catch (err) {
+        logError('media send failed', err);
+        messagesError.value = 'Could not send that file: ' + (err.message || err);
+      } finally {
+        mediaUploadBusy.value = false;
+      }
     }
 
     // ---------------------------------------------------------------
@@ -1631,10 +1810,10 @@ const app = createApp({
       activeChatPresenceLabel,
       activeChatTypingLabel, typingLabelForChat, notifyTyping,
       unreadCountByChatId,
-      quotedPreviewFor, replySenderLabel,
+      quotedPreviewFor, replySenderLabel, imageOrientation,
       contextMenuMessage, contextMenuPosition, openMessageContextMenu, closeMessageContextMenu,
       replyingToMessage, startReplyTo, cancelReply,
-      selectChat, sendMessage, onMessagesScroll, statusTickSymbol, statusTickClass,
+      selectChat, sendMessage, sendMediaMessage, mediaUploadBusy, onMessagesScroll, statusTickSymbol, statusTickClass,
       showNewPrivate, newPrivatePhone, chatFormError,
       showNewGroupModal, newGroupBusy, newGroupError,
       createPrivateChat, createGroupChat,
@@ -1689,11 +1868,12 @@ const app = createApp({
               :shouldShowSystemMessage="shouldShowSystemMessage" :systemMessageText="systemMessageText"
               :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass"
               :senderAvatarUrl="senderAvatarUrl"
-              :quotedPreviewFor="quotedPreviewFor"
+              :quotedPreviewFor="quotedPreviewFor" :imageOrientation="imageOrientation"
               @message-contextmenu="openMessageContextMenu" @load-older="onMessagesScroll" />
 
             <MessageInput v-model:messageInput="messageInput" @send-message="sendMessage" @typing="notifyTyping"
-              :replyingToMessage="replyingToMessage" :senderLabel="replySenderLabel" @cancel-reply="cancelReply" />
+              :replyingToMessage="replyingToMessage" :senderLabel="replySenderLabel" @cancel-reply="cancelReply"
+              @pick-media="sendMediaMessage" />
           </template>
           <div v-else class="flex-1 flex items-center justify-center text-slate-400 text-sm">
             Select a chat, or create one from the sidebar.

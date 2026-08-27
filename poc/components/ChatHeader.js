@@ -1,5 +1,7 @@
 // Active chat's header row: title (click opens members modal for groups),
-// group member preview line, or 1:1 presence label.
+// group member preview line, and a status line - the typing indicator when
+// someone's typing (takes priority for 1:1, since it's more current/urgent
+// than "online"), otherwise the 1:1 presence label, otherwise nothing.
 const ChatHeader = {
   props: {
     activeChatLabel: { type: String, required: true },
@@ -8,6 +10,7 @@ const ChatHeader = {
     hiddenActiveChatMemberCount: { type: Number, required: true },
     memberDisplayName: { type: Function, required: true },
     activeChatPresenceLabel: { type: String, required: true },
+    activeChatTypingLabel: { type: String, required: true },
   },
   emits: ['open-members-modal'],
   template: `
@@ -21,7 +24,10 @@ const ChatHeader = {
         </span>
         <span v-if="hiddenActiveChatMemberCount > 0">&bull;&bull;&bull;</span>
       </div>
-      <div v-else-if="activeChatPresenceLabel" class="mt-0.5 text-xs text-teal-600 truncate">
+      <div v-if="activeChatTypingLabel" class="mt-0.5 text-xs text-teal-600 truncate italic">
+        {{ activeChatTypingLabel }}
+      </div>
+      <div v-else-if="!activeChatIsGroup && activeChatPresenceLabel" class="mt-0.5 text-xs text-teal-600 truncate">
         {{ activeChatPresenceLabel }}
       </div>
     </div>

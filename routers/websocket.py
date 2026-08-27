@@ -6,9 +6,9 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from config import SEND_MESSAGE_RATE_LIMIT_MAX, SEND_MESSAGE_RATE_LIMIT_WINDOW_SECONDS, SERVER_ID
 from database.connection import session_scope
-from database.crud.crud_participant import get_all_chat_ids_for_user
+from database.crud.crud_participant import get_all_chat_ids_for_user, is_participant
 from database.crud.crud_private_chat_pair import get_pair_chat_id
-from services import auth_service, message_service, presence_service, rate_limit_service
+from services import auth_service, message_service, presence_service, rate_limit_service, realtime_service
 from services.connection_manager import connection_manager
 
 logger = logging.getLogger(__name__)
@@ -106,6 +106,9 @@ async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: 
                 )
             await websocket.send_json({"type": "ack", "for": "mark_read"})
 
+        elif message_type == "typing":
+            await _handle_typing(user_id, payload)
+
         elif message_type == "subscribe_presence":
             await _handle_subscribe_presence(user_id, connection_id, payload, websocket)
 
@@ -161,6 +164,29 @@ async def _handle_send_message(user_id: int, payload: dict, websocket: WebSocket
         "client_message_id": payload["client_message_id"],
         "message_id": str(message.id),
         "created_at": message.created_at.isoformat(),
+    })
+
+
+async def _handle_typing(user_id: int, payload: dict) -> None:
+    """
+    Fully ephemeral - no DB persistence, no ack. Fanned out to the chat like
+    any other chat event (new_message, receipts, ...) via the same
+    realtime_service/connection_manager pipeline, so it reuses the existing
+    per-chat Redis channel instead of a new mechanism. The client is
+    responsible for expiring a "typing" state on its own (~5s) rather than
+    the server ever sending a matching "stopped typing" event - see
+    CLAUDE.md's typing-indicator section.
+    """
+    chat_id = int(payload["chat_id"])
+
+    async with session_scope() as session:
+        if not await is_participant(session, chat_id, user_id):
+            raise message_service.NotAParticipantError(f"User {user_id} is not a participant of chat {chat_id}")
+
+    await realtime_service.publish_event(chat_id, {
+        "event": "typing",
+        "chat_id": str(chat_id),
+        "user_id": str(user_id),
     })
 
 

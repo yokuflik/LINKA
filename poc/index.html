@@ -235,6 +235,7 @@ createApp({
       activeChatId.value = null;
       presenceSubscribedUserId = null;
       presenceByUserId.value = {};
+      typingUsersByChatId.value = {};
       authStage.value = 'phone';
       phoneNumber.value = '';
       otpCode.value = '';
@@ -388,6 +389,64 @@ createApp({
       return otherUserId ? presenceLabelFor(otherUserId) : '';
     });
 
+    // ---------------------------------------------------------------
+    // Typing indicator - fully ephemeral (see CLAUDE.md), no DB persistence,
+    // no "typing_stopped" event from the server: each "typing" event we
+    // receive just (re)starts a ~5s client-side expiry timer for that
+    // (chat_id, user_id) pair, and the entry is dropped when the timer
+    // fires. Works for both 1:1 and group chats, unlike presence above.
+    // ---------------------------------------------------------------
+    const TYPING_EXPIRY_MS = 5000;
+    // How often we're willing to send our own "typing" event while the user
+    // keeps typing without pausing - matches the receiving side's expiry so
+    // a steady typist never has their indicator lapse on other clients.
+    const TYPING_SEND_THROTTLE_MS = 3000;
+
+    // chat_id -> Map<user_id, expiry timeout handle>, who's currently typing
+    // in each chat we know about (not just the active one - a background
+    // chat's count could still matter if the UI ever surfaces it there too).
+    const typingUsersByChatId = ref({});
+    let lastTypingSentAt = 0;
+
+    function noteUserTyping(chatId, userId) {
+      const existing = typingUsersByChatId.value[chatId] || {};
+      if (existing[userId]) clearTimeout(existing[userId]);
+      const timeoutHandle = setTimeout(() => {
+        const current = { ...(typingUsersByChatId.value[chatId] || {}) };
+        delete current[userId];
+        typingUsersByChatId.value = { ...typingUsersByChatId.value, [chatId]: current };
+      }, TYPING_EXPIRY_MS);
+      typingUsersByChatId.value = {
+        ...typingUsersByChatId.value,
+        [chatId]: { ...existing, [userId]: timeoutHandle },
+      };
+    }
+
+    // Sends our own "typing" event, throttled so it goes out at most once
+    // per TYPING_SEND_THROTTLE_MS while the user keeps typing continuously -
+    // called on every keystroke in the message input, not just on send.
+    function notifyTyping() {
+      if (!activeChatId.value || !ws || ws.readyState !== WebSocket.OPEN) return;
+      const now = Date.now();
+      if (now - lastTypingSentAt < TYPING_SEND_THROTTLE_MS) return;
+      lastTypingSentAt = now;
+      ws.send(JSON.stringify({ type: 'typing', chat_id: activeChatId.value }));
+    }
+
+    // "X is typing" for exactly one typer, "N people are typing" for more -
+    // per product decision, a group never lists multiple names, only a count.
+    const activeChatTypingLabel = computed(() => {
+      if (!activeChatId.value) return '';
+      // Object keys are always strings - ids are kept as opaque strings
+      // throughout this file (see the Snowflake/JSON-string note up top),
+      // so no Number()/parseInt() coercion here.
+      const typists = Object.keys(typingUsersByChatId.value[activeChatId.value] || {})
+        .filter((id) => id !== currentUser.value.id);
+      if (!typists.length) return '';
+      if (typists.length === 1) return `${userLabelById(typists[0])} is typing…`;
+      return `${typists.length} people are typing…`;
+    });
+
     function handleWsMessage(msg) {
       // Acks/errors for actions *you* took use "type"; events fanned out
       // from the server (yours or anyone else's) use "event".
@@ -439,6 +498,13 @@ createApp({
           // separately catches up on anything sent while it wasn't (see selectChat).
           if (msg.chat_id === activeChatId.value) sendReceipt('mark_read', msg.chat_id, msg.message_id);
         }
+        return;
+      }
+      if (msg.event === 'typing') {
+        // Never our own echo back (the server fans this out to the whole
+        // chat, sender included, same as new_message) - and only tracked
+        // for chats we actually have state for.
+        if (msg.user_id !== currentUser.value.id) noteUserTyping(msg.chat_id, msg.user_id);
         return;
       }
       if (msg.event === 'message_edited') {
@@ -1108,6 +1174,7 @@ createApp({
       chats, activeChatId, activeChatLabel, chatDisplayName, senderLabel, formatChatTime, messages, messageInput, chatsError, messagesError, messagesEl,
       activeChatIsGroup, visibleActiveChatMembers, hiddenActiveChatMemberCount, memberDisplayName, roleLabel,
       activeChatPresenceLabel,
+      activeChatTypingLabel, notifyTyping,
       selectChat, sendMessage, statusTickSymbol, statusTickClass,
       showNewPrivate, showNewGroup, newPrivatePhone, newGroupTitle, newGroupMemberPhones, chatFormError,
       createPrivateChat, createGroupChat,
@@ -1148,6 +1215,7 @@ createApp({
               :visibleActiveChatMembers="visibleActiveChatMembers"
               :hiddenActiveChatMemberCount="hiddenActiveChatMemberCount"
               :memberDisplayName="memberDisplayName" :activeChatPresenceLabel="activeChatPresenceLabel"
+              :activeChatTypingLabel="activeChatTypingLabel"
               @open-members-modal="openMembersModal" />
 
             <MessageList ref="messagesEl"
@@ -1155,7 +1223,7 @@ createApp({
               :shouldShowSystemMessage="shouldShowSystemMessage" :systemMessageText="systemMessageText"
               :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass" />
 
-            <MessageInput v-model:messageInput="messageInput" @send-message="sendMessage" />
+            <MessageInput v-model:messageInput="messageInput" @send-message="sendMessage" @typing="notifyTyping" />
           </template>
           <div v-else class="flex-1 flex items-center justify-center text-slate-400 text-sm">
             Select a chat, or create one from the sidebar.

@@ -195,6 +195,11 @@ class ChatListItemOut(BaseModel):
     role: int
     last_read_message_id: Optional[IdStr]
 
+    # Whether this viewer has pinned the chat to the top of their list.
+    # Per-viewer (lives on Participant), so it belongs here, not on ChatOut.
+    # Only set by chat_service.get_chat_list.
+    pinned: bool = False
+
     # How many of this chat's messages come after the viewer's own
     # last_read_message_id - genuinely per-viewer (unlike ChatOut.
     # last_message_status, which is chat-wide), so it lives here rather than

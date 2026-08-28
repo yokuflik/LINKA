@@ -11,6 +11,7 @@ from database.crud.crud_participant import (
     get_user_chats,
     is_participant,
     remove_participant,
+    set_chat_pinned as _crud_set_chat_pinned,
     update_participant_role,
 )
 from database.crud.crud_private_chat_pair import create_pair, get_pair_chat_id
@@ -230,6 +231,31 @@ async def get_chat_list(
         participant.unread_count = await count_unread_messages(session, chat.id, participant.last_read_message_id)
 
     return participants
+
+
+async def set_chat_pinned(session: AsyncSession, user_id: int, chat_id: int, pinned: bool) -> bool:
+    """
+    Pin/unpin a chat for the calling user. Any participant may pin any of
+    their own chats (no role check); pinning is purely a per-user chat-list
+    ordering preference with no cap. Returns False if the user isn't a
+    participant of the chat.
+    """
+    participant = await _crud_set_chat_pinned(session, chat_id=chat_id, user_id=user_id, pinned=pinned)
+    if participant is None:
+        return False
+
+    # Pinning is per-user, so the only clients that care are this same
+    # user's *other* open connections (a second browser tab / device).
+    # Push it over their personal channel - connection_manager forwards any
+    # user_events payload to every connection of that user - so each one
+    # re-sorts its chat list live instead of only on the next GET /chats.
+    # The acting connection gets the echo too; re-applying the same flag is
+    # idempotent.
+    await realtime_service.publish_user_event(
+        user_id,
+        {"event": "chat_pin_changed", "chat_id": str(chat_id), "pinned": pinned},
+    )
+    return True
 
 
 async def get_chat_members(session: AsyncSession, requester_id: int, chat_id: int) -> Sequence[Participant]:

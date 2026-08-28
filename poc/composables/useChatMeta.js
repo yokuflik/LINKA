@@ -34,7 +34,8 @@ function useChatMeta(ctx) {
     item.chat.last_message_id = messageId;
     item.chat.last_message_preview = content;
     item.chat.last_message_status = status;
-    ctx.chats.value.sort((a, b) => new Date(b.chat.last_message_at) - new Date(a.chat.last_message_at));
+    // Pin-aware: pinned chats stay on top regardless of activity (useChats.sortChats).
+    ctx.sortChats();
   }
 
   // Re-pulls just the status field for whatever's currently loaded in the open

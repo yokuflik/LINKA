@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, delete, tuple_, func
+from sqlalchemy import select, update, delete, tuple_, func, case
 from sqlalchemy.orm import contains_eager
 from sqlalchemy.exc import IntegrityError
 from typing import Sequence, Optional, Tuple
@@ -82,12 +82,24 @@ async def get_user_chats(
     """
     limit = min(limit, MAX_PAGE_SIZE)
 
+    # Pinned chats always sort above un-pinned ones (pinned_at DESC), then
+    # the rest by recent activity. `pinned_first` is 0 for pinned, 1
+    # otherwise, so a single ORDER BY covers both groups; the cursor tuple
+    # below carries it too, keeping pagination stable across the boundary.
+    pinned_first = case((Participant.pinned_at.is_(None), 1), else_=0)
+    pin_sort = func.coalesce(Participant.pinned_at, func.to_timestamp(0))
+
     stmt = (
         select(Participant)
         .join(Chat, Chat.id == Participant.chat_id)
         .where(Participant.user_id == user_id)
         .options(contains_eager(Participant.chat))
-        .order_by(Chat.last_message_at.desc(), Chat.id.desc())
+        .order_by(
+            pinned_first.asc(),
+            pin_sort.desc(),
+            Chat.last_message_at.desc(),
+            Chat.id.desc(),
+        )
         .limit(limit)
     )
 
@@ -137,6 +149,30 @@ async def update_participant_role(session: AsyncSession, chat_id: int, user_id: 
         update(Participant)
         .where(Participant.chat_id == chat_id, Participant.user_id == user_id)
         .values(role=role)
+        .returning(Participant)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return result.scalar_one_or_none()
+
+
+async def set_chat_pinned(
+    session: AsyncSession, chat_id: int, user_id: int, pinned: bool
+) -> Optional[Participant]:
+    """
+    Pin or unpin a chat for one user. Pinning stamps pinned_at = now()
+    (idempotent: re-pinning refreshes the timestamp, bumping it to the top
+    of the pinned group); unpinning clears it to NULL. No cap on pins.
+
+    Returns the updated Participant, or None if the user isn't in the chat.
+
+    Time Complexity: O(log N) - a direct hit on the (chat_id, user_id)
+    composite Primary Key.
+    """
+    stmt = (
+        update(Participant)
+        .where(Participant.chat_id == chat_id, Participant.user_id == user_id)
+        .values(pinned_at=func.now() if pinned else None)
         .returning(Participant)
     )
     result = await session.execute(stmt)

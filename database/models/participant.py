@@ -52,6 +52,12 @@ class Participant(Base):
     last_read_at = Column(DateTime(timezone=True), nullable=True)
     last_played_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Per-user chat pinning. NULL = not pinned. When set, the chat is
+    # sorted above all un-pinned chats in this user's chat list, ordered
+    # by pinned_at DESC (most recently pinned first). Lives on Participant
+    # so every user pins independently; no limit on how many a user pins.
+    pinned_at = Column(DateTime(timezone=True), nullable=True)
+
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # SQLAlchemy ORM relationships

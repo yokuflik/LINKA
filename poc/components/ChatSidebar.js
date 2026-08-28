@@ -19,7 +19,7 @@ const ChatSidebar = {
   },
   emits: [
     'update:showNewPrivate', 'update:newPrivatePhone',
-    'create-private-chat', 'open-new-group', 'select-chat',
+    'create-private-chat', 'open-new-group', 'select-chat', 'chat-contextmenu',
   ],
   methods: {
     // Real methods (not chained inline-statement handlers) - a chained
@@ -50,14 +50,21 @@ const ChatSidebar = {
       <p v-if="chatsError" class="px-3 py-1 text-xs text-red-600">{{ chatsError }}</p>
 
       <div class="flex-1 overflow-y-auto">
-        <button v-for="item in chats" :key="item.chat.id" @click="$emit('select-chat', item.chat.id)"
-                class="w-full text-left px-3 py-2.5 border-b border-slate-100 hover:bg-slate-50 flex items-center gap-3"
+        <div v-for="item in chats" :key="item.chat.id" @click="$emit('select-chat', item.chat.id)"
+                @contextmenu.prevent="$emit('chat-contextmenu', { chatId: item.chat.id, event: $event })"
+                class="w-full text-left px-3 py-2.5 border-b border-slate-100 hover:bg-slate-50 flex items-center gap-3 cursor-pointer"
                 :class="{ 'bg-teal-50': item.chat.id === activeChatId }">
           <Avatar :url="chatAvatarUrl(item.chat)" :name="chatAvatarName(item.chat)"
                   :colorKey="chatAvatarColorKey(item.chat)" sizeClass="w-10 h-10 text-base" />
           <div class="flex-1 min-w-0">
             <div class="flex items-baseline gap-2">
               <span class="flex-1 min-w-0 text-sm font-medium truncate">{{ chatDisplayName(item.chat) }}</span>
+              <svg v-if="item.pinned" viewBox="0 0 24 24" class="shrink-0 w-3.5 h-3.5 text-slate-400"
+                   fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <title>Pinned</title>
+                <path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5z" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
               <span class="shrink-0 text-[11px] text-slate-400">{{ formatChatTime(item.chat.last_message_at) }}</span>
             </div>
             <div class="flex items-center gap-2">
@@ -71,7 +78,7 @@ const ChatSidebar = {
               </span>
             </div>
           </div>
-        </button>
+        </div>
         <p v-if="!chats.length" class="p-3 text-sm text-slate-400">No chats yet — create one above.</p>
       </div>
     </aside>

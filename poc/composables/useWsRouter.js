@@ -295,6 +295,19 @@ function useWsRouter(ctx) {
       return;
     }
 
+    if (msg.event === 'chat_pin_changed') {
+      // This same user pinned/unpinned a chat from another tab/device
+      // (chat_service.set_chat_pinned pushes it over the personal channel).
+      // Apply the flag + re-sort in place - no reload needed. The tab that
+      // did it also gets this echo; re-setting the same value is a no-op.
+      const item = ctx.chats.value.find((c) => c.chat.id === msg.chat_id);
+      if (item) {
+        item.pinned = !!msg.pinned;
+        ctx.sortChats();
+      }
+      return;
+    }
+
     if (msg.event === 'removed_from_chat') {
       // Mirror of added_to_chat: fired when someone else removes this user
       // from a group (or this user leaves from another device).

@@ -287,10 +287,73 @@ function useChats(ctx) {
     if (rowsAboveViewport <= LOAD_OLDER_THRESHOLD) loadOlderMessages();
   }
 
+  // Same ordering the server applies (crud_participant.get_user_chats): pinned
+  // chats first, then by last activity. Kept client-side too so an optimistic
+  // pin/unpin re-sorts the list without a full reload.
+  function sortChats() {
+    // Reassign (not in-place .sort()) so every consumer of the `chats` ref -
+    // including the ChatSidebar v-for on another device's window - reliably
+    // re-renders in the new order.
+    chats.value = chats.value.slice().sort((a, b) => {
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      const ta = a.chat.last_message_at || '';
+      const tb = b.chat.last_message_at || '';
+      if (ta !== tb) return ta < tb ? 1 : -1;
+      return a.chat.id < b.chat.id ? 1 : -1;
+    });
+  }
+
+  // Pin/unpin a chat for the current user. Optimistic: flip the flag, re-sort,
+  // roll back on failure. No server push - other devices catch up on reload.
+  async function togglePinChat(chatId) {
+    const item = chats.value.find((c) => c.chat.id === chatId);
+    if (!item) return;
+    const next = !item.pinned;
+    item.pinned = next;
+    sortChats();
+    try {
+      await ctx.apiFetch(`/chats/${chatId}/pin`, { method: next ? 'PUT' : 'DELETE' });
+    } catch (err) {
+      ctx.logError('failed to toggle pin for', chatId, err);
+      item.pinned = !next;
+      sortChats();
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Chat-row right-click menu (sidebar). Pin is wired; Mute is a UI stub.
+  // ---------------------------------------------------------------
+  const chatMenuChatId = ref(null); // the chat the menu is open for, or null
+  const chatMenuRawPosition = ref({ x: 0, y: 0 });
+  const chatMenuPosition = computed(() => ({
+    x: Math.min(chatMenuRawPosition.value.x, window.innerWidth - 184),
+    y: Math.min(chatMenuRawPosition.value.y, window.innerHeight - 100),
+  }));
+  const chatMenuItem = computed(() => chats.value.find((c) => c.chat.id === chatMenuChatId.value) || null);
+
+  function openChatContextMenu({ chatId, event }) {
+    chatMenuChatId.value = chatId;
+    chatMenuRawPosition.value = { x: event.clientX, y: event.clientY };
+  }
+  function closeChatContextMenu() {
+    chatMenuChatId.value = null;
+  }
+  async function togglePinFromMenu() {
+    const id = chatMenuChatId.value;
+    closeChatContextMenu();
+    if (id != null) await togglePinChat(id);
+  }
+  function toggleMuteFromMenu() {
+    // No mute logic yet - backend/DB support not built. UI stub only.
+    closeChatContextMenu();
+    ctx.log('mute: not implemented yet');
+  }
+
   async function loadChats() {
     chatsError.value = '';
     try {
       chats.value = await ctx.apiFetch('/chats?limit=50');
+      sortChats();
       ctx.log('loaded', chats.value.length, 'chat(s)');
       await Promise.all(
         chats.value.filter((c) => !c.chat.is_group).map((c) => resolvePrivateChatTitle(c.chat.id, { force: true }))
@@ -423,6 +486,8 @@ function useChats(ctx) {
     statusTickSymbol, statusTickClass,
     messagesScrollEl, isPinnedToBottom, scrollMessagesToBottom,
     loadOlderMessages, onMessagesScroll,
-    loadChats, selectChat,
+    loadChats, selectChat, togglePinChat, sortChats,
+    chatMenuChatId, chatMenuPosition, chatMenuItem,
+    openChatContextMenu, closeChatContextMenu, togglePinFromMenu, toggleMuteFromMenu,
   };
 }

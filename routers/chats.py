@@ -37,10 +37,36 @@ async def list_my_chats(
     participants = await chat_service.get_chat_list(session, user_id, before=before, limit=limit)
     return [
         ChatListItemOut(
-            chat=p.chat, role=p.role, last_read_message_id=p.last_read_message_id, unread_count=p.unread_count
+            chat=p.chat,
+            role=p.role,
+            last_read_message_id=p.last_read_message_id,
+            pinned=p.pinned_at is not None,
+            unread_count=p.unread_count,
         )
         for p in participants
     ]
+
+
+@router.put("/{chat_id}/pin", status_code=status.HTTP_204_NO_CONTENT)
+async def pin_chat(
+    chat_id: int,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Pin a chat to the top of the caller's own chat list (no limit)."""
+    if not await chat_service.set_chat_pinned(session, user_id=user_id, chat_id=chat_id, pinned=True):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found")
+
+
+@router.delete("/{chat_id}/pin", status_code=status.HTTP_204_NO_CONTENT)
+async def unpin_chat(
+    chat_id: int,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Unpin a chat for the caller."""
+    if not await chat_service.set_chat_pinned(session, user_id=user_id, chat_id=chat_id, pinned=False):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found")
 
 
 @router.post("/private", response_model=ChatOut)

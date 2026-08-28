@@ -119,6 +119,27 @@ async def test_delete_chat(db_session: AsyncSession):
     assert fetched_chat is None
 
 
+async def test_delete_chat_cascades_to_participants_and_messages(db_session: AsyncSession):
+    # Arrange: a chat with a member and a message.
+    from database.crud.crud_user import create_user
+    from database.crud.crud_message import create_message, get_message_by_id
+    from database.crud.crud_participant import add_participant_to_chat, is_participant
+
+    chat_id, user_id, message_id = 10008, 20008, 30008
+    await create_user(db_session, user_id=user_id, phone_number="+972500010008")
+    await create_chat(db_session, chat_id=chat_id, is_group=True)
+    await add_participant_to_chat(db_session, chat_id=chat_id, user_id=user_id)
+    await create_message(db_session, message_id=message_id, chat_id=chat_id, sender_id=user_id, content="bye")
+
+    # Act
+    is_deleted = await delete_chat(db_session, chat_id)
+
+    # Assert: ON DELETE CASCADE takes the participant and the message with it
+    assert is_deleted is True
+    assert await is_participant(db_session, chat_id, user_id) is False
+    assert await get_message_by_id(db_session, chat_id=chat_id, message_id=message_id) is None
+
+
 async def test_concurrent_create_same_chat_id_only_one_wins(session_factory):
     # Arrange: a duplicate/retried request racing itself with the same
     # (client-generated) Snowflake chat_id, each on its own session.

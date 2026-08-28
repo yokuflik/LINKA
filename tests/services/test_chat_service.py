@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.crud.crud_user import create_user
+from database.models.chat import Chat
 from services import chat_service
 
 pytestmark = pytest.mark.asyncio
@@ -345,3 +346,122 @@ async def test_add_member_notifies_the_new_member(db_session: AsyncSession, redi
         await agen.aclose()
 
     assert event == {"event": "added_to_chat", "chat_id": str(group.id)}
+
+
+# ---------------------------------------------------------------------------
+# remove_member: self-leave, admin rank rules, owner-transfer, chat teardown
+# ---------------------------------------------------------------------------
+
+async def test_admin_cannot_remove_another_admin(db_session: AsyncSession):
+    await _make_users(db_session, 1, 2, 3)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team", initial_member_ids=[2, 3])
+    await chat_service.change_member_role(db_session, actor_id=1, chat_id=group.id, target_user_id=2, new_role=chat_service.ROLE_ADMIN)
+    await chat_service.change_member_role(db_session, actor_id=1, chat_id=group.id, target_user_id=3, new_role=chat_service.ROLE_ADMIN)
+
+    # An admin may only remove a plain member, never an equal-or-higher rank.
+    with pytest.raises(chat_service.PermissionDeniedError):
+        await chat_service.remove_member(db_session, actor_id=2, chat_id=group.id, target_user_id=3)
+
+
+async def test_owner_cannot_leave_a_non_empty_group_without_naming_a_successor(db_session: AsyncSession):
+    await _make_users(db_session, 1, 2)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team", initial_member_ids=[2])
+
+    with pytest.raises(chat_service.OwnershipTransferRequiredError):
+        await chat_service.remove_member(db_session, actor_id=1, chat_id=group.id, target_user_id=1)
+
+
+async def test_owner_leaving_with_a_non_member_successor_is_rejected(db_session: AsyncSession):
+    await _make_users(db_session, 1, 2, 3)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team", initial_member_ids=[2])
+
+    with pytest.raises(chat_service.UserNotFoundError):
+        await chat_service.remove_member(db_session, actor_id=1, chat_id=group.id, target_user_id=1, new_owner_id=3)
+
+
+async def test_owner_leaving_promotes_the_named_successor(db_session: AsyncSession):
+    from database.crud.crud_message import get_chat_messages
+    from database.crud.crud_participant import get_chat_participants
+
+    await _make_users(db_session, 1, 2)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team", initial_member_ids=[2])
+
+    left = await chat_service.remove_member(db_session, actor_id=1, chat_id=group.id, target_user_id=1, new_owner_id=2)
+    assert left is True
+
+    participants = await get_chat_participants(db_session, group.id)
+    assert {p.user_id for p in participants} == {2}
+    assert participants[0].role == chat_service.ROLE_OWNER
+
+    # Both the transfer and the "owner left" system messages were sent.
+    messages = await get_chat_messages(db_session, chat_id=group.id, include_deleted=True)
+    assert any("owner" in (m.content or "") for m in messages)
+
+
+async def test_last_member_leaving_deletes_the_whole_chat(db_session: AsyncSession):
+    await _make_users(db_session, 1)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Solo")
+
+    removed = await chat_service.remove_member(db_session, actor_id=1, chat_id=group.id, target_user_id=1)
+    assert removed is True
+
+    # The chat is gone entirely - not left as an empty shell.
+    assert await chat_service.get_chat_list(db_session, user_id=1) == []
+    assert await db_session.get(Chat, group.id) is None
+
+
+async def test_get_chat_members_rejects_a_non_participant(db_session: AsyncSession):
+    await _make_users(db_session, 1, 2)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team")
+
+    with pytest.raises(chat_service.PermissionDeniedError):
+        await chat_service.get_chat_members(db_session, requester_id=2, chat_id=group.id)
+
+
+# ---------------------------------------------------------------------------
+# change_member_role emits a role_changed system message whose content is
+# structured JSON (client-filtered), not plain text - see CLAUDE.md.
+# ---------------------------------------------------------------------------
+
+async def test_change_member_role_emits_a_json_role_changed_system_message(db_session: AsyncSession):
+    import json
+
+    from database.crud.crud_message import get_chat_messages
+
+    await _make_users(db_session, 1, 2)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team", initial_member_ids=[2])
+
+    await chat_service.change_member_role(
+        db_session, actor_id=1, chat_id=group.id, target_user_id=2, new_role=chat_service.ROLE_ADMIN
+    )
+
+    messages = await get_chat_messages(db_session, chat_id=group.id)
+    system_msgs = [m for m in messages if m.sender_id is None]
+    payloads = [json.loads(m.content) for m in system_msgs if (m.content or "").startswith("{")]
+    role_changed = next(p for p in payloads if p.get("kind") == "role_changed")
+
+    assert role_changed["actor_id"] == "1"
+    assert role_changed["target_id"] == "2"
+    assert role_changed["new_role"] == chat_service.ROLE_ADMIN
+
+
+# ---------------------------------------------------------------------------
+# removed_from_chat personal-channel event (mirror of added_to_chat) - what
+# tells connection_manager to drop an already-open connection immediately.
+# ---------------------------------------------------------------------------
+
+async def test_remove_member_notifies_the_removed_user(db_session: AsyncSession, redis_db):
+    await _make_users(db_session, 1, 2)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team", initial_member_ids=[2])
+
+    agen, task = await _collect_one_user_event(2)
+    try:
+        await chat_service.remove_member(db_session, actor_id=1, chat_id=group.id, target_user_id=2)
+        event = await asyncio.wait_for(task, timeout=2.0)
+    finally:
+        await agen.aclose()
+
+    assert event["event"] == "removed_from_chat"
+    assert event["chat_id"] == str(group.id)
+    assert event["actor_id"] == "1"
+    assert event["chat_title"] == "Team"

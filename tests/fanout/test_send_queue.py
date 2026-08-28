@@ -112,6 +112,23 @@ async def test_duplicate_notifies_sender_channel(db_session: AsyncSession, redis
     assert event["client_message_id"] == cmid
 
 
+async def test_duplicate_re_enqueues_fanout_for_crash_recovery(db_session: AsyncSession, redis_db):
+    # If the first send entry committed the row but crashed before enqueuing
+    # fan-out, the message would never be delivered. The duplicate entry must
+    # re-enqueue fan-out (worker.py recovery path), not just notify the sender.
+    chat_id = await _group(db_session, 1, [2])
+    cmid = str(uuid.uuid4())
+    await send_queue.enqueue_outgoing_message(chat_id=chat_id, sender_id=1, client_message_id=cmid, content="hi")
+    await _drain_all(db_session)
+    drained_first = await _drain_fanout(db_session)
+    assert drained_first == 1
+
+    await send_queue.enqueue_outgoing_message(chat_id=chat_id, sender_id=1, client_message_id=cmid, content="hi")
+    await _drain_all(db_session)
+
+    assert await _drain_fanout(db_session) == 1
+
+
 async def test_bad_media_key_fails_the_message_and_notifies_sender(db_session: AsyncSession, redis_db):
     chat_id = await _group(db_session, 1, [2])
     cmid = str(uuid.uuid4())

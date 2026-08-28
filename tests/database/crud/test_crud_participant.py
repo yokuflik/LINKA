@@ -5,12 +5,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.crud.crud_user import create_user
 from database.crud.crud_chat import create_chat, get_chat_by_id
 from database.crud.crud_message import create_message
+from database.models.participant import Participant
 from database.crud.crud_participant import (
     add_participant_to_chat,
     get_user_chats,
+    get_all_chat_ids_for_user,
+    is_participant,
+    update_participant_role,
     get_chat_participants,
     update_last_delivered_message,
     update_last_read_message,
+    update_last_played_message,
     remove_participant
 )
 
@@ -93,6 +98,114 @@ async def test_remove_participant(db_session: AsyncSession):
     # Assert
     assert is_removed is True
     assert len(participants) == 0
+
+
+async def test_add_participant_seeds_watermarks_at_current_last_message(db_session: AsyncSession):
+    # Arrange: a chat with history, fully read by its one veteran member.
+    chat_id = 630
+    veteran, newcomer = 530, 531
+    await create_user(db_session, user_id=veteran, phone_number=f"+97250{veteran}")
+    await create_user(db_session, user_id=newcomer, phone_number=f"+97250{newcomer}")
+    await create_chat(db_session, chat_id=chat_id, is_group=True)
+    await add_participant_to_chat(db_session, chat_id=chat_id, user_id=veteran)
+    last = await create_message(db_session, message_id=90500, chat_id=chat_id, sender_id=veteran, content="history")
+
+    # Act: a new member joins
+    participant = await add_participant_to_chat(db_session, chat_id=chat_id, user_id=newcomer)
+
+    # Assert: their watermarks start at the chat's current last_message_id,
+    # not NULL - messages sent before they joined aren't theirs to block on.
+    assert participant.last_delivered_message_id == last.id
+    assert participant.last_read_message_id == last.id
+    assert participant.last_played_message_id == last.id
+
+
+async def test_is_participant(db_session: AsyncSession):
+    # Arrange
+    chat_id, member, outsider = 631, 532, 533
+    await create_user(db_session, user_id=member, phone_number=f"+97250{member}")
+    await create_user(db_session, user_id=outsider, phone_number=f"+97250{outsider}")
+    await create_chat(db_session, chat_id=chat_id, is_group=True)
+    await add_participant_to_chat(db_session, chat_id=chat_id, user_id=member)
+
+    # Act + Assert
+    assert await is_participant(db_session, chat_id, member) is True
+    assert await is_participant(db_session, chat_id, outsider) is False
+
+
+async def test_update_participant_role(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id = 632, 534
+    await create_user(db_session, user_id=user_id, phone_number=f"+97250{user_id}")
+    await create_chat(db_session, chat_id=chat_id, is_group=True)
+    await add_participant_to_chat(db_session, chat_id=chat_id, user_id=user_id, role=1)
+
+    # Act: promote Member -> Admin
+    updated = await update_participant_role(db_session, chat_id=chat_id, user_id=user_id, role=2)
+
+    # Assert
+    assert updated is not None
+    assert updated.role == 2
+
+    # Act + Assert: a role update for a non-member returns None
+    assert await update_participant_role(db_session, chat_id=chat_id, user_id=999999, role=2) is None
+
+
+async def test_get_all_chat_ids_for_user_is_uncapped(db_session: AsyncSession):
+    # Arrange: more chats than get_user_chats' MAX_PAGE_SIZE would ever return.
+    user_id = 535
+    await create_user(db_session, user_id=user_id, phone_number=f"+97250{user_id}")
+    expected = set()
+    for i in range(120):
+        cid = 6400 + i
+        await create_chat(db_session, chat_id=cid, is_group=True)
+        await add_participant_to_chat(db_session, chat_id=cid, user_id=user_id)
+        expected.add(cid)
+
+    # Act
+    chat_ids = await get_all_chat_ids_for_user(db_session, user_id)
+
+    # Assert: every chat, not just the first page's worth - the WS connection
+    # manager depends on this being complete.
+    assert set(chat_ids) == expected
+
+
+async def test_update_last_played_message_sets_watermark(db_session: AsyncSession):
+    # Arrange
+    user_id, chat_id = 536, 641
+    await create_user(db_session, user_id=user_id, phone_number=f"+97250{user_id}")
+    await create_chat(db_session, chat_id=chat_id, is_group=True)
+    await add_participant_to_chat(db_session, chat_id=chat_id, user_id=user_id)
+
+    # Act
+    updated = await update_last_played_message(db_session, chat_id=chat_id, user_id=user_id, message_id=7777)
+
+    # Assert
+    assert updated is not None
+    assert updated.last_played_message_id == 7777
+
+
+async def test_watermark_updates_are_forward_only(db_session: AsyncSession):
+    # Arrange: watermark already at a high id.
+    user_id, chat_id = 537, 642
+    await create_user(db_session, user_id=user_id, phone_number=f"+97250{user_id}")
+    await create_chat(db_session, chat_id=chat_id, is_group=True)
+    await add_participant_to_chat(db_session, chat_id=chat_id, user_id=user_id)
+    await update_last_read_message(db_session, chat_id=chat_id, user_id=user_id, message_id=5000)
+
+    # Act + Assert: a behind mark is a no-op (returns None, watermark unchanged)
+    assert await update_last_read_message(db_session, chat_id=chat_id, user_id=user_id, message_id=4000) is None
+    # ...and an equal mark is a no-op too
+    assert await update_last_read_message(db_session, chat_id=chat_id, user_id=user_id, message_id=5000) is None
+
+    participant = await db_session.get(Participant, {"chat_id": chat_id, "user_id": user_id})
+    await db_session.refresh(participant)
+    assert participant.last_read_message_id == 5000
+
+    # Act + Assert: an ahead mark still advances
+    moved = await update_last_read_message(db_session, chat_id=chat_id, user_id=user_id, message_id=6000)
+    assert moved is not None
+    assert moved.last_read_message_id == 6000
 
 
 async def test_get_user_chats_orders_by_recency_and_paginates(db_session: AsyncSession):

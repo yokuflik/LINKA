@@ -331,3 +331,75 @@ async def test_user_channel_listener_stops_when_the_last_connection_disconnects(
     await manager.disconnect("c1")
     assert 1 not in manager._user_channel_listener_tasks
     assert 1 not in manager._user_channel_subscribers
+
+
+async def test_removed_from_chat_event_unsubscribes_the_connection_immediately(manager, redis_db):
+    ws = FakeWebSocket()
+    await manager.connect(user_id=1, connection_id="c1", websocket=ws, chat_ids=[100])
+    await asyncio.sleep(0.2)
+    assert "c1" in manager._chat_subscribers.get(100, set())
+
+    await realtime_service.publish_user_event(
+        1, {"event": "removed_from_chat", "chat_id": "100", "actor_id": "2", "chat_title": "Team"}
+    )
+    await asyncio.sleep(0.2)
+
+    # The connection is dropped from the chat's local routing table...
+    assert "c1" not in manager._chat_subscribers.get(100, set())
+    # ...and a message published to that chat afterwards no longer reaches it.
+    ws.sent.clear()
+    await realtime_service.publish_event(100, {"event": "new_message", "message_id": 9})
+    await asyncio.sleep(0.2)
+    assert all(e.get("event") != "new_message" for e in ws.sent)
+
+    await manager.disconnect("c1")
+
+
+# ---------------------------------------------------------------------------
+# Subscribe-on-demand presence: the per-target listener starts on the first
+# subscribe_presence and stops once the last watcher goes away - it is never
+# started by connect() (see CLAUDE.md "Presence - subscribe-on-demand").
+# ---------------------------------------------------------------------------
+
+async def test_connect_does_not_start_a_presence_listener(manager, redis_db):
+    await manager.connect(user_id=1, connection_id="c1", websocket=FakeWebSocket(), chat_ids=[100])
+    assert manager._presence_listener_tasks == {}
+    await manager.disconnect("c1")
+
+
+async def test_subscribe_presence_starts_a_listener_and_delivers_updates(manager, redis_db):
+    ws = FakeWebSocket()
+    await manager.connect(user_id=1, connection_id="c1", websocket=ws, chat_ids=[])
+    await manager.subscribe_presence("c1", target_user_id=2)
+    await asyncio.sleep(0.2)
+    assert 2 in manager._presence_listener_tasks
+
+    await realtime_service.publish_presence_event(2, {"event": "presence_update", "user_id": "2", "online": False})
+    await asyncio.sleep(0.2)
+    assert {"event": "presence_update", "user_id": "2", "online": False} in ws.sent
+
+    await manager.disconnect("c1")
+
+
+async def test_presence_listener_stops_when_the_last_watcher_unsubscribes(manager, redis_db):
+    await manager.connect(user_id=1, connection_id="c1", websocket=FakeWebSocket(), chat_ids=[])
+    await manager.subscribe_presence("c1", target_user_id=2)
+    await asyncio.sleep(0.2)
+    assert 2 in manager._presence_listener_tasks
+
+    await manager.unsubscribe_presence("c1", target_user_id=2)
+    assert 2 not in manager._presence_listener_tasks
+    assert 2 not in manager._presence_subscribers
+
+    await manager.disconnect("c1")
+
+
+async def test_disconnect_tears_down_a_connections_presence_watches(manager, redis_db):
+    await manager.connect(user_id=1, connection_id="c1", websocket=FakeWebSocket(), chat_ids=[])
+    await manager.subscribe_presence("c1", target_user_id=2)
+    await asyncio.sleep(0.2)
+
+    await manager.disconnect("c1")
+
+    assert 2 not in manager._presence_listener_tasks
+    assert 2 not in manager._presence_subscribers

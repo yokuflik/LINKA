@@ -11,6 +11,9 @@ from database.crud.crud_message import (
     edit_message_content,
     soft_delete_message,
     compute_message_status,
+    count_unread_messages,
+    build_last_message_preview,
+    DELETED_MESSAGE_PREVIEW,
     MAX_PAGE_SIZE,
 )
 from database.crud.crud_participant import add_participant_to_chat, update_last_delivered_message, update_last_read_message
@@ -220,6 +223,173 @@ async def test_create_message_bumps_senders_own_watermarks(db_session: AsyncSess
     chat = await get_chat_by_id(db_session, chat_id)
     assert chat.all_delivered_up_to_message_id == message.id
     assert chat.all_read_up_to_message_id == message.id
+
+
+async def test_build_last_message_preview():
+    # Text message: the content, truncated to the column width.
+    assert build_last_message_preview("hello") == "hello"
+    assert build_last_message_preview("x" * 500) == "x" * 120
+
+    # Caption-less media messages fall back to a generic label per type.
+    assert build_last_message_preview(None, type=2) == "\U0001F4F7 Photo"
+    assert build_last_message_preview(None, type=3) == "\U0001F3A5 Video"
+    assert build_last_message_preview(None, type=4) == "\U0001F3A4 Voice message"
+    assert build_last_message_preview(None, type=5) == "\U0001F4CE File"
+
+    # A media message *with* a caption shows the caption, not the label.
+    assert build_last_message_preview("look at this", type=2) == "look at this"
+
+    # A plain text message with no content maps to no preview.
+    assert build_last_message_preview(None) is None
+
+
+async def test_create_message_persists_media_columns(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id = 720, 820
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+
+    # Act
+    message = await create_message(
+        db_session,
+        message_id=90200,
+        chat_id=chat_id,
+        sender_id=user_id,
+        type=2,
+        media_key="ab/image/90200.jpg",
+        media_mime="image/jpeg",
+        media_size=12345,
+        media_name="vacation.jpg",
+        media_duration_seconds=None,
+    )
+
+    # Assert: every media part round-trips onto the row
+    assert message.media_key == "ab/image/90200.jpg"
+    assert message.media_mime == "image/jpeg"
+    assert message.media_size == 12345
+    assert message.media_name == "vacation.jpg"
+
+    # ...and a caption-less media message sets the generic chat-list preview
+    chat = await get_chat_by_id(db_session, chat_id)
+    assert chat.last_message_preview == "\U0001F4F7 Photo"
+
+
+async def test_create_message_persists_reply_to_message_id(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id = 721, 821
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    original = await create_message(db_session, message_id=90210, chat_id=chat_id, sender_id=user_id, content="original")
+
+    # Act
+    reply = await create_message(
+        db_session, message_id=90211, chat_id=chat_id, sender_id=user_id,
+        content="a reply", reply_to_message_id=original.id,
+    )
+
+    # Assert
+    assert reply.reply_to_message_id == original.id
+
+
+async def test_system_message_does_not_overwrite_last_message_preview(db_session: AsyncSession):
+    # Arrange: a real user message sets the chat-list preview.
+    chat_id, user_id = 722, 822
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    await create_message(db_session, message_id=90220, chat_id=chat_id, sender_id=user_id, content="real message")
+
+    # Act: a system message (no sender) lands afterwards
+    sys_msg = await create_message(
+        db_session, message_id=90221, chat_id=chat_id, sender_id=None, type=6, content="X joined the group",
+    )
+
+    # Assert: recency (id/at) advances to the system message...
+    chat = await get_chat_by_id(db_session, chat_id)
+    assert chat.last_message_id == sys_msg.id
+    assert chat.last_message_at == sys_msg.created_at
+    # ...but the preview line still shows the last real user message
+    assert chat.last_message_preview == "real message"
+
+
+async def test_compute_message_status_played_only_for_audio(db_session: AsyncSession):
+    # Arrange: an audio message and a text message, both fully played/read by all.
+    chat_id, sender_id, recipient_id = 723, 823, 824
+    await _make_chat_with_sender(db_session, chat_id, sender_id)
+    await create_user(db_session, user_id=recipient_id, phone_number=f"+97250{recipient_id}")
+    await add_participant_to_chat(db_session, chat_id=chat_id, user_id=sender_id)
+    await add_participant_to_chat(db_session, chat_id=chat_id, user_id=recipient_id)
+
+    text_msg = await create_message(db_session, message_id=90230, chat_id=chat_id, sender_id=sender_id, content="hi")
+    audio_msg = await create_message(db_session, message_id=90231, chat_id=chat_id, sender_id=sender_id, type=4)
+
+    from database.crud.crud_participant import update_last_played_message
+    await update_last_delivered_message(db_session, chat_id=chat_id, user_id=recipient_id, message_id=audio_msg.id)
+    await update_last_read_message(db_session, chat_id=chat_id, user_id=recipient_id, message_id=audio_msg.id)
+    await update_last_played_message(db_session, chat_id=chat_id, user_id=recipient_id, message_id=audio_msg.id)
+
+    chat = await get_chat_by_id(db_session, chat_id)
+
+    # Assert: the audio message unlocks PLAYED when message_type is passed...
+    assert compute_message_status(audio_msg.id, chat, message_type=4) == MessageStatus.PLAYED
+    # ...but a non-audio message tops out at READ even with the played cursor past it
+    assert compute_message_status(text_msg.id, chat, message_type=1) == MessageStatus.READ
+    # ...and omitting message_type never yields PLAYED
+    assert compute_message_status(audio_msg.id, chat) == MessageStatus.READ
+
+
+async def test_count_unread_messages(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id = 724, 825
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    await create_message(db_session, message_id=90240, chat_id=chat_id, sender_id=user_id, content="1")
+    await create_message(db_session, message_id=90241, chat_id=chat_id, sender_id=user_id, content="2")
+    m3 = await create_message(db_session, message_id=90242, chat_id=chat_id, sender_id=user_id, content="3")
+    await create_message(db_session, message_id=90243, chat_id=chat_id, sender_id=None, type=6, content="system")
+    await create_message(db_session, message_id=90244, chat_id=chat_id, sender_id=user_id, content="4")
+    await soft_delete_message(db_session, chat_id=chat_id, message_id=90244)
+
+    # Act + Assert: NULL cursor counts every *real*, non-deleted message
+    # (4 real messages, minus the soft-deleted one = 3; the system message never counts)
+    assert await count_unread_messages(db_session, chat_id, None) == 3
+
+    # Act + Assert: with a cursor, only messages strictly after it
+    assert await count_unread_messages(db_session, chat_id, m3.id) == 0
+
+    # Act + Assert: cursor before m3 -> just m3 (90243 system + 90244 deleted excluded)
+    assert await count_unread_messages(db_session, chat_id, 90241) == 1
+
+
+async def test_edit_message_updates_preview_only_for_current_last_message(db_session: AsyncSession):
+    # Arrange: two messages; the second is the chat's current last_message.
+    chat_id, user_id = 725, 826
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    old_msg = await create_message(db_session, message_id=90250, chat_id=chat_id, sender_id=user_id, content="old")
+    last_msg = await create_message(db_session, message_id=90251, chat_id=chat_id, sender_id=user_id, content="last")
+
+    # Act: editing the *older* message must not touch the chat-list preview
+    await edit_message_content(db_session, chat_id=chat_id, message_id=old_msg.id, new_content="old edited")
+    chat = await get_chat_by_id(db_session, chat_id)
+    assert chat.last_message_preview == "last"
+
+    # Act: editing the current last message updates it
+    await edit_message_content(db_session, chat_id=chat_id, message_id=last_msg.id, new_content="last edited")
+    chat = await get_chat_by_id(db_session, chat_id)
+    assert chat.last_message_preview == "last edited"
+
+
+async def test_soft_delete_updates_preview_only_for_current_last_message(db_session: AsyncSession):
+    # Arrange
+    chat_id, user_id = 726, 827
+    await _make_chat_with_sender(db_session, chat_id, user_id)
+    old_msg = await create_message(db_session, message_id=90260, chat_id=chat_id, sender_id=user_id, content="old")
+    last_msg = await create_message(db_session, message_id=90261, chat_id=chat_id, sender_id=user_id, content="last")
+
+    # Act: deleting the older message leaves the preview alone
+    await soft_delete_message(db_session, chat_id=chat_id, message_id=old_msg.id)
+    chat = await get_chat_by_id(db_session, chat_id)
+    assert chat.last_message_preview == "last"
+
+    # Act: deleting the current last message drops in the tombstone marker
+    await soft_delete_message(db_session, chat_id=chat_id, message_id=last_msg.id)
+    chat = await get_chat_by_id(db_session, chat_id)
+    assert chat.last_message_preview == DELETED_MESSAGE_PREVIEW
 
 
 async def test_compute_message_status(db_session: AsyncSession):

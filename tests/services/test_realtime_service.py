@@ -76,6 +76,44 @@ async def test_publish_with_no_serving_instance_does_not_raise(redis_db):
     await realtime_service.publish_event(chat_id=12345, event={"event": "new_message", "message_id": 1})
 
 
+async def test_user_channel_delivers_to_its_own_subscriber_only(redis_db):
+    agen_1 = realtime_service.subscribe_to_user(1)
+    task_1 = asyncio.create_task(agen_1.__anext__())
+    agen_2 = realtime_service.subscribe_to_user(2)
+    task_2 = asyncio.create_task(agen_2.__anext__())
+    try:
+        await asyncio.sleep(0.2)
+        await realtime_service.publish_user_event(1, {"event": "added_to_chat", "chat_id": "5"})
+
+        event_1 = await asyncio.wait_for(task_1, timeout=2.0)
+        assert event_1 == {"event": "added_to_chat", "chat_id": "5"}
+
+        # User 2's channel saw nothing.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(task_2), timeout=0.5)
+    finally:
+        task_2.cancel()
+        try:
+            await task_2
+        except (asyncio.CancelledError, StopAsyncIteration):
+            pass
+        await agen_1.aclose()
+        await agen_2.aclose()
+
+
+async def test_presence_channel_delivers_to_the_target_channel(redis_db):
+    agen = realtime_service.subscribe_to_presence(7)
+    task = asyncio.create_task(agen.__anext__())
+    try:
+        await asyncio.sleep(0.2)
+        await realtime_service.publish_presence_event(7, {"event": "presence_update", "user_id": "7", "online": True})
+        event = await asyncio.wait_for(task, timeout=2.0)
+    finally:
+        await agen.aclose()
+
+    assert event == {"event": "presence_update", "user_id": "7", "online": True}
+
+
 async def test_publish_handles_a_burst_of_events_in_order(redis_db):
     await _serve("server-1", 1)
 

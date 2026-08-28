@@ -282,3 +282,155 @@ async def test_edit_message_rejects_content_over_the_length_cap(db_session: Asyn
     monkeypatch.setattr(message_service, "MAX_MESSAGE_CONTENT_LENGTH", 10)
     with pytest.raises(message_service.MessageTooLongError):
         await message_service.edit_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id, new_content="x" * 11)
+
+
+async def test_send_message_threads_a_reply(db_session: AsyncSession, redis_db):
+    from services import realtime_service
+    from services.fanout import routing
+
+    chat_id = await _make_group(db_session, 1, [2])
+    original = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="original")
+    await _drain_fanout(db_session)  # flush the original's fan-out so the subscriber only sees the reply's
+
+    await routing.add_chat_for_instance("test-server", chat_id)
+    agen = realtime_service.subscribe_to_instance_inbox("test-server")
+    first_item_task = asyncio.create_task(agen.__anext__())
+    try:
+        await asyncio.sleep(0.2)
+        reply = await message_service.process_outgoing(
+            db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()),
+            content="a reply", reply_to_message_id=original.id,
+        )
+        await _drain_fanout(db_session)
+        event = await asyncio.wait_for(first_item_task, timeout=2.0)
+    finally:
+        await agen.aclose()
+
+    # Persisted on the row...
+    assert reply.reply_to_message_id == original.id
+    # ...and echoed as a string on the live new_message event.
+    assert event["reply_to_message_id"] == str(original.id)
+
+
+async def test_fan_out_event_echoes_the_client_message_id(db_session: AsyncSession, redis_db):
+    from services import realtime_service
+    from services.fanout import routing
+
+    chat_id = await _make_group(db_session, 1, [2])
+    client_message_id = str(uuid.uuid4())
+
+    await routing.add_chat_for_instance("test-server", chat_id)
+    agen = realtime_service.subscribe_to_instance_inbox("test-server")
+    first_item_task = asyncio.create_task(agen.__anext__())
+    try:
+        await asyncio.sleep(0.2)
+        await message_service.process_outgoing(
+            db_session, sender_id=1, chat_id=chat_id, client_message_id=client_message_id, content="hi"
+        )
+        await _drain_fanout(db_session)
+        event = await asyncio.wait_for(first_item_task, timeout=2.0)
+    finally:
+        await agen.aclose()
+
+    # The sender's client matches this to its optimistic bubble; never persisted.
+    assert event["client_message_id"] == client_message_id
+
+
+async def test_mark_as_delivered_updates_the_watermark_and_fans_out(db_session: AsyncSession, redis_db):
+    from database.crud.crud_participant import get_chat_participants
+    from services import realtime_service
+    from services.fanout import routing
+
+    chat_id = await _make_group(db_session, 1, [2])
+    message = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="hi")
+
+    await routing.add_chat_for_instance("test-server", chat_id)
+    agen = realtime_service.subscribe_to_instance_inbox("test-server")
+    first_item_task = asyncio.create_task(agen.__anext__())
+    try:
+        await asyncio.sleep(0.2)
+        await message_service.mark_as_delivered(db_session, user_id=2, chat_id=chat_id, message_id=message.id)
+        event = await asyncio.wait_for(first_item_task, timeout=2.0)
+    finally:
+        await agen.aclose()
+
+    participants = await get_chat_participants(db_session, chat_id)
+    recipient = next(p for p in participants if p.user_id == 2)
+    assert recipient.last_delivered_message_id == message.id
+
+    assert event["event"] == "delivery_receipt"
+    assert event["user_id"] == "2"
+    assert event["message_id"] == str(message.id)
+
+
+async def test_mark_as_played_updates_the_watermark(db_session: AsyncSession, redis_db):
+    from database.crud.crud_message import create_message
+    from database.crud.crud_participant import get_chat_participants
+    from utils.snowflake import next_id
+
+    chat_id = await _make_group(db_session, 1, [2])
+    # mark_as_played only accepts a voice message (type 4); build one directly
+    # (no MinIO round trip needed - the played watermark logic is what's under test).
+    message = await create_message(db_session, message_id=next_id(), chat_id=chat_id, sender_id=1, type=4)
+
+    await message_service.mark_as_played(db_session, user_id=2, chat_id=chat_id, message_id=message.id)
+
+    participants = await get_chat_participants(db_session, chat_id)
+    listener = next(p for p in participants if p.user_id == 2)
+    assert listener.last_played_message_id == message.id
+
+
+async def test_mark_as_played_rejects_a_non_voice_message(db_session: AsyncSession, redis_db):
+    chat_id = await _make_group(db_session, 1, [2])
+    message = await message_service.process_outgoing(
+        db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="just text"
+    )
+
+    with pytest.raises(message_service.NotAVoiceMessageError):
+        await message_service.mark_as_played(db_session, user_id=2, chat_id=chat_id, message_id=message.id)
+
+
+async def test_marking_behind_the_watermark_fans_out_nothing(db_session: AsyncSession, redis_db):
+    # A redundant/behind re-mark returns None from the CRUD layer, so
+    # mark_as_* must publish no event and enqueue no receipt-log row.
+    from services import realtime_service
+    from services.fanout import routing
+
+    chat_id = await _make_group(db_session, 1, [2])
+    m1 = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="1")
+    m2 = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="2")
+    await message_service.mark_as_read(db_session, user_id=2, chat_id=chat_id, message_id=m2.id)
+
+    await routing.add_chat_for_instance("test-server", chat_id)
+    agen = realtime_service.subscribe_to_instance_inbox("test-server")
+    first_item_task = asyncio.create_task(agen.__anext__())
+    try:
+        await asyncio.sleep(0.2)
+        # m1 is behind the watermark (already at m2) - no-op
+        await message_service.mark_as_read(db_session, user_id=2, chat_id=chat_id, message_id=m1.id)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(first_item_task), timeout=0.5)
+    finally:
+        first_item_task.cancel()
+        try:
+            await first_item_task
+        except (asyncio.CancelledError, StopAsyncIteration):
+            pass
+        await agen.aclose()
+
+
+async def test_send_system_message_persists_synchronously_and_enqueues_fanout(db_session: AsyncSession, redis_db):
+    from database.crud.crud_message import get_message_by_id
+
+    chat_id = await _make_group(db_session, 1, [2])
+
+    message = await message_service.send_system_message(db_session, chat_id=chat_id, content="X joined the group")
+
+    # Persisted right away (chat_service depends on the returned row)...
+    assert message.sender_id is None
+    assert await get_message_by_id(db_session, chat_id=chat_id, message_id=message.id) is not None
+
+    # ...and its fan-out went onto the same stream as normal messages.
+    await send_queue.ensure_fanout_group()
+    drained = await fanout_worker.drain_once(db_session, block_ms=0, claim_stale=False)
+    assert drained >= 1

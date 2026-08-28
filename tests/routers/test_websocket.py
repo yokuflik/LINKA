@@ -198,6 +198,33 @@ async def test_dispatch_delete_and_mark_read(db_session: AsyncSession, redis_db)
     assert ws.sent[-1] == {"type": "ack", "for": "delete_message", "deleted": True}
 
 
+async def test_dispatch_typing_publishes_event_for_a_participant(db_session: AsyncSession, redis_db, monkeypatch):
+    chat_id = await _make_group(db_session, 1, [2])
+    published = []
+
+    async def capture(cid, event):
+        published.append((cid, event))
+
+    monkeypatch.setattr("routers.websocket.realtime_service.publish_event", capture)
+    ws = FakeWebSocket()
+
+    await _dispatch(user_id=1, connection_id="c1", payload={"type": "recording", "chat_id": chat_id}, websocket=ws)
+
+    assert ws.sent == []  # ephemeral, no ack
+    assert published == [(chat_id, {"event": "typing", "kind": "recording_audio", "chat_id": str(chat_id), "user_id": "1"})]
+
+
+async def test_dispatch_typing_by_a_non_participant_returns_forbidden(db_session: AsyncSession, redis_db):
+    chat_id = await _make_group(db_session, 1, [2])
+    await create_user(db_session, user_id=3, phone_number="+972503")
+    ws = FakeWebSocket()
+
+    await _dispatch(user_id=3, connection_id="c1", payload={"type": "typing", "chat_id": chat_id}, websocket=ws)
+
+    assert ws.sent[0]["type"] == "error"
+    assert ws.sent[0]["code"] == "forbidden"
+
+
 async def test_dispatch_internal_error_is_reported_not_raised(db_session: AsyncSession, redis_db, monkeypatch):
     # A failed enqueue must surface a synchronous error to the sender - the
     # message is otherwise silently lost while the client thinks it sent.

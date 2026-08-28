@@ -12,6 +12,7 @@ from routers.websocket import _dispatch, websocket_endpoint
 from services import auth_service, chat_service, presence_service
 from services.connection_manager import connection_manager
 from services.fanout import worker as send_worker
+from services.settings import service as settings_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -225,6 +226,43 @@ async def test_dispatch_typing_by_a_non_participant_returns_forbidden(db_session
     assert ws.sent[0]["code"] == "forbidden"
 
 
+async def test_dispatch_typing_suppressed_when_sender_hides_online_status(db_session: AsyncSession, redis_db, monkeypatch):
+    # 1:1: user 1 hides their online status (nobody), so their typing indicator
+    # must not reach user 2 either - it follows the sender's own privacy.online.
+    chat_id = await _make_group(db_session, 1, [2])  # 2 participants -> treated as 1:1
+    await settings_service.update_user_settings(db_session, 1, {"privacy": {"online": "nobody"}})
+
+    published = []
+
+    async def capture(cid, event):
+        published.append((cid, event))
+
+    monkeypatch.setattr("routers.websocket.realtime_service.publish_event", capture)
+    ws = FakeWebSocket()
+
+    await _dispatch(user_id=1, connection_id="c1", payload={"type": "typing", "chat_id": chat_id}, websocket=ws)
+
+    assert ws.sent == []  # silently dropped, no error
+    assert published == []
+
+
+async def test_dispatch_typing_allowed_in_group_regardless_of_privacy(db_session: AsyncSession, redis_db, monkeypatch):
+    chat_id = await _make_group(db_session, 1, [2, 3])  # 3 participants -> group, never gated
+    await settings_service.update_user_settings(db_session, 1, {"privacy": {"online": "nobody"}})
+
+    published = []
+
+    async def capture(cid, event):
+        published.append((cid, event))
+
+    monkeypatch.setattr("routers.websocket.realtime_service.publish_event", capture)
+    ws = FakeWebSocket()
+
+    await _dispatch(user_id=1, connection_id="c1", payload={"type": "typing", "chat_id": chat_id}, websocket=ws)
+
+    assert published == [(chat_id, {"event": "typing", "kind": "typing", "chat_id": str(chat_id), "user_id": "1"})]
+
+
 async def test_dispatch_internal_error_is_reported_not_raised(db_session: AsyncSession, redis_db, monkeypatch):
     # A failed enqueue must surface a synchronous error to the sender - the
     # message is otherwise silently lost while the client thinks it sent.
@@ -316,6 +354,100 @@ async def test_endpoint_subscribes_to_every_chat_the_user_is_in(session_factory,
 
     await ws.push_disconnect()
     await asyncio.wait_for(task, timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# subscribe_presence: gated by the target user's privacy.online setting
+# ---------------------------------------------------------------------------
+
+async def _two_users_with_private_chat(session: AsyncSession):
+    await create_user(session, user_id=1, phone_number="+972501")
+    await create_user(session, user_id=2, phone_number="+972502")
+    await chat_service.get_or_create_private_chat(session, 1, 2)
+
+
+async def _two_users_no_chat(session: AsyncSession):
+    await create_user(session, user_id=1, phone_number="+972501")
+    await create_user(session, user_id=2, phone_number="+972502")
+
+
+async def test_subscribe_presence_default_everyone_allowed_without_a_chat(db_session: AsyncSession, redis_db):
+    await _two_users_no_chat(db_session)
+    ws = FakeWebSocket()
+    try:
+        await _dispatch(user_id=1, connection_id="c1",
+                        payload={"type": "subscribe_presence", "user_id": "2"}, websocket=ws)
+        assert ws.sent[0]["type"] == "presence_status"
+        assert ws.sent[0]["user_id"] == "2"
+    finally:
+        await connection_manager.unsubscribe_presence("c1", 2)
+
+
+async def test_subscribe_presence_contacts_requires_a_private_chat(db_session: AsyncSession, redis_db):
+    await _two_users_no_chat(db_session)
+    await settings_service.update_user_settings(db_session, 2, {"privacy": {"online": "contacts"}})
+    ws = FakeWebSocket()
+
+    await _dispatch(user_id=1, connection_id="c1",
+                    payload={"type": "subscribe_presence", "user_id": "2"}, websocket=ws)
+
+    assert ws.sent[0]["type"] == "presence_revoked"
+    assert ws.sent[0]["user_id"] == "2"
+
+
+async def test_subscribe_presence_contacts_allowed_with_a_private_chat(db_session: AsyncSession, redis_db):
+    await _two_users_with_private_chat(db_session)
+    await settings_service.update_user_settings(db_session, 2, {"privacy": {"online": "contacts"}})
+    ws = FakeWebSocket()
+    try:
+        await _dispatch(user_id=1, connection_id="c1",
+                        payload={"type": "subscribe_presence", "user_id": "2"}, websocket=ws)
+        assert ws.sent[0]["type"] == "presence_status"
+    finally:
+        await connection_manager.unsubscribe_presence("c1", 2)
+
+
+async def test_subscribe_presence_nobody_always_rejected(db_session: AsyncSession, redis_db):
+    await _two_users_with_private_chat(db_session)
+    await settings_service.update_user_settings(db_session, 2, {"privacy": {"online": "nobody"}})
+    ws = FakeWebSocket()
+
+    await _dispatch(user_id=1, connection_id="c1",
+                    payload={"type": "subscribe_presence", "user_id": "2"}, websocket=ws)
+
+    assert ws.sent[0]["type"] == "presence_revoked"
+
+
+async def test_periodic_resubscribe_revokes_when_privacy_tightens(db_session: AsyncSession, redis_db):
+    """The heartbeat re-sends subscribe_presence; a since-changed setting is
+    re-checked and the watcher is torn down + told via presence_revoked."""
+    await _two_users_with_private_chat(db_session)
+    ws = FakeWebSocket()
+    try:
+        await _dispatch(user_id=1, connection_id="c1",
+                        payload={"type": "subscribe_presence", "user_id": "2"}, websocket=ws)
+        assert ws.sent[-1]["type"] == "presence_status"
+        assert 2 in connection_manager._presence_subscribers
+
+        await settings_service.update_user_settings(db_session, 2, {"privacy": {"online": "nobody"}})
+
+        await _dispatch(user_id=1, connection_id="c1",
+                        payload={"type": "subscribe_presence", "user_id": "2"}, websocket=ws)
+        assert ws.sent[-1]["type"] == "presence_revoked"
+        assert 2 not in connection_manager._presence_subscribers
+    finally:
+        await connection_manager.unsubscribe_presence("c1", 2)
+
+
+async def test_subscribe_to_own_presence_still_rejected(db_session: AsyncSession, redis_db):
+    await create_user(db_session, user_id=1, phone_number="+972501")
+    ws = FakeWebSocket()
+
+    await _dispatch(user_id=1, connection_id="c1",
+                    payload={"type": "subscribe_presence", "user_id": "1"}, websocket=ws)
+
+    assert ws.sent[0]["type"] == "error"
+    assert ws.sent[0]["code"] == "bad_request"
 
 
 async def test_endpoint_never_crashes_the_session_on_a_bad_message(session_factory, redis_db):

@@ -34,7 +34,13 @@ function useWebsocket(ctx) {
       wsStatus.value = 'connected';
       log('WS connected');
       heartbeatTimer = setInterval(() => {
-        if (wsIsOpen()) ws.send(JSON.stringify({ type: 'heartbeat' }));
+        if (!wsIsOpen()) return;
+        ws.send(JSON.stringify({ type: 'heartbeat' }));
+        // Re-assert the presence subscription for the open private chat so
+        // the server re-checks the other user's privacy.online setting -
+        // a change on their side takes effect within one heartbeat, with
+        // no per-push authorization check server-side.
+        if (ctx.refreshPresenceSubscription) ctx.refreshPresenceSubscription();
       }, 30000);
       markAllChatsDelivered();
 

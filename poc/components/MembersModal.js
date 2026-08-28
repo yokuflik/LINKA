@@ -23,7 +23,7 @@ const MembersModal = {
   },
   emits: [
     'close', 'open-member-options', 'member-option-make-or-remove-admin', 'member-option-remove-from-group',
-    'start-leave-group', 'confirm-leave-with-transfer', 'cancel-owner-transfer-picker',
+    'start-leave-group', 'confirm-leave-with-transfer', 'cancel-owner-transfer-picker', 'edit-group-info',
     'update:ownerTransferTargetId', 'update:addMemberPhone', 'add-member-to-active-group',
   ],
   template: `
@@ -59,6 +59,13 @@ const MembersModal = {
             </div>
           </div>
           <p v-if="!activeChatMembers.length" class="py-3 text-sm text-slate-400">No members loaded.</p>
+        </div>
+
+        <div v-if="canManageActiveChatMembers && !showOwnerTransferPicker" class="mt-3 pt-3 border-t border-slate-200">
+          <button @click="$emit('edit-group-info')"
+                  class="w-full text-left px-3 py-2 text-sm font-medium text-teal-700 hover:bg-teal-50 rounded-lg">
+            Edit group info
+          </button>
         </div>
 
         <div v-if="!showOwnerTransferPicker" class="mt-3 pt-3 border-t border-slate-200">

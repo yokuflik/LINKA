@@ -19,6 +19,7 @@ from services.fanout import fanout_worker, routing
 from services.fanout import worker as send_worker
 from services.receipts import worker as receipt_worker
 from services.redis_client import close_redis
+from services.settings.errors import SettingsValidationError
 from services.storage import media_service
 from services.storage.errors import (
     MediaNotFoundError,
@@ -168,6 +169,11 @@ async def _handle_not_a_participant(request: Request, exc: Exception):
 
 @app.exception_handler(message_service.MessageTooLongError)
 async def _handle_message_too_long(request: Request, exc: Exception):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(SettingsValidationError)
+async def _handle_settings_validation(request: Request, exc: Exception):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 

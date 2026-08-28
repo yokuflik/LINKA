@@ -182,6 +182,41 @@ async def test_only_admin_or_owner_can_update_group_details(db_session: AsyncSes
     assert updated.title == "Renamed"
 
 
+async def test_update_group_details_announces_name_and_description_changes(db_session: AsyncSession):
+    from database.crud.crud_message import get_chat_messages
+
+    await _make_users(db_session, 1)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team")
+
+    await chat_service.update_group_details(db_session, actor_id=1, chat_id=group.id, title="Team Rocket")
+    await chat_service.update_group_details(db_session, actor_id=1, chat_id=group.id, about_text="new rules")
+    # A no-op update (same title) must not add a system message.
+    await chat_service.update_group_details(db_session, actor_id=1, chat_id=group.id, title="Team Rocket")
+
+    system_texts = [
+        m.content for m in await get_chat_messages(db_session, chat_id=group.id) if m.sender_id is None
+    ]
+    assert any('changed the group name to "Team Rocket"' in t for t in system_texts)
+    assert any("changed the group description" in t for t in system_texts)
+    assert sum("group name" in t for t in system_texts) == 1
+
+
+async def test_update_group_details_broadcasts_a_chat_updated_event(db_session: AsyncSession, monkeypatch):
+    await _make_users(db_session, 1)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team")
+
+    captured = []
+
+    async def capture(chat_id, event):
+        captured.append((chat_id, event))
+
+    monkeypatch.setattr(chat_service.realtime_service, "publish_event", capture)
+    await chat_service.update_group_details(db_session, actor_id=1, chat_id=group.id, title="Renamed")
+
+    updates = [ev for _, ev in captured if ev.get("event") == "chat_updated"]
+    assert updates and updates[-1]["title"] == "Renamed"
+
+
 async def test_permission_check_on_a_nonexistent_chat_is_denied_not_crashed(db_session: AsyncSession):
     await _make_users(db_session, 1)
 

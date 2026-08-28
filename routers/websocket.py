@@ -6,9 +6,10 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from config import SEND_MESSAGE_RATE_LIMIT_MAX, SEND_MESSAGE_RATE_LIMIT_WINDOW_SECONDS, SERVER_ID
 from database.connection import session_scope
-from database.crud.crud_participant import get_all_chat_ids_for_user, is_participant
+from database.crud.crud_participant import get_all_chat_ids_for_user, get_chat_participants, is_participant
 from database.crud.crud_private_chat_pair import get_pair_chat_id
 from services import auth_service, message_service, presence_service, rate_limit_service, realtime_service
+from services.settings import service as settings_service
 from services.connection_manager import connection_manager
 from services.fanout import send_queue
 from services.storage.errors import MediaNotFoundError, MediaValidationError
@@ -134,6 +135,16 @@ async def _handle_delete_message(user_id: int, connection_id: str, payload: dict
     await websocket.send_json({"type": "ack", "for": "delete_message", "deleted": deleted})
 
 
+async def _handle_restore_message(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    async with session_scope() as session:
+        message = await message_service.restore_message(
+            session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
+        )
+    await websocket.send_json(
+        {"type": "ack", "for": "restore_message", "restored": message is not None}
+    )
+
+
 async def _handle_mark_delivered(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
     async with session_scope() as session:
         await message_service.mark_as_delivered(
@@ -228,15 +239,38 @@ async def _handle_send_message(user_id: int, connection_id: str, payload: dict, 
     })
 
 
+async def _presence_authorized(session, watcher_id: int, target_user_id: int) -> bool:
+    """
+    Whether `watcher_id` is allowed to see `target_user_id`'s online status,
+    per the target's `privacy.online` setting:
+      - `nobody`   -> never.
+      - `contacts` -> only if a PrivateChatPair between the two exists
+                      (get_pair_chat_id) - "someone I have a chat with".
+      - `everyone` (default) -> any authenticated user.
+    """
+    visibility = await settings_service.get_online_visibility(session, target_user_id)
+    if visibility == "nobody":
+        return False
+    if visibility == "contacts":
+        return await get_pair_chat_id(session, watcher_id, target_user_id) is not None
+    return True
+
+
 async def _handle_subscribe_presence(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
     """
-    Subscribe-on-demand presence (see CLAUDE.md): the client sends this only
-    when it opens a private (1:1) chat, never for a group - there is no
-    group-presence concept at all, by design. Authorization is "does a
-    private chat between these two users exist" (get_pair_chat_id, the same
-    PrivateChatPair lookup get_or_create_private_chat uses) - this is what
-    stops a client from watching an arbitrary user's presence just by
-    knowing their id.
+    Subscribe-on-demand presence (see CLAUDE.md): the client sends this when
+    it opens a private (1:1) chat, never for a group - there is no
+    group-presence concept at all, by design.
+
+    Authorization (_presence_authorized) is the target's `privacy.online`
+    setting, resolved here at subscribe time - NOT on each presence push, so
+    a user with thousands of watchers costs nothing extra per connect/
+    disconnect. To make a later privacy change take effect without a
+    per-push check or a fan-out of revokes, the client re-sends
+    subscribe_presence periodically (on its heartbeat) for the chat it has
+    open; this handler re-runs the gate, and if the watcher is no longer
+    allowed it tears the subscription down and tells the client via
+    `presence_revoked`. Worst-case staleness is one heartbeat interval.
     """
     target_user_id = int(payload["user_id"])
     if target_user_id == user_id:
@@ -244,10 +278,19 @@ async def _handle_subscribe_presence(user_id: int, connection_id: str, payload: 
         return
 
     async with session_scope() as session:
-        chat_id = await get_pair_chat_id(session, user_id, target_user_id)
+        allowed = await _presence_authorized(session, user_id, target_user_id)
 
-    if chat_id is None:
-        await websocket.send_json({"type": "error", "code": "forbidden", "message": "No private chat with that user"})
+    if not allowed:
+        # Covers both a first subscribe that's denied and a periodic
+        # re-subscribe that's no longer allowed (privacy tightened / chat
+        # gone). Drop any existing subscription and let the client clear the
+        # stale "online" it may still be showing.
+        await connection_manager.unsubscribe_presence(connection_id, target_user_id)
+        await websocket.send_json({
+            "type": "presence_revoked",
+            "user_id": str(target_user_id),
+            "message": "That user does not share their online status with you",
+        })
         return
 
     await connection_manager.subscribe_presence(connection_id, target_user_id)
@@ -279,8 +322,22 @@ async def _publish_typing(user_id: int, payload: dict, kind: str = "typing") -> 
     chat_id = int(payload["chat_id"])
 
     async with session_scope() as session:
-        if not await is_participant(session, chat_id, user_id):
+        participants = await get_chat_participants(session, chat_id)
+        participant_ids = {p.user_id for p in participants}
+        if user_id not in participant_ids:
             raise message_service.NotAParticipantError(f"User {user_id} is not a participant of chat {chat_id}")
+
+        # Privacy (1:1 only): the typing/recording indicator is a presence-like
+        # signal, so it follows the sender's `privacy.online` setting. If the
+        # sender hides their online status from the other participant, that
+        # participant must not receive the sender's typing indicator either.
+        # Checked live on every event (unlike the presence gate, which is
+        # re-checked on the heartbeat) so a privacy change takes effect at once.
+        # Groups have no presence concept - never gated.
+        if len(participant_ids) == 2:
+            other_user_id = next(uid for uid in participant_ids if uid != user_id)
+            if not await _presence_authorized(session, watcher_id=other_user_id, target_user_id=user_id):
+                return
 
     await realtime_service.publish_event(chat_id, {
         "event": "typing",
@@ -298,6 +355,7 @@ _HANDLERS = {
     "send_message": _handle_send_message,
     "edit_message": _handle_edit_message,
     "delete_message": _handle_delete_message,
+    "restore_message": _handle_restore_message,
     "mark_delivered": _handle_mark_delivered,
     "mark_read": _handle_mark_read,
     "mark_played": _handle_mark_played,

@@ -24,6 +24,8 @@ const MessageInput = {
     isRecording: { type: Boolean, default: false },
     // seconds elapsed in the current recording, shown WhatsApp-style
     recordingSeconds: { type: Number, default: 0 },
+    // live waveform bar heights (0..1) produced by useAudioWaveform.liveMeter
+    liveWaveform: { type: Array, default: () => [] },
   },
   data() {
     return { attachMenuOpen: false };
@@ -114,9 +116,14 @@ const MessageInput = {
         </div>
         <template v-if="isRecording">
           <div class="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 text-sm text-red-600">
-            <span class="w-2.5 h-2.5 rounded-full bg-red-600 animate-pulse"></span>
-            <span>Recording…</span>
-            <span class="ml-auto tabular-nums text-slate-500">{{ recordingClock }}</span>
+            <span class="w-2.5 h-2.5 rounded-full bg-red-600 animate-pulse shrink-0"></span>
+            <!-- Live waveform: newest sample scrolls in from the right -->
+            <div class="flex-1 min-w-0 flex items-center gap-[2px] h-8 overflow-hidden">
+              <span v-for="(bar, i) in liveWaveform" :key="i"
+                    class="flex-1 rounded-full bg-red-400/80"
+                    :style="{ height: Math.max(8, bar * 100) + '%' }"></span>
+            </div>
+            <span class="tabular-nums text-slate-500 shrink-0">{{ recordingClock }}</span>
           </div>
         </template>
         <template v-else>

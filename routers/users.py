@@ -9,8 +9,11 @@ from routers.schemas import (
     AvatarUploadTicketOut,
     UserOut,
     UserProfileUpdateIn,
+    UserSettingsOut,
+    UserSettingsUpdateIn,
 )
 from services import avatar_service, user_service
+from services.settings import service as settings_service
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -48,7 +51,26 @@ async def update_my_profile(
     )
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    await user_service.broadcast_profile_update(session, user_id)
     return user
+
+
+@router.get("/me/settings", response_model=UserSettingsOut)
+async def get_my_settings(
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    return UserSettingsOut(settings=await settings_service.get_user_settings(session, user_id))
+
+
+@router.patch("/me/settings", response_model=UserSettingsOut)
+async def update_my_settings(
+    body: UserSettingsUpdateIn,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    merged = await settings_service.update_user_settings(session, user_id, body.settings)
+    return UserSettingsOut(settings=merged)
 
 
 @router.post("/me/avatar/upload-ticket", response_model=AvatarUploadTicketOut)
@@ -76,6 +98,7 @@ async def set_my_avatar(
     user = await avatar_service.set_avatar(session, user_id, body.storage_key)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    await user_service.broadcast_profile_update(session, user_id)
     return user
 
 
@@ -87,4 +110,5 @@ async def delete_my_avatar(
     user = await avatar_service.clear_avatar(session, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    await user_service.broadcast_profile_update(session, user_id)
     return user

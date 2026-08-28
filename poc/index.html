@@ -69,6 +69,7 @@
 <script src="components/MessageContextMenu.js"></script>
 <script src="components/MessageDetailsModal.js"></script>
 <script src="components/MembersModal.js"></script>
+<script src="components/ProfileEditModal.js"></script>
 <script src="components/NewGroupModal.js"></script>
 <script src="components/ToastList.js"></script>
 
@@ -85,7 +86,10 @@
 <script src="composables/useMessageMenu.js"></script>
 <script src="composables/useMessageSend.js"></script>
 <script src="composables/useMessageEdit.js"></script>
+<script src="composables/useAudioWaveform.js"></script>
 <script src="composables/useMediaUpload.js"></script>
+<script src="composables/useSettings.js"></script>
+<script src="composables/useProfileEdit.js"></script>
 <script src="composables/useWsRouter.js"></script>
 <style>
   /* Chat-bubble speech tail - a smooth curved shape (WhatsApp/Telegram/
@@ -117,6 +121,23 @@
     -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 13'%3E%3Cpath d='M8,0 C8,6 6,10 0,13 L8,13 Z'/%3E%3C/svg%3E");
     mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 13'%3E%3Cpath d='M8,0 C8,6 6,10 0,13 L8,13 Z'/%3E%3C/svg%3E");
   }
+  /* WhatsApp-style sticky day separator. Each separator row sticks to the top
+     of the scroll container while its day's messages scroll past, then is
+     pushed up by the next separator. Pure CSS, no scroll listeners. */
+  .day-separator {
+    position: -webkit-sticky;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    /* Full-width row so the centered pill never appears to "stick out" over
+       the message bubbles as they scroll underneath - the row spans the
+       gutter, only the pill inside it is visible. */
+    margin: 0 -1rem;              /* cancel the p-4 padding of the scroll pane */
+    padding: 0.375rem 1rem;
+    /* Let context-menu right-clicks and clicks fall through to messages. */
+    pointer-events: none;
+  }
+  .day-separator > span { pointer-events: auto; }
 </style>
 </head>
 <body class="h-screen bg-slate-100 text-slate-900 antialiased">
@@ -127,7 +148,7 @@ const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick
 
 const app = createApp({
   components: {
-    AuthScreen, AppHeader, ChatSidebar, ChatHeader, MessageList, MessageInput, MessageContextMenu, MessageDetailsModal, MembersModal, NewGroupModal, ToastList,
+    AuthScreen, AppHeader, ChatSidebar, ChatHeader, MessageList, MessageInput, MessageContextMenu, MessageDetailsModal, MembersModal, ProfileEditModal, NewGroupModal, ToastList,
   },
   setup() {
     // ---------------------------------------------------------------
@@ -151,7 +172,10 @@ const app = createApp({
     Object.assign(ctx, useMessageMenu(ctx));
     Object.assign(ctx, useMessageSend(ctx));
     Object.assign(ctx, useMessageEdit(ctx));
+    Object.assign(ctx, useAudioWaveform(ctx));
     Object.assign(ctx, useMediaUpload(ctx));
+    Object.assign(ctx, useSettings(ctx));
+    Object.assign(ctx, useProfileEdit(ctx));
     Object.assign(ctx, useWsRouter(ctx));
 
     // Names the lifecycle hooks below still reference directly.
@@ -207,7 +231,8 @@ const app = createApp({
       @request-otp="requestOtp" @verify-otp="verifyOtp" @back-to-phone="authStage = 'phone'" />
 
     <div class="h-full flex flex-col" v-else>
-      <AppHeader :wsStatus="wsStatus" :currentUser="currentUser" :avatarUrl="currentUserAvatarUrl" @logout="logout" />
+      <AppHeader :wsStatus="wsStatus" :currentUser="currentUser" :avatarUrl="currentUserAvatarUrl"
+        @logout="logout" @edit-profile="openProfileModal" />
 
       <div class="flex flex-1 min-h-0">
         <ChatSidebar
@@ -245,7 +270,7 @@ const app = createApp({
               :attachError="messagesError" @clear-attach-error="messagesError = ''"
               :replyingToMessage="replyingToMessage" :senderLabel="replySenderLabel" @cancel-reply="cancelReply"
               :editingMessage="editingMessage" @cancel-edit="cancelEdit"
-              :isRecording="isRecording" :recordingSeconds="recordingSeconds"
+              :isRecording="isRecording" :recordingSeconds="recordingSeconds" :liveWaveform="liveWaveform"
               @start-recording="startRecording" @stop-recording="stopRecording"
               @pick-media="sendMediaMessage"
               @pick-document="(f) => sendMediaMessage(f, 'file')" />
@@ -259,11 +284,13 @@ const app = createApp({
             :canShowDetails="canShowMessageDetails(contextMenuMessage)"
             :canEdit="canEditMessage(contextMenuMessage)"
             :canDelete="canDeleteMessage(contextMenuMessage)"
+            :canRestore="canRestoreMessage(contextMenuMessage)"
             @close="closeMessageContextMenu"
             @reply="startReplyTo(contextMenuMessage)"
             @details="openMessageDetails(contextMenuMessage)"
             @edit="startEditMessage(contextMenuMessage)"
-            @delete="deleteMessage(contextMenuMessage)" />
+            @delete="deleteMessage(contextMenuMessage)"
+            @restore="restoreMessage(contextMenuMessage)" />
         </main>
       </div>
     </div>
@@ -284,7 +311,34 @@ const app = createApp({
       @start-leave-group="startLeaveGroup"
       @confirm-leave-with-transfer="confirmLeaveWithTransfer"
       @cancel-owner-transfer-picker="cancelOwnerTransferPicker"
+      @edit-group-info="openGroupEditModal"
       @add-member-to-active-group="addMemberToActiveGroup" />
+
+    <ProfileEditModal v-if="showProfileModal"
+      heading="Edit your profile"
+      nameLabel="Display name" aboutLabel="About"
+      nameKey="display_name"
+      v-model:form="profileForm"
+      :onlineVisibilityOptions="ONLINE_VISIBILITY_OPTIONS"
+      :currentAvatarUrl="currentUserAvatarUrl"
+      :avatarName="currentUser && (currentUser.display_name || currentUser.phone_number)"
+      :previewUrl="profileAvatar.previewUrl.value" :cleared="profileAvatar.cleared.value"
+      :pickerError="profileAvatar.error.value"
+      :busy="profileBusy" :error="profileError"
+      @pick-avatar="profileAvatar.pick" @clear-avatar="profileAvatar.clear"
+      @save="saveProfile" @close="showProfileModal = false" />
+
+    <ProfileEditModal v-if="showGroupEditModal"
+      heading="Edit group info"
+      nameLabel="Group name" aboutLabel="Description"
+      nameKey="title"
+      v-model:form="groupForm"
+      :currentAvatarUrl="activeChatAvatarUrl" :avatarName="activeChatAvatarName"
+      :previewUrl="groupAvatar.previewUrl.value" :cleared="groupAvatar.cleared.value"
+      :pickerError="groupAvatar.error.value"
+      :busy="groupEditBusy" :error="groupEditError"
+      @pick-avatar="groupAvatar.pick" @clear-avatar="groupAvatar.clear"
+      @save="saveGroupEdit" @close="showGroupEditModal = false" />
 
     <MessageDetailsModal v-if="detailsModalMessage"
       :message="detailsModalMessage" :receipts="messageReceipts" :loading="messageReceiptsLoading"

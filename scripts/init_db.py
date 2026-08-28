@@ -29,6 +29,7 @@ from database.models import (  # noqa: F401
     participant,
     private_chat_pair,
     user,
+    user_settings,
 )
 
 
@@ -72,6 +73,14 @@ async def main(drop: bool) -> None:
                 "ALTER TABLE participants ADD COLUMN IF NOT EXISTS last_delivered_at TIMESTAMPTZ",
                 "ALTER TABLE participants ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMPTZ",
                 "ALTER TABLE participants ADD COLUMN IF NOT EXISTS last_played_at TIMESTAMPTZ",
+                # Per-user settings (privacy, ...) - one JSONB blob per user.
+                # create_all makes this on a fresh DB; spelled out here so an
+                # already-initialised dev DB picks it up without a --drop.
+                "CREATE TABLE IF NOT EXISTS user_settings ("
+                "  user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,"
+                "  settings JSONB NOT NULL DEFAULT '{}'::jsonb,"
+                "  updated_at TIMESTAMPTZ DEFAULT now()"
+                ")",
             ):
                 await conn.execute(text(ddl))
             print(

@@ -36,10 +36,42 @@ function useMessageEdit(ctx) {
     // Update this device's own view right away rather than waiting for the
     // message_deleted echo: mark the bubble as a tombstone and, if it was the
     // chat's last message, show the "Message deleted" sidebar placeholder.
+    // Stash the original content/media so an optimistic Restore can revert
+    // without a round-trip (the backend never dropped it either).
+    message._preDeleteContent = message.content;
+    message._preDeleteMediaUrl = message.media_url;
     message.deleted_at = new Date().toISOString();
     message.content = null;
     message.media_url = null;
     ctx.updateChatPreviewIfLast(ctx.activeChatId.value, message.id, '🚫 Message deleted');
+  }
+
+  // Restoring a soft-deleted message. Only the original sender, no time limit;
+  // the backend re-checks ownership. The message_restored echo (useWsRouter)
+  // brings content/media back for other devices; we also revert optimistically.
+  function canRestoreMessage(m) {
+    return !!m && m.sender_id != null && m.deleted_at != null
+      && ctx.currentUser.value && m.sender_id === ctx.currentUser.value.id;
+  }
+
+  function restoreMessage(message) {
+    ctx.closeMessageContextMenu();
+    if (!canRestoreMessage(message) || !ctx.activeChatId.value) return;
+    if (!ctx.wsIsOpen()) {
+      ctx.logError('cannot restore - WebSocket is not connected (status:', ctx.wsStatus.value, ')');
+      return;
+    }
+    const payload = {
+      type: 'restore_message',
+      chat_id: ctx.activeChatId.value,
+      message_id: message.id,
+    };
+    ctx.log('WS →', payload);
+    ctx.sendRaw(payload);
+    message.deleted_at = null;
+    if (message._preDeleteContent !== undefined) message.content = message._preDeleteContent;
+    if (message._preDeleteMediaUrl !== undefined) message.media_url = message._preDeleteMediaUrl;
+    ctx.updateChatPreviewIfLast(ctx.activeChatId.value, message.id, message.content || '');
   }
 
   // ---------------------------------------------------------------
@@ -72,6 +104,7 @@ function useMessageEdit(ctx) {
 
   return {
     canDeleteMessage, deleteMessage,
+    canRestoreMessage, restoreMessage,
     canEditMessage, editingMessage, startEditMessage, cancelEdit,
   };
 }

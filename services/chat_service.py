@@ -2,7 +2,7 @@ import json
 from typing import Optional, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_chat import create_chat, delete_chat, update_chat_details
+from database.crud.crud_chat import create_chat, delete_chat, get_chat_by_id, update_chat_details
 from database.crud.crud_message import compute_message_status, count_unread_messages
 from database.crud.crud_participant import (
     add_participant_to_chat,
@@ -19,6 +19,7 @@ from database.models.participant import Participant
 from database.models.user import User
 from config import MAX_INITIAL_GROUP_MEMBERS
 from services import avatar_service, message_service, realtime_service
+from services.storage.media_service import public_avatar_url
 from utils.snowflake import next_id
 
 ROLE_MEMBER = 1
@@ -249,8 +250,57 @@ async def update_group_details(
     profile_pic_url: Optional[str] = None,
 ) -> Chat:
     await _require_role(session, chat_id, actor_id, min_role=ROLE_ADMIN)
-    return await update_chat_details(
+
+    existing = await get_chat_by_id(session, chat_id)
+    if existing is None:
+        return None
+
+    chat = await update_chat_details(
         session, chat_id=chat_id, title=title, about_text=about_text, profile_pic_url=profile_pic_url
+    )
+    if chat is None:
+        return None
+
+    # Mirror the other group mutations: a detail change is announced in-chat.
+    actor_name = await _display_name_for(session, actor_id)
+    if title is not None and title != existing.title:
+        await message_service.send_system_message(
+            session, chat_id=chat_id, content=f'{actor_name} changed the group name to "{title}"'
+        )
+    if about_text is not None and about_text != existing.about_text:
+        await message_service.send_system_message(
+            session, chat_id=chat_id, content=f"{actor_name} changed the group description"
+        )
+    await _broadcast_chat_update(session, chat_id)
+    return chat
+
+
+async def _broadcast_chat_update(session: AsyncSession, chat_id: int) -> None:
+    """
+    Tell every member of a group that its title / description / photo just
+    changed, so open clients update the name+avatar they show in the sidebar
+    and chat header without re-opening the chat or waiting for GET /chats.
+
+    A **transient** chat-scoped event over the normal routing (same path as
+    `typing`) - the accompanying system message ("X changed the group name")
+    is the persisted record; this is only the live nudge that carries the new
+    values so clients don't each have to re-fetch. Best-effort.
+    """
+    chat = await get_chat_by_id(session, chat_id)
+    if chat is None:
+        return
+    key = chat.profile_pic_url
+    resolved_pic = (
+        key if (key and key.startswith(("http://", "https://"))) else (public_avatar_url(key) if key else None)
+    )
+    await realtime_service.publish_event(
+        chat_id,
+        {
+            "event": "chat_updated",
+            "title": chat.title,
+            "about_text": chat.about_text,
+            "profile_pic_url": resolved_pic,
+        },
     )
 
 
@@ -278,6 +328,7 @@ async def set_group_avatar(session: AsyncSession, actor_id: int, chat_id: int, s
     await message_service.send_system_message(
         session, chat_id=chat_id, content=f"{actor_name} changed the group photo"
     )
+    await _broadcast_chat_update(session, chat_id)
     return chat
 
 
@@ -291,6 +342,7 @@ async def clear_group_avatar(session: AsyncSession, actor_id: int, chat_id: int)
     await message_service.send_system_message(
         session, chat_id=chat_id, content=f"{actor_name} removed the group photo"
     )
+    await _broadcast_chat_update(session, chat_id)
     return chat
 
 

@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.crud.crud_user import create_user
-from services import user_service
+from services import chat_service, user_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -31,6 +31,43 @@ async def test_update_profile_only_touches_provided_fields(db_session: AsyncSess
 
 async def test_update_profile_for_a_nonexistent_user_returns_none(db_session: AsyncSession):
     assert await user_service.update_profile(db_session, user_id=999999, display_name="X") is None
+
+
+async def test_broadcast_profile_update_fans_one_event_per_shared_chat(db_session: AsyncSession, monkeypatch):
+    # A profile edit must reach everyone who shares a chat with the user, as a
+    # transient per-chat event (never a persisted system message).
+    await create_user(db_session, user_id=1, phone_number="+972501", display_name="Alice")
+    await create_user(db_session, user_id=2, phone_number="+972502")
+    await create_user(db_session, user_id=3, phone_number="+972503")
+    private = await chat_service.get_or_create_private_chat(db_session, 1, 2)
+    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team", initial_member_ids=[3])
+
+    captured = []
+
+    async def capture(cid, ev):
+        captured.append((cid, ev))
+
+    monkeypatch.setattr(user_service.realtime_service, "publish_event", capture)
+
+    await user_service.update_profile(db_session, user_id=1, display_name="Alice B.")
+    await user_service.broadcast_profile_update(db_session, 1)
+
+    assert {cid for cid, _ in captured} == {private.id, group.id}
+    for _, ev in captured:
+        assert ev["event"] == "profile_updated"
+        assert ev["user_id"] == str(1)
+        assert ev["display_name"] == "Alice B."
+
+
+async def test_broadcast_profile_update_for_a_nonexistent_user_is_a_noop(db_session: AsyncSession, monkeypatch):
+    captured = []
+
+    async def capture(cid, ev):
+        captured.append((cid, ev))
+
+    monkeypatch.setattr(user_service.realtime_service, "publish_event", capture)
+    await user_service.broadcast_profile_update(db_session, 999999)
+    assert captured == []
 
 
 async def test_concurrent_profile_updates_to_different_fields_do_not_clobber_each_other(session_factory):

@@ -28,17 +28,56 @@ const MessageList = {
     const messagesEl = Vue.ref(null);
     // On scroll, count how many message rows are still fully above the top of
     // the viewport and hand that to the root - it decides when to page.
+    // Only real message rows carry data-row="msg"; sticky day separators are
+    // skipped so they don't inflate the paging count.
     function onScroll() {
       const el = messagesEl.value;
       if (!el) return;
       const top = el.scrollTop;
       let rowsAbove = 0;
       for (const child of el.children) {
+        if (child.dataset.row !== 'msg') continue;
         if (child.offsetTop + child.offsetHeight < top) rowsAbove++;
         else break;
       }
       emit('load-older', rowsAbove);
     }
+    // Client-side day grouping: walk messages in order and, whenever the local
+    // calendar day of created_at changes, inject a { separator, label } marker
+    // before the message. Purely derived from created_at, no backend field.
+    function dayKey(iso) {
+      const d = new Date(iso);
+      return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+    }
+    function dayLabel(iso) {
+      const d = new Date(iso);
+      const today = new Date();
+      const yesterday = new Date();
+      yesterday.setDate(today.getDate() - 1);
+      if (dayKey(iso) === dayKey(today.toISOString())) return 'Today';
+      if (dayKey(iso) === dayKey(yesterday.toISOString())) return 'Yesterday';
+      // Full localized date; include the year only when it differs from the
+      // current one (WhatsApp behaviour) - keeps same-year pills compact
+      // without ever dropping the year when it actually matters.
+      const opts = d.getFullYear() === today.getFullYear()
+        ? { day: 'numeric', month: 'long' }
+        : { day: 'numeric', month: 'long', year: 'numeric' };
+      return d.toLocaleDateString([], opts);
+    }
+    const rows = Vue.computed(() => {
+      const out = [];
+      let lastKey = null;
+      for (const m of props.messages) {
+        if (!m.created_at) { out.push({ type: 'msg', m }); continue; }
+        const k = dayKey(m.created_at);
+        if (k !== lastKey) {
+          out.push({ type: 'separator', key: 'sep-' + k, label: dayLabel(m.created_at) });
+          lastKey = k;
+        }
+        out.push({ type: 'msg', m });
+      }
+      return out;
+    });
     // A pure image/video message (no caption, not a reply) - rendered flush
     // with no bubble background/padding so only the media's own black border
     // shows, not the green/white bubble.
@@ -46,20 +85,27 @@ const MessageList = {
       return (m.type === 2 || m.type === 3) && m.media_url && !m.content && m.reply_to_message_id == null
         && m.deleted_at == null;
     }
-    return { messagesEl, onScroll, isBareMedia };
+    return { messagesEl, onScroll, isBareMedia, rows };
   },
   expose: ['messagesEl'],
   template: `
     <div ref="messagesEl" @scroll="onScroll" class="flex-1 overflow-y-auto p-4 space-y-2">
-      <template v-for="m in messages" :key="m.id || m.client_message_id">
+      <template v-for="row in rows" :key="row.type === 'separator' ? row.key : (row.m.id || row.m.client_message_id)">
+        <!-- Sticky day separator (WhatsApp-style). data-row is absent so
+             onScroll's paging count ignores it. -->
+        <div v-if="row.type === 'separator'" class="day-separator flex justify-center">
+          <span class="inline-block px-3 py-1 rounded-full text-[11px] font-medium bg-slate-200/95 text-slate-600 shadow-sm whitespace-nowrap">{{ row.label }}</span>
+        </div>
+      <template v-else>
+      <template v-for="m in [row.m]" :key="m.id || m.client_message_id">
         <!-- System messages (sender_id == null, e.g. "X added Y to the group") -
              centered, small, gray pill, like WhatsApp's own group-event lines.
              shouldShowSystemMessage filters out "role_changed" notices for
              anyone but the actor/target - see chat_service.change_member_role. -->
-        <div v-if="m.sender_id == null && shouldShowSystemMessage(m)" class="flex justify-center">
+        <div v-if="m.sender_id == null && shouldShowSystemMessage(m)" data-row="msg" class="flex justify-center">
           <span class="inline-block px-2.5 py-1 rounded-full text-[11px] bg-slate-200 text-slate-600">{{ systemMessageText(m) }}</span>
         </div>
-      <div v-else-if="m.sender_id != null"
+      <div v-else-if="m.sender_id != null" data-row="msg"
            class="max-w-md w-fit flex items-end gap-2"
            :class="m.sender_id === currentUser.id ? 'ml-auto text-right' : ''">
         <Avatar v-if="m.sender_id !== currentUser.id"
@@ -158,6 +204,8 @@ const MessageList = {
         </div>
         </div>
       </div>
+      </template>
+      </template>
       </template>
       <p v-if="!messages.length" class="h-full flex items-center justify-center text-sm text-slate-400">No messages here</p>
     </div>

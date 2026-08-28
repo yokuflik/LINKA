@@ -160,6 +160,7 @@ function useAuth(ctx) {
     ctx.activeChatId.value = null;
     ctx.resetPresence();
     ctx.resetTyping();
+    ctx.resetSettings();
     ctx.unreadCountByChatId.value = {};
     ctx.contextMenuMessage.value = null;
     ctx.replyingToMessage.value = null;

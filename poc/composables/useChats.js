@@ -40,8 +40,11 @@ function useChats(ctx) {
   // chat_id -> that chat's member list, straight from /chats/{id}/members.
   const groupChatMembers = ref({});
 
-  async function resolvePrivateChatTitle(chatId) {
-    if (privateChatTitles.value[chatId]) return;
+  // `force` re-fetches even when the title is already cached - used to pick up
+  // the other person's freshly changed display name / profile photo (there's
+  // no server push for a profile edit, so we re-pull on chat open / tab focus).
+  async function resolvePrivateChatTitle(chatId, { force = false } = {}) {
+    if (privateChatTitles.value[chatId] && !force) return;
     try {
       const members = await ctx.apiFetch(`/chats/${chatId}/members`);
       const other = members.find((m) => m.user.id !== ctx.currentUser.value.id);
@@ -261,7 +264,13 @@ function useChats(ctx) {
       chats.value = await ctx.apiFetch('/chats?limit=50');
       ctx.log('loaded', chats.value.length, 'chat(s)');
       await Promise.all(
-        chats.value.filter((c) => !c.chat.is_group).map((c) => resolvePrivateChatTitle(c.chat.id))
+        chats.value.filter((c) => !c.chat.is_group).map((c) => resolvePrivateChatTitle(c.chat.id, { force: true }))
+      );
+      // Re-pull members for any group whose list was already fetched, so a
+      // participant's changed name/photo propagates to the sidebar and to the
+      // open message pane (no server push exists for a profile edit).
+      await Promise.all(
+        Object.keys(groupChatMembers.value).map((id) => resolveChatMemberPhones(id))
       );
 
       // Seed the unread badge from the server's real count - replaced
@@ -295,7 +304,7 @@ function useChats(ctx) {
     if (ctx.editingMessage.value) ctx.cancelEdit();
     ctx.closeMessageContextMenu();
     const item = chats.value.find((c) => c.chat.id === chatId);
-    if (item && !item.chat.is_group) resolvePrivateChatTitle(chatId);
+    if (item && !item.chat.is_group) resolvePrivateChatTitle(chatId, { force: true });
     resolveChatMemberPhones(chatId);
 
     // Subscribe-on-demand presence: only ever one active subscription, scoped
@@ -328,6 +337,18 @@ function useChats(ctx) {
       messagesError.value = err.message;
     }
   }
+
+  // A profile edit (name / photo) has no server push - the other clients only
+  // learn about it by re-pulling. Refresh the open chat's cached users when the
+  // tab regains focus, so switching back to it shows the current photo/name.
+  function refreshActiveChatUsers() {
+    if (document.visibilityState !== 'visible' || !activeChatId.value) return;
+    const item = chats.value.find((c) => c.chat.id === activeChatId.value);
+    if (!item) return;
+    if (item.chat.is_group) resolveChatMemberPhones(activeChatId.value);
+    else resolvePrivateChatTitle(activeChatId.value, { force: true });
+  }
+  document.addEventListener('visibilitychange', refreshActiveChatUsers);
 
   return {
     chats, activeChatId, messages, messageInput, chatsError, messagesError, messagesEl,

@@ -5,7 +5,7 @@ const AppHeader = {
     currentUser: { type: Object, required: true },
     avatarUrl: { default: null },
   },
-  emits: ['logout'],
+  emits: ['logout', 'edit-profile'],
   template: `
     <header class="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
       <div class="flex items-center gap-3">
@@ -17,8 +17,12 @@ const AppHeader = {
         </span>
       </div>
       <div class="flex items-center gap-3 text-sm">
-        <Avatar :url="avatarUrl" :name="currentUser.display_name || currentUser.phone_number" :colorKey="currentUser.id" sizeClass="w-7 h-7 text-xs" />
-        <span class="text-slate-500">You are <span class="font-medium text-slate-800">{{ currentUser.display_name || currentUser.phone_number }}</span></span>
+        <button type="button" @click="$emit('edit-profile')"
+                class="flex items-center gap-3 hover:bg-slate-50 rounded-lg px-2 py-1 -mx-1"
+                title="Edit your profile">
+          <Avatar :url="avatarUrl" :name="currentUser.display_name || currentUser.phone_number" :colorKey="currentUser.id" sizeClass="w-7 h-7 text-xs" />
+          <span class="text-slate-500">You are <span class="font-medium text-slate-800">{{ currentUser.display_name || currentUser.phone_number }}</span></span>
+        </button>
         <button @click="$emit('logout')" class="px-3 py-1 border border-slate-300 rounded-lg text-sm">Log out</button>
       </div>
     </header>

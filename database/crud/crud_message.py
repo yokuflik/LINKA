@@ -311,3 +311,36 @@ async def soft_delete_message(session: AsyncSession, chat_id: int, message_id: i
     await session.commit()
 
     return deleted
+
+
+async def undelete_message(session: AsyncSession, chat_id: int, message_id: int) -> Optional[Message]:
+    """
+    Reverse a soft delete (clears deleted_at). No time limit - the row and its
+    content were never physically removed. Returns the restored Message, or None
+    if it was not currently deleted (or does not exist).
+
+    Time Complexity: O(log N)
+    Explanation: (chat_id, id) B-Tree lookup + an O(1) heap update.
+    """
+    stmt = (
+        update(Message)
+        .where(Message.chat_id == chat_id, Message.id == message_id, Message.deleted_at.is_not(None))
+        .values(deleted_at=None)
+        .returning(Message)
+    )
+
+    result = await session.execute(stmt)
+    message = result.scalar_one_or_none()
+
+    # Undo the tombstone left in the chat list by soft_delete_message, but only
+    # if this is still the chat's last message.
+    if message is not None:
+        await session.execute(
+            update(Chat)
+            .where(Chat.id == chat_id, Chat.last_message_id == message_id)
+            .values(last_message_preview=build_last_message_preview(message.content, message.type))
+        )
+
+    await session.commit()
+
+    return message

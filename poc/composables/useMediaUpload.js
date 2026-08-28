@@ -97,10 +97,17 @@ function useMediaUpload(ctx) {
   // emits audio/webm by default (in config.ALLOWED_UPLOAD_MIME['audio']).
   const isRecording = ref(false);
   const recordingSeconds = ref(0);
+  // Live waveform bars (0..1) shown in the composer while recording. Reassigned
+  // to the reactive ref returned by useAudioWaveform.liveMeter on each start,
+  // reset to [] on stop. `liveWaveform` is itself a ref-of-ref so templates
+  // read `liveWaveform.value` (the inner array).
+  const liveWaveform = ref([]);
   let mediaRecorder = null;
   let recordedChunks = [];
   let recordingStream = null;
   let recordingTimer = null;
+  let liveMeterHandle = null;
+  let liveMeterUnwatch = null;
 
   async function startRecording() {
     ctx.messagesError.value = '';
@@ -122,6 +129,11 @@ function useMediaUpload(ctx) {
     mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) recordedChunks.push(e.data); };
     mediaRecorder.onstop = onRecordingStopped;
     mediaRecorder.start();
+    // Start the live analyser on the same mic stream and mirror its bar array
+    // into liveWaveform so the composer template stays reactive.
+    liveMeterHandle = ctx.liveMeter(recordingStream);
+    liveWaveform.value = liveMeterHandle.bars.value;
+    liveMeterUnwatch = Vue.watch(liveMeterHandle.bars, (v) => { liveWaveform.value = v; });
     isRecording.value = true;
     recordingSeconds.value = 0;
     ctx.notifyRecording(); // tell the chat immediately, then on every tick
@@ -137,8 +149,15 @@ function useMediaUpload(ctx) {
     mediaRecorder.stop(); // fires onRecordingStopped
   }
 
+  function teardownLiveMeter() {
+    if (liveMeterUnwatch) { liveMeterUnwatch(); liveMeterUnwatch = null; }
+    if (liveMeterHandle) { liveMeterHandle.stop(); liveMeterHandle = null; }
+    liveWaveform.value = [];
+  }
+
   async function onRecordingStopped() {
     isRecording.value = false;
+    teardownLiveMeter();
     if (recordingStream) { recordingStream.getTracks().forEach((t) => t.stop()); recordingStream = null; }
     const duration = recordingSeconds.value;
     const type = mediaRecorder && mediaRecorder.mimeType ? mediaRecorder.mimeType.split(';')[0] : 'audio/webm';
@@ -189,6 +208,6 @@ function useMediaUpload(ctx) {
 
   return {
     sendMediaMessage, mediaUploadBusy,
-    isRecording, recordingSeconds, startRecording, stopRecording,
+    isRecording, recordingSeconds, liveWaveform, startRecording, stopRecording,
   };
 }

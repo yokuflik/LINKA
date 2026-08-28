@@ -74,6 +74,12 @@ function useWsRouter(ctx) {
       return;
     }
 
+    if (msg.type === 'presence_revoked') {
+      // The other user hid their online status (or we lost the shared chat).
+      ctx.onPresenceRevoked(msg.user_id);
+      return;
+    }
+
     if (msg.event === 'new_message') {
       // A message from someone means they're no longer typing - drop their
       // typing indicator now instead of leaving it to expire 5s later.
@@ -165,6 +171,56 @@ function useWsRouter(ctx) {
       return;
     }
 
+    if (msg.event === 'chat_updated') {
+      // A group's title / description / photo changed (chat_service.
+      // _broadcast_chat_update - a transient nudge alongside the persisted
+      // system message). Patch the chat row in place so the sidebar + header
+      // update live for every member, not just the admin who made the edit.
+      const item = ctx.chats.value.find((c) => c.chat.id === msg.chat_id);
+      if (item) {
+        item.chat.title = msg.title;
+        item.chat.about_text = msg.about_text;
+        item.chat.profile_pic_url = msg.profile_pic_url;
+      }
+      return;
+    }
+
+    if (msg.event === 'profile_updated') {
+      // Someone who shares a chat with us changed their display name / about /
+      // photo (user_service.broadcast_profile_update - a transient fan-out,
+      // one copy per shared chat, so we may get several; they're identical).
+      // This also reaches our own other connections for our own edit - and even
+      // the tab that made the edit, since a saved avatar produces a brand-new
+      // storage key / URL that any cached copy of "us" (userById, group member
+      // rows, and currentUser itself) must pick up. So we do NOT skip our own
+      // id here; we merge it everywhere, currentUser included.
+      const existing = ctx.userById.value[msg.user_id] || { id: msg.user_id };
+      ctx.userById.value[msg.user_id] = {
+        ...existing,
+        display_name: msg.display_name,
+        about_text: msg.about_text,
+        profile_pic_url: msg.profile_pic_url,
+      };
+      // A private chat's sidebar/header name+avatar are resolved off this same
+      // cache, so reassigning the user object above is enough - nothing else
+      // to touch. Group member rows in groupChatMembers hold their own copy:
+      const members = ctx.groupChatMembers.value[msg.chat_id];
+      if (members) {
+        const row = members.find((m) => m.user.id === msg.user_id);
+        if (row) row.user = ctx.userById.value[msg.user_id];
+      }
+      // Our own avatar in the app header comes from currentUser, not the cache.
+      if (currentUser.value && msg.user_id === currentUser.value.id) {
+        currentUser.value = {
+          ...currentUser.value,
+          display_name: msg.display_name,
+          about_text: msg.about_text,
+          profile_pic_url: msg.profile_pic_url,
+        };
+      }
+      return;
+    }
+
     if (msg.event === 'message_edited') {
       const m = ctx.messages.value.find((x) => x.id === msg.message_id);
       if (m) { m.content = msg.content; m.is_edited = true; m.edited_at = msg.edited_at || new Date().toISOString(); }
@@ -185,6 +241,21 @@ function useWsRouter(ctx) {
       // "Message deleted" placeholder under the chat name instead of the
       // now-gone text.
       ctx.updateChatPreviewIfLast(msg.chat_id, msg.message_id, '🚫 Message deleted');
+      return;
+    }
+
+    if (msg.event === 'message_restored') {
+      // Undo the tombstone: bring the content/media back from the event
+      // (the row was never physically removed server-side).
+      const m = ctx.messages.value.find((x) => x.id === msg.message_id);
+      if (m) {
+        m.deleted_at = null;
+        m.content = msg.content ?? null;
+        m.media_url = msg.media_url ?? null;
+        m.is_edited = !!msg.is_edited;
+        m.edited_at = msg.edited_at || m.edited_at;
+      }
+      ctx.updateChatPreviewIfLast(msg.chat_id, msg.message_id, msg.content || '');
       return;
     }
 

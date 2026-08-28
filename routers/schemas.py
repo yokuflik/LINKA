@@ -74,6 +74,19 @@ class UserProfileUpdateIn(BaseModel):
     # here - a raw client-supplied URL/key can't be trusted or cleaned up.
 
 
+class UserSettingsOut(BaseModel):
+    # Fully-resolved settings (every group/key present, defaults filled in).
+    # Kept as an open dict on purpose: new setting groups are added in
+    # services/settings/schema.py with no change here or in the DB.
+    settings: dict
+
+
+class UserSettingsUpdateIn(BaseModel):
+    # A partial patch: only the groups/keys being changed. Deep-merged onto
+    # the stored blob and validated server-side against the settings schema.
+    settings: dict
+
+
 class AvatarUploadTicketIn(BaseModel):
     mime_type: str
     size_bytes: int

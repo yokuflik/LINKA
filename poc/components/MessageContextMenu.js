@@ -10,8 +10,9 @@ const MessageContextMenu = {
     canShowDetails: { type: Boolean, default: false }, // own, non-system, non-deleted message
     canEdit: { type: Boolean, default: false }, // own, non-deleted text message
     canDelete: { type: Boolean, default: false }, // own, non-system, non-deleted message
+    canRestore: { type: Boolean, default: false }, // own, currently-deleted message
   },
-  emits: ['close', 'reply', 'details', 'edit', 'delete'],
+  emits: ['close', 'reply', 'details', 'edit', 'delete', 'restore'],
   template: `
     <div class="fixed inset-0 z-50" @click="$emit('close')" @contextmenu.prevent="$emit('close')">
       <div class="absolute w-40 bg-white rounded-lg shadow-lg border border-slate-200 py-1 text-sm"
@@ -23,6 +24,7 @@ const MessageContextMenu = {
         </button>
         <button v-if="canEdit" @click="$emit('edit')" class="w-full text-left px-3 py-2 hover:bg-slate-50">Edit</button>
         <button v-if="canDelete" @click="$emit('delete')" class="w-full text-left px-3 py-2 text-red-600 hover:bg-red-50">Delete</button>
+        <button v-if="canRestore" @click="$emit('restore')" class="w-full text-left px-3 py-2 text-emerald-600 hover:bg-emerald-50">Restore</button>
       </div>
     </div>
   `,

@@ -45,6 +45,23 @@ function usePresence(ctx) {
     }
   }
 
+  // Called on the heartbeat: re-send subscribe_presence for the open private
+  // chat so the server re-runs the privacy.online gate. Bypasses the
+  // "already subscribed" short-circuit in subscribeToPresence - that's the
+  // whole point here.
+  function refreshPresenceSubscription() {
+    if (ctx.activeChatIsGroup.value || !ctx.activeChatId.value) return;
+    const otherUserId = ctx.privateChatOtherUserId.value[ctx.activeChatId.value];
+    if (otherUserId) ctx.sendRaw({ type: 'subscribe_presence', user_id: otherUserId });
+  }
+
+  // Server says this watcher may no longer see that user's status (privacy
+  // tightened, or the shared chat is gone). Clear the stale indicator.
+  function onPresenceRevoked(targetUserId) {
+    if (presenceSubscribedUserId === targetUserId) presenceSubscribedUserId = null;
+    delete presenceByUserId.value[targetUserId];
+  }
+
   function resetPresence() {
     presenceSubscribedUserId = null;
     presenceByUserId.value = {};
@@ -65,7 +82,8 @@ function usePresence(ctx) {
   return {
     presenceByUserId,
     subscribeToPresence, unsubscribeFromPresence, subscribeToPresenceForChat,
-    resubscribePresenceForActiveChat, resetPresence,
+    resubscribePresenceForActiveChat, refreshPresenceSubscription, onPresenceRevoked,
+    resetPresence,
     presenceLabelFor, activeChatPresenceLabel,
   };
 }

@@ -82,7 +82,10 @@
 <script src="composables/useChats.js"></script>
 <script src="composables/useMembers.js"></script>
 <script src="composables/useNewChat.js"></script>
-<script src="composables/useMessageActions.js"></script>
+<script src="composables/useMessageMenu.js"></script>
+<script src="composables/useMessageSend.js"></script>
+<script src="composables/useMessageEdit.js"></script>
+<script src="composables/useMediaUpload.js"></script>
 <script src="composables/useWsRouter.js"></script>
 <style>
   /* Chat-bubble speech tail - a smooth curved shape (WhatsApp/Telegram/
@@ -145,7 +148,10 @@ const app = createApp({
     Object.assign(ctx, useChats(ctx));
     Object.assign(ctx, useMembers(ctx));
     Object.assign(ctx, useNewChat(ctx));
-    Object.assign(ctx, useMessageActions(ctx));
+    Object.assign(ctx, useMessageMenu(ctx));
+    Object.assign(ctx, useMessageSend(ctx));
+    Object.assign(ctx, useMessageEdit(ctx));
+    Object.assign(ctx, useMediaUpload(ctx));
     Object.assign(ctx, useWsRouter(ctx));
 
     // Names the lifecycle hooks below still reference directly.
@@ -227,7 +233,7 @@ const app = createApp({
               @open-members-modal="openMembersModal" />
 
             <MessageList ref="messagesEl"
-              :messages="messages" :messagesError="messagesError" :currentUser="currentUser"
+              :messages="messages" :currentUser="currentUser"
               :shouldShowSystemMessage="shouldShowSystemMessage" :systemMessageText="systemMessageText"
               :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass"
               :senderAvatarUrl="senderAvatarUrl"
@@ -236,6 +242,7 @@ const app = createApp({
               @voice-played="onVoicePlayed" />
 
             <MessageInput v-model:messageInput="messageInput" @send-message="sendMessage" @typing="notifyTyping"
+              :attachError="messagesError" @clear-attach-error="messagesError = ''"
               :replyingToMessage="replyingToMessage" :senderLabel="replySenderLabel" @cancel-reply="cancelReply"
               :editingMessage="editingMessage" @cancel-edit="cancelEdit"
               :isRecording="isRecording" :recordingSeconds="recordingSeconds"

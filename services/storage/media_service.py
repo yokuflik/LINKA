@@ -81,7 +81,10 @@ def _validate_upload_request(kind: str, mime: str, size_bytes: int) -> None:
             f"unknown upload kind {kind!r}; expected one of {sorted(VALID_KINDS)}"
         )
     allowed = ALLOWED_UPLOAD_MIME.get(kind, set())
-    if mime not in allowed:
+    # An empty allow-set is the "any non-empty MIME" sentinel (kind 'file').
+    if not mime:
+        raise MediaValidationError(f"a content type is required for {kind!r} uploads")
+    if allowed and mime not in allowed:
         raise MediaValidationError(
             f"content type {mime!r} is not allowed for {kind!r} uploads"
         )

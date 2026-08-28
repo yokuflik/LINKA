@@ -65,71 +65,21 @@ async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: 
     error) never tears down the whole connection - only send_message's own
     exceptions are handled per-branch below, everything else falls through
     to the catch-all so a client typo can't kill their session.
+
+    Routing is a plain dict lookup (message type -> handler). Every handler
+    shares the same (user_id, connection_id, payload, websocket) signature so
+    the dispatcher stays uniform regardless of which args a given handler
+    actually uses; unknown types are handled inline here.
     """
     message_type = payload.get("type")
+    handler = _HANDLERS.get(message_type)
 
     try:
-        if message_type == "heartbeat":
-            await presence_service.heartbeat(user_id, connection_id)
-            await websocket.send_json({"type": "heartbeat_ack"})
-
-        elif message_type == "send_message":
-            await _handle_send_message(user_id, payload, websocket)
-
-        elif message_type == "edit_message":
-            async with session_scope() as session:
-                message = await message_service.edit_message(
-                    session,
-                    user_id=user_id,
-                    chat_id=int(payload["chat_id"]),
-                    message_id=int(payload["message_id"]),
-                    new_content=payload["content"],
-                )
-            await websocket.send_json({"type": "ack", "for": "edit_message", "message_id": str(message.id)})
-
-        elif message_type == "delete_message":
-            async with session_scope() as session:
-                deleted = await message_service.delete_message(
-                    session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
-                )
-            await websocket.send_json({"type": "ack", "for": "delete_message", "deleted": deleted})
-
-        elif message_type == "mark_delivered":
-            async with session_scope() as session:
-                await message_service.mark_as_delivered(
-                    session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
-                )
-            await websocket.send_json({"type": "ack", "for": "mark_delivered"})
-
-        elif message_type == "mark_read":
-            async with session_scope() as session:
-                await message_service.mark_as_read(
-                    session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
-                )
-            await websocket.send_json({"type": "ack", "for": "mark_read"})
-
-        elif message_type == "mark_played":
-            async with session_scope() as session:
-                await message_service.mark_as_played(
-                    session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
-                )
-            await websocket.send_json({"type": "ack", "for": "mark_played"})
-
-        elif message_type == "typing":
-            await _handle_typing(user_id, payload)
-
-        elif message_type == "recording":
-            await _handle_typing(user_id, payload, kind="recording_audio")
-
-        elif message_type == "subscribe_presence":
-            await _handle_subscribe_presence(user_id, connection_id, payload, websocket)
-
-        elif message_type == "unsubscribe_presence":
-            target_user_id = int(payload["user_id"])
-            await connection_manager.unsubscribe_presence(connection_id, target_user_id)
-
-        else:
+        if handler is None:
             await websocket.send_json({"type": "error", "code": "unknown_type", "message": f"Unknown message type: {message_type!r}"})
+            return
+
+        await handler(user_id, connection_id, payload, websocket)
 
     except message_service.NotAParticipantError as e:
         await websocket.send_json({"type": "error", "code": "forbidden", "message": str(e)})
@@ -153,7 +103,75 @@ async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: 
         await websocket.send_json({"type": "error", "code": "internal_error", "message": "Something went wrong"})
 
 
-async def _handle_send_message(user_id: int, payload: dict, websocket: WebSocket) -> None:
+# --- Individual action handlers ------------------------------------------------
+# Each handler is isolated and independently testable. They all accept the same
+# four arguments even when they don't need every one, so _HANDLERS can invoke
+# them uniformly.
+
+
+async def _handle_heartbeat(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    await presence_service.heartbeat(user_id, connection_id)
+    await websocket.send_json({"type": "heartbeat_ack"})
+
+
+async def _handle_edit_message(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    async with session_scope() as session:
+        message = await message_service.edit_message(
+            session,
+            user_id=user_id,
+            chat_id=int(payload["chat_id"]),
+            message_id=int(payload["message_id"]),
+            new_content=payload["content"],
+        )
+    await websocket.send_json({"type": "ack", "for": "edit_message", "message_id": str(message.id)})
+
+
+async def _handle_delete_message(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    async with session_scope() as session:
+        deleted = await message_service.delete_message(
+            session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
+        )
+    await websocket.send_json({"type": "ack", "for": "delete_message", "deleted": deleted})
+
+
+async def _handle_mark_delivered(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    async with session_scope() as session:
+        await message_service.mark_as_delivered(
+            session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
+        )
+    await websocket.send_json({"type": "ack", "for": "mark_delivered"})
+
+
+async def _handle_mark_read(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    async with session_scope() as session:
+        await message_service.mark_as_read(
+            session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
+        )
+    await websocket.send_json({"type": "ack", "for": "mark_read"})
+
+
+async def _handle_mark_played(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    async with session_scope() as session:
+        await message_service.mark_as_played(
+            session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
+        )
+    await websocket.send_json({"type": "ack", "for": "mark_played"})
+
+
+async def _handle_typing(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    await _publish_typing(user_id, payload)
+
+
+async def _handle_recording(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    await _publish_typing(user_id, payload, kind="recording_audio")
+
+
+async def _handle_unsubscribe_presence(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    target_user_id = int(payload["user_id"])
+    await connection_manager.unsubscribe_presence(connection_id, target_user_id)
+
+
+async def _handle_send_message(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
     allowed = await rate_limit_service.check_and_increment(
         user_id, "send_message", max_per_window=SEND_MESSAGE_RATE_LIMIT_MAX, window_seconds=SEND_MESSAGE_RATE_LIMIT_WINDOW_SECONDS
     )
@@ -210,36 +228,6 @@ async def _handle_send_message(user_id: int, payload: dict, websocket: WebSocket
     })
 
 
-async def _handle_typing(user_id: int, payload: dict, kind: str = "typing") -> None:
-    """
-    Fully ephemeral - no DB persistence, no ack. Fanned out to the chat like
-    any other chat event (new_message, receipts, ...) via the same
-    realtime_service/connection_manager pipeline, so it reuses the existing
-    per-chat Redis channel instead of a new mechanism. The client is
-    responsible for expiring the state on its own (~5s) rather than the
-    server ever sending a matching "stopped" event - see CLAUDE.md's
-    typing-indicator section.
-
-    Same handler covers both the text-composing ("typing") and the
-    voice-recording ("recording_audio") activity kinds - identical
-    authorization and fan-out, only the "kind" field differs. The wire
-    event stays "typing" so existing clients keep working; a client that
-    doesn't understand a kind can treat it as plain typing.
-    """
-    chat_id = int(payload["chat_id"])
-
-    async with session_scope() as session:
-        if not await is_participant(session, chat_id, user_id):
-            raise message_service.NotAParticipantError(f"User {user_id} is not a participant of chat {chat_id}")
-
-    await realtime_service.publish_event(chat_id, {
-        "event": "typing",
-        "kind": kind,
-        "chat_id": str(chat_id),
-        "user_id": str(user_id),
-    })
-
-
 async def _handle_subscribe_presence(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
     """
     Subscribe-on-demand presence (see CLAUDE.md): the client sends this only
@@ -270,3 +258,51 @@ async def _handle_subscribe_presence(user_id: int, connection_id: str, payload: 
         "status": status["status"],
         "last_seen_at": status["last_seen_at"],
     })
+
+
+async def _publish_typing(user_id: int, payload: dict, kind: str = "typing") -> None:
+    """
+    Fully ephemeral - no DB persistence, no ack. Fanned out to the chat like
+    any other chat event (new_message, receipts, ...) via the same
+    realtime_service/connection_manager pipeline, so it reuses the existing
+    per-chat Redis channel instead of a new mechanism. The client is
+    responsible for expiring the state on its own (~5s) rather than the
+    server ever sending a matching "stopped" event - see CLAUDE.md's
+    typing-indicator section.
+
+    Same helper covers both the text-composing ("typing") and the
+    voice-recording ("recording_audio") activity kinds - identical
+    authorization and fan-out, only the "kind" field differs. The wire
+    event stays "typing" so existing clients keep working; a client that
+    doesn't understand a kind can treat it as plain typing.
+    """
+    chat_id = int(payload["chat_id"])
+
+    async with session_scope() as session:
+        if not await is_participant(session, chat_id, user_id):
+            raise message_service.NotAParticipantError(f"User {user_id} is not a participant of chat {chat_id}")
+
+    await realtime_service.publish_event(chat_id, {
+        "event": "typing",
+        "kind": kind,
+        "chat_id": str(chat_id),
+        "user_id": str(user_id),
+    })
+
+
+# Message type -> handler. Every handler shares the
+# (user_id, connection_id, payload, websocket) signature; unknown types are
+# handled inline in _dispatch.
+_HANDLERS = {
+    "heartbeat": _handle_heartbeat,
+    "send_message": _handle_send_message,
+    "edit_message": _handle_edit_message,
+    "delete_message": _handle_delete_message,
+    "mark_delivered": _handle_mark_delivered,
+    "mark_read": _handle_mark_read,
+    "mark_played": _handle_mark_played,
+    "typing": _handle_typing,
+    "recording": _handle_recording,
+    "subscribe_presence": _handle_subscribe_presence,
+    "unsubscribe_presence": _handle_unsubscribe_presence,
+}

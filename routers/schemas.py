@@ -121,7 +121,11 @@ class MediaUploadTicketIn(BaseModel):
         kind = self.kind
         if kind not in ("image", "video", "audio", "file"):
             raise ValueError(f"unknown media kind {kind!r}")
-        if self.mime_type not in ALLOWED_UPLOAD_MIME.get(kind, set()):
+        allowed = ALLOWED_UPLOAD_MIME.get(kind, set())
+        if not self.mime_type:
+            raise ValueError(f"a content type is required for {kind!r}")
+        # An empty allow-set is the "any non-empty MIME" sentinel (kind 'file').
+        if allowed and self.mime_type not in allowed:
             raise ValueError(f"content type {self.mime_type!r} is not allowed for {kind!r}")
         ceiling = MAX_UPLOAD_BYTES_BY_KIND[kind]
         floor = MIN_UPLOAD_BYTES_BY_KIND.get(kind, 1)

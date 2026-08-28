@@ -8,11 +8,14 @@
 //
 // The [+] button opens a small WhatsApp-style attach menu: "Photos & Videos"
 // (native picker filtered to image/video types -> pick-media) and "Documents"
-// (picker filtered to the backend's allowed document MIME set -> pick-document).
+// (unfiltered picker, any file type -> pick-document).
 const MessageInput = {
-  emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'cancel-edit', 'pick-media', 'pick-document', 'start-recording', 'stop-recording'],
+  emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'cancel-edit', 'pick-media', 'pick-document', 'start-recording', 'stop-recording', 'clear-attach-error'],
   props: {
     messageInput: { type: String, required: true },
+    // error from the last attach attempt (e.g. file too large), shown as a
+    // dismissible banner right above the composer
+    attachError: { type: String, default: '' },
     replyingToMessage: { default: null },
     // the message currently being edited (composer prefilled), or null
     editingMessage: { default: null },
@@ -70,6 +73,13 @@ const MessageInput = {
   },
   template: `
     <div class="border-t border-slate-200 bg-white">
+      <div v-if="attachError"
+           class="mx-3 mt-2 flex items-center gap-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
+        <span class="text-base leading-none">⚠️</span>
+        <span class="flex-1">{{ attachError }}</span>
+        <button @click="$emit('clear-attach-error')"
+                class="text-red-400 hover:text-red-600 text-lg leading-none px-1">&times;</button>
+      </div>
       <div v-if="editingMessage" class="px-3 pt-2 flex items-start gap-2">
         <div class="flex-1 min-w-0 pl-2 border-l-4 border-amber-500 text-xs">
           <div class="font-semibold text-amber-600">Editing message</div>
@@ -136,7 +146,6 @@ const MessageInput = {
                accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
                @change="onMediaFileChosen" />
         <input ref="documentFileInput" type="file" class="hidden"
-               accept=".pdf,.txt,.zip,.doc,.docx,.xls,.xlsx,application/pdf,text/plain,application/zip,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                @change="onDocumentFileChosen" />
       </div>
     </div>

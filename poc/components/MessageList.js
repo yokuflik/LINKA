@@ -6,7 +6,6 @@
 const MessageList = {
   props: {
     messages: { type: Array, required: true },
-    messagesError: { type: String, required: true },
     currentUser: { type: Object, required: true },
     shouldShowSystemMessage: { type: Function, required: true },
     systemMessageText: { type: Function, required: true },
@@ -52,7 +51,6 @@ const MessageList = {
   expose: ['messagesEl'],
   template: `
     <div ref="messagesEl" @scroll="onScroll" class="flex-1 overflow-y-auto p-4 space-y-2">
-      <p v-if="messagesError" class="text-sm text-red-600">{{ messagesError }}</p>
       <template v-for="m in messages" :key="m.id || m.client_message_id">
         <!-- System messages (sender_id == null, e.g. "X added Y to the group") -
              centered, small, gray pill, like WhatsApp's own group-event lines.

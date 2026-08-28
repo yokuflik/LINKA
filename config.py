@@ -107,15 +107,12 @@ ALLOWED_UPLOAD_MIME = {
     "image": {"image/jpeg", "image/png", "image/webp", "image/gif"},
     "video": {"video/mp4", "video/webm", "video/quicktime"},
     "audio": {"audio/mpeg", "audio/ogg", "audio/mp4", "audio/webm", "audio/aac"},
-    "file": {
-        "application/pdf",
-        "text/plain",
-        "application/zip",
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.ms-excel",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    },
+    # Documents: any content type. A generic file attachment can be anything
+    # the user has on disk; images/video/audio stay locked to their own kinds
+    # above (those render inline and must be a known format). An empty set is
+    # the "allow any non-empty MIME" sentinel - see _validate_upload_request /
+    # message_service._validate_media.
+    "file": set(),
     # Avatars must be images; reuse the image set.
     "avatar": {"image/jpeg", "image/png", "image/webp"},
 }

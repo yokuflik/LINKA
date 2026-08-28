@@ -303,6 +303,86 @@ function useChats(ctx) {
     });
   }
 
+  // Mute presets are just convenience shortcuts - the server accepts ANY
+  // absolute `muted_until`, and the menu also has a free "Custom…" datetime
+  // picker (see ChatContextMenu). "always" is a far-future timestamp. ADR 0004.
+  const MUTE_PRESETS = [
+    { key: '8h', label: '8 hours', ms: 8 * 3600 * 1000 },
+    { key: '1d', label: '1 day', ms: 24 * 3600 * 1000 },
+    { key: '1w', label: '1 week', ms: 7 * 24 * 3600 * 1000 },
+    { key: 'always', label: 'Forever', ms: null },
+  ];
+  const MUTE_FOREVER_ISO = '9999-12-31T23:59:59Z';
+
+  function presetExpiryIso(presetKey) {
+    const opt = MUTE_PRESETS.find((o) => o.key === presetKey);
+    if (!opt || opt.ms == null) return MUTE_FOREVER_ISO;
+    return new Date(Date.now() + opt.ms).toISOString();
+  }
+
+  // A ticking "now" so time-based views (the mute icon) re-render when an
+  // expiry passes - nothing else would invalidate isChatMuted() otherwise.
+  const nowTick = ref(Date.now());
+  setInterval(() => {
+    nowTick.value = Date.now();
+    // Clear a lapsed local muted_until so the item is genuinely un-muted
+    // (also stops mutedUntilLabel showing a past time).
+    for (const item of chats.value) {
+      if (item.muted_until && new Date(item.muted_until).getTime() <= nowTick.value) {
+        item.muted_until = null;
+      }
+    }
+  }, 30 * 1000);
+
+  // True when this item is muted and the expiry is still in the future.
+  function isChatMuted(item) {
+    return !!item && !!item.muted_until && new Date(item.muted_until).getTime() > nowTick.value;
+  }
+
+  // Short "until ..." hint for the menu; '' for an effectively-forever mute.
+  function mutedUntilLabel(item) {
+    if (!isChatMuted(item)) return '';
+    const t = new Date(item.muted_until);
+    if (t.getUTCFullYear() >= 9999) return '';
+    return t.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
+  // Mute a chat for the current user until an absolute ISO timestamp.
+  // Optimistic: set muted_until locally, roll back on failure. Multi-device
+  // sync via the chat_mute_changed personal-channel echo (see useWsRouter).
+  async function muteChatUntil(chatId, iso) {
+    const item = chats.value.find((c) => c.chat.id === chatId);
+    if (!item) return;
+    const prev = item.muted_until;
+    item.muted_until = iso;
+    try {
+      await ctx.apiFetch(`/chats/${chatId}/mute`, {
+        method: 'PUT',
+        body: JSON.stringify({ muted_until: iso }),
+      });
+    } catch (err) {
+      ctx.logError('failed to mute', chatId, err);
+      item.muted_until = prev;
+    }
+  }
+
+  function muteChat(chatId, presetKey) {
+    return muteChatUntil(chatId, presetExpiryIso(presetKey));
+  }
+
+  async function unmuteChat(chatId) {
+    const item = chats.value.find((c) => c.chat.id === chatId);
+    if (!item) return;
+    const prev = item.muted_until;
+    item.muted_until = null;
+    try {
+      await ctx.apiFetch(`/chats/${chatId}/mute`, { method: 'DELETE' });
+    } catch (err) {
+      ctx.logError('failed to unmute', chatId, err);
+      item.muted_until = prev;
+    }
+  }
+
   // Pin/unpin a chat for the current user. Optimistic: flip the flag, re-sort,
   // roll back on failure. No server push - other devices catch up on reload.
   async function togglePinChat(chatId) {
@@ -321,7 +401,7 @@ function useChats(ctx) {
   }
 
   // ---------------------------------------------------------------
-  // Chat-row right-click menu (sidebar). Pin is wired; Mute is a UI stub.
+  // Chat-row right-click menu (sidebar). Pin + mute (with a duration picker).
   // ---------------------------------------------------------------
   const chatMenuChatId = ref(null); // the chat the menu is open for, or null
   const chatMenuRawPosition = ref({ x: 0, y: 0 });
@@ -343,10 +423,20 @@ function useChats(ctx) {
     closeChatContextMenu();
     if (id != null) await togglePinChat(id);
   }
-  function toggleMuteFromMenu() {
-    // No mute logic yet - backend/DB support not built. UI stub only.
+  async function mutePresetFromMenu(presetKey) {
+    const id = chatMenuChatId.value;
     closeChatContextMenu();
-    ctx.log('mute: not implemented yet');
+    if (id != null) await muteChat(id, presetKey);
+  }
+  async function muteUntilFromMenu(iso) {
+    const id = chatMenuChatId.value;
+    closeChatContextMenu();
+    if (id != null) await muteChatUntil(id, iso);
+  }
+  async function unmuteFromMenu() {
+    const id = chatMenuChatId.value;
+    closeChatContextMenu();
+    if (id != null) await unmuteChat(id);
   }
 
   async function loadChats() {
@@ -487,7 +577,9 @@ function useChats(ctx) {
     messagesScrollEl, isPinnedToBottom, scrollMessagesToBottom,
     loadOlderMessages, onMessagesScroll,
     loadChats, selectChat, togglePinChat, sortChats,
+    MUTE_PRESETS, muteChat, muteChatUntil, unmuteChat, isChatMuted, mutedUntilLabel,
     chatMenuChatId, chatMenuPosition, chatMenuItem,
-    openChatContextMenu, closeChatContextMenu, togglePinFromMenu, toggleMuteFromMenu,
+    openChatContextMenu, closeChatContextMenu, togglePinFromMenu,
+    mutePresetFromMenu, muteUntilFromMenu, unmuteFromMenu,
   };
 }

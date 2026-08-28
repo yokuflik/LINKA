@@ -1,6 +1,7 @@
 """The outgoing-message send path and fan-out: process_outgoing, send_system_message, fan_out_message."""
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -182,7 +183,20 @@ async def fan_out_message(session: AsyncSession, message: Message, client_messag
     recipient_ids = [p.user_id for p in participants if p.user_id != message.sender_id]
 
     online_ids = await presence_service.get_online_participants(recipient_ids)
-    offline_ids = [uid for uid in recipient_ids if uid not in online_ids]
+
+    # Recipients who muted this chat get no offline push (ADR 0004). A
+    # connected client filters muted chats itself; this is the only
+    # server-side effect of muting. "muted forever" is a far-future
+    # muted_until, so a single "> now()" check covers every case.
+    now = datetime.now(timezone.utc)
+    muted_ids = {
+        p.user_id
+        for p in participants
+        if p.muted_until is not None and p.muted_until > now
+    }
+    offline_ids = [
+        uid for uid in recipient_ids if uid not in online_ids and uid not in muted_ids
+    ]
 
     # Concurrent, not sequential: one at a time, this loop's latency scales
     # with the chat's offline member count. It runs in the fan-out worker now,

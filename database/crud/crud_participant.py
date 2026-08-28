@@ -180,6 +180,30 @@ async def set_chat_pinned(
     return result.scalar_one_or_none()
 
 
+async def set_chat_muted(
+    session: AsyncSession, chat_id: int, user_id: int, muted_until: Optional[datetime]
+) -> Optional[Participant]:
+    """
+    Mute or unmute a chat for one user. `muted_until` is an absolute expiry
+    (the client picks the duration and sends the timestamp; "forever" is a
+    far-future one). Pass None to unmute.
+
+    Returns the updated Participant, or None if the user isn't in the chat.
+
+    Time Complexity: O(log N) - a direct hit on the (chat_id, user_id)
+    composite Primary Key.
+    """
+    stmt = (
+        update(Participant)
+        .where(Participant.chat_id == chat_id, Participant.user_id == user_id)
+        .values(muted_until=muted_until)
+        .returning(Participant)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return result.scalar_one_or_none()
+
+
 async def get_chat_participants(session: AsyncSession, chat_id: int) -> Sequence[Participant]:
     """
     Fetch all participants in a specific chat (Used by Redis Pub/Sub for message fanout).

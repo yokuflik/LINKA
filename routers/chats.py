@@ -17,6 +17,7 @@ from routers.schemas import (
     ChatOut,
     CreateGroupChatIn,
     CreatePrivateChatIn,
+    MuteChatIn,
     ParticipantOut,
     UpdateGroupDetailsIn,
 )
@@ -41,6 +42,7 @@ async def list_my_chats(
             role=p.role,
             last_read_message_id=p.last_read_message_id,
             pinned=p.pinned_at is not None,
+            muted_until=p.muted_until,
             unread_count=p.unread_count,
         )
         for p in participants
@@ -66,6 +68,35 @@ async def unpin_chat(
 ):
     """Unpin a chat for the caller."""
     if not await chat_service.set_chat_pinned(session, user_id=user_id, chat_id=chat_id, pinned=False):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found")
+
+
+@router.put("/{chat_id}/mute", status_code=status.HTTP_204_NO_CONTENT)
+async def mute_chat(
+    chat_id: int,
+    body: MuteChatIn,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Mute a chat for the caller until body.muted_until (client-chosen; a
+    far-future timestamp means 'forever'). Server-side this only suppresses
+    offline push notifications - see ADR 0004."""
+    if not await chat_service.set_chat_muted(
+        session, user_id=user_id, chat_id=chat_id, muted_until=body.muted_until
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found")
+
+
+@router.delete("/{chat_id}/mute", status_code=status.HTTP_204_NO_CONTENT)
+async def unmute_chat(
+    chat_id: int,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Unmute a chat for the caller."""
+    if not await chat_service.set_chat_muted(
+        session, user_id=user_id, chat_id=chat_id, muted_until=None
+    ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membership not found")
 
 

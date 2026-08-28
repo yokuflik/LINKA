@@ -60,6 +60,7 @@ Per Core Behavior Rule 7, review these before proposing any systemic change, and
 | `docs/adr/0001-redis-pubsub-fanout-routing.md` | Redis pub/sub fan-out routing layer and queue workers | Accepted |
 | `docs/adr/0002-user-settings-jsonb.md` | Per-user settings as a single extensible JSONB blob | Accepted |
 | `docs/adr/0003-read-receipts-privacy.md` | Read-receipts (blue-tick) privacy: asymmetric per-reader 1:1 mask, groups exempt | Accepted |
+| `docs/adr/0004-chat-mute.md` | Per-user chat mute as `Participant.muted_until`; client owns durations, server only suppresses offline push | Accepted |
 
 ---
 

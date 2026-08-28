@@ -308,6 +308,16 @@ function useWsRouter(ctx) {
       return;
     }
 
+    if (msg.event === 'chat_mute_changed') {
+      // This same user muted/unmuted a chat from another tab/device
+      // (chat_service.set_chat_muted pushes it over the personal channel).
+      // Apply the new muted_until in place; the acting tab gets the echo too
+      // (setting the same value is a no-op).
+      const item = ctx.chats.value.find((c) => c.chat.id === msg.chat_id);
+      if (item) item.muted_until = msg.muted_until || null;
+      return;
+    }
+
     if (msg.event === 'removed_from_chat') {
       // Mirror of added_to_chat: fired when someone else removes this user
       // from a group (or this user leaves from another device).

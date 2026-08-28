@@ -58,6 +58,17 @@ class Participant(Base):
     # so every user pins independently; no limit on how many a user pins.
     pinned_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Per-user chat mute. NULL = not muted. A future timestamp = muted
+    # until then; "mute forever" is just a far-future timestamp. The client
+    # owns the duration menu (8h / 1d / 1w / forever) and sends the absolute
+    # expiry; the server stores it verbatim. Server-side this is consulted
+    # in exactly one place - the offline push path in
+    # services/messaging/send.py drops recipients whose muted_until > now()
+    # before sending an FCM push. Everything else about muting (hiding the
+    # unread badge, silencing the in-app notification) is the client's job.
+    # See ADR 0004.
+    muted_until = Column(DateTime(timezone=True), nullable=True)
+
     joined_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # SQLAlchemy ORM relationships

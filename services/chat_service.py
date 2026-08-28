@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 from typing import Optional, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +12,7 @@ from database.crud.crud_participant import (
     get_user_chats,
     is_participant,
     remove_participant,
+    set_chat_muted as _crud_set_chat_muted,
     set_chat_pinned as _crud_set_chat_pinned,
     update_participant_role,
 )
@@ -254,6 +256,36 @@ async def set_chat_pinned(session: AsyncSession, user_id: int, chat_id: int, pin
     await realtime_service.publish_user_event(
         user_id,
         {"event": "chat_pin_changed", "chat_id": str(chat_id), "pinned": pinned},
+    )
+    return True
+
+
+async def set_chat_muted(
+    session: AsyncSession, user_id: int, chat_id: int, muted_until: Optional[datetime]
+) -> bool:
+    """
+    Mute/unmute a chat for the calling user. `muted_until` is an absolute
+    expiry chosen by the client ("forever" = a far-future timestamp); None
+    unmutes. No role check - a personal chat-list preference. Returns False
+    if the user isn't a participant.
+
+    Server-side, muting only suppresses offline push (see ADR 0004); the
+    client does the rest. The mute state is pushed to the user's *other*
+    connections so every device updates live (same pattern as pinning).
+    """
+    participant = await _crud_set_chat_muted(
+        session, chat_id=chat_id, user_id=user_id, muted_until=muted_until
+    )
+    if participant is None:
+        return False
+
+    await realtime_service.publish_user_event(
+        user_id,
+        {
+            "event": "chat_mute_changed",
+            "chat_id": str(chat_id),
+            "muted_until": muted_until.isoformat() if muted_until is not None else None,
+        },
     )
     return True
 

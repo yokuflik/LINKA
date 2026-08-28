@@ -244,6 +244,7 @@ const app = createApp({
           :chatDisplayName="chatDisplayName" :formatChatTime="formatChatTime"
           :chatAvatarUrl="chatAvatarUrl" :chatAvatarName="chatAvatarName" :chatAvatarColorKey="chatAvatarColorKey"
           :typingLabelForChat="typingLabelForChat" :unreadCountByChatId="unreadCountByChatId"
+          :isChatMuted="isChatMuted"
           @create-private-chat="createPrivateChat"
           @open-new-group="newGroupError = ''; showNewGroupModal = true"
           @select-chat="selectChat"
@@ -252,9 +253,14 @@ const app = createApp({
         <ChatContextMenu v-if="chatMenuItem"
           :position="chatMenuPosition"
           :pinned="!!chatMenuItem.pinned"
+          :muted="isChatMuted(chatMenuItem)"
+          :mutePresets="MUTE_PRESETS"
+          :mutedUntilLabel="mutedUntilLabel(chatMenuItem)"
           @close="closeChatContextMenu"
           @toggle-pin="togglePinFromMenu"
-          @toggle-mute="toggleMuteFromMenu" />
+          @mute-preset="mutePresetFromMenu"
+          @mute-until="muteUntilFromMenu"
+          @unmute="unmuteFromMenu" />
 
         <main class="flex-1 flex flex-col min-w-0">
           <template v-if="activePaneVisible">

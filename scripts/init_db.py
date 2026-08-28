@@ -76,6 +76,9 @@ async def main(drop: bool) -> None:
                 # Per-user chat pinning (see database/models/participant.py).
                 # NULL = not pinned; sorted above un-pinned chats by pinned_at DESC.
                 "ALTER TABLE participants ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ",
+                # Per-user chat mute (see database/models/participant.py, ADR 0004).
+                # NULL = not muted; a future timestamp = muted until then.
+                "ALTER TABLE participants ADD COLUMN IF NOT EXISTS muted_until TIMESTAMPTZ",
                 # Per-user settings (privacy, ...) - one JSONB blob per user.
                 # create_all makes this on a fresh DB; spelled out here so an
                 # already-initialised dev DB picks it up without a --drop.

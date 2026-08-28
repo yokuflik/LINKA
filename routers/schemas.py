@@ -200,6 +200,11 @@ class ChatListItemOut(BaseModel):
     # Only set by chat_service.get_chat_list.
     pinned: bool = False
 
+    # Absolute mute expiry for this viewer, or None if not muted. A past
+    # value means the mute has lapsed - the client should treat it as
+    # un-muted. Only set by chat_service.get_chat_list. See ADR 0004.
+    muted_until: Optional[datetime] = None
+
     # How many of this chat's messages come after the viewer's own
     # last_read_message_id - genuinely per-viewer (unlike ChatOut.
     # last_message_status, which is chat-wide), so it lives here rather than
@@ -237,6 +242,13 @@ class AddMemberIn(BaseModel):
 
 class ChangeRoleIn(BaseModel):
     role: int
+
+
+class MuteChatIn(BaseModel):
+    # Absolute expiry chosen by the client. The client owns the duration
+    # menu (8h / 1d / 1w / forever); "forever" is just a far-future
+    # timestamp. The server stores this verbatim. See ADR 0004.
+    muted_until: datetime
 
 
 class ChatMemberOut(BaseModel):

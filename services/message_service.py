@@ -34,6 +34,7 @@ from config import (
 )
 from database.crud import crud_receipt
 from services import notification_service, presence_service, realtime_service
+from services.fanout import send_queue
 from services.receipts import receipt_log
 from services.storage import media_service
 from services.storage.errors import MediaNotFoundError, MediaValidationError
@@ -132,7 +133,20 @@ def _idempotency_key(chat_id: int, client_message_id: str) -> str:
     return f"{_IDEMPOTENCY_KEY_PREFIX}{chat_id}:{client_message_id}"
 
 
-async def send_message(
+class MessageAlreadySentError(Exception):
+    """
+    Raised by process_outgoing when the idempotency key already holds a real
+    message id - a duplicate stream entry for a client_message_id that was
+    already written. Carries the existing id so the worker can nudge the
+    sender's client to reconcile its optimistic bubble.
+    """
+
+    def __init__(self, message_id: int):
+        super().__init__(f"message {message_id} already sent")
+        self.message_id = message_id
+
+
+async def process_outgoing(
     session: AsyncSession,
     sender_id: int,
     chat_id: int,
@@ -143,13 +157,18 @@ async def send_message(
     media: Optional[dict] = None,
 ) -> Message:
     """
-    The full send flow: idempotency check, permission check, persist,
-    acknowledge, fan out to whoever's connected, push to whoever isn't.
+    The full send flow, run by the fan-out worker off ``message_send_stream``
+    (no longer inline on the WebSocket request path): idempotency check,
+    permission check, persist, fan out to whoever's connected, push to
+    whoever isn't.
 
     ``media`` (for a media-type message: 2=image/3=video/4=audio/5=file) is
     ``{"key", "name"?, "duration_seconds"?}`` - the object storage key the
     client got from an upload ticket and already PUT its bytes to. It's
     HEAD-verified against storage and the per-kind size/MIME limits here.
+
+    Raises MessageAlreadySentError if this client_message_id was already
+    written (duplicate stream entry).
     """
     _check_content_length(content)
 
@@ -169,9 +188,10 @@ async def send_message(
     if not reserved:
         existing_message_id = await _wait_for_idempotent_result(idem_key)
         if existing_message_id is not None:
-            existing = await get_message_by_id(session, chat_id=chat_id, message_id=existing_message_id)
-            if existing is not None:
-                return existing
+            # Already written by an earlier stream entry for the same
+            # client_message_id. Don't re-persist / re-fan-out; let the worker
+            # tell the sender to reconcile.
+            raise MessageAlreadySentError(existing_message_id)
         # The original attempt's process crashed before writing the result back;
         # fall through and actually send it so the client isn't left hanging forever.
 
@@ -193,7 +213,16 @@ async def send_message(
 
     await redis_client.set(idem_key, str(message.id), ex=_IDEMPOTENCY_TTL_SECONDS)
 
-    await _fan_out(session, message)
+    # Fan-out is a second hop off its own stream (services/fanout/fanout_worker):
+    # the message row is already committed by create_message, so the worker can
+    # load it. Building the event + publishing + pushing to offline members no
+    # longer blocks this worker's per-message drain.
+    await send_queue.enqueue_fanout(
+        message_id=message.id,
+        chat_id=message.chat_id,
+        sender_id=message.sender_id,
+        client_message_id=client_message_id,
+    )
     return message
 
 
@@ -216,7 +245,10 @@ async def send_system_message(session: AsyncSession, chat_id: int, content: str)
         type=SYSTEM_MESSAGE_TYPE,
         content=content,
     )
-    await _fan_out(session, message)
+    # Same queue as normal messages so ordering within a chat is preserved.
+    await send_queue.enqueue_fanout(
+        message_id=message.id, chat_id=message.chat_id, sender_id=None
+    )
     return message
 
 
@@ -227,7 +259,13 @@ def _push_body_for_media(type: int) -> str:
     return _PUSH_BODY_BY_MEDIA_TYPE.get(type, "")
 
 
-async def _fan_out(session: AsyncSession, message: Message) -> None:
+async def fan_out_message(session: AsyncSession, message: Message, client_message_id: Optional[str] = None) -> None:
+    """
+    Build the ``new_message`` event for a persisted message, publish it to the
+    chat channel, and push to whichever members are offline. Called by
+    services/fanout/fanout_worker off ``message_fanout_stream`` - no longer
+    inline on the send path.
+    """
     # Ids go out as strings - a JSON number bigger than 2^53 (every one of
     # our Snowflake ids) silently loses precision the instant a browser
     # parses it. See routers/schemas.py's IdStr for the full story; this is
@@ -249,6 +287,10 @@ async def _fan_out(session: AsyncSession, message: Message) -> None:
         "media_name": message.media_name,
         "media_duration_seconds": message.media_duration_seconds,
         "created_at": message.created_at.isoformat(),
+        # Echoed back only on the live event (never persisted on Message) so
+        # the sender's own connection can match this to its optimistic bubble
+        # and swap in the real id / created_at. Null for a system message.
+        "client_message_id": client_message_id,
         # Always SENT at the instant a message is created - the chat-wide
         # receipt cursors can't already cover an id that didn't exist a
         # moment ago, so this needs no DB lookup to be correct.
@@ -263,9 +305,8 @@ async def _fan_out(session: AsyncSession, message: Message) -> None:
     offline_ids = [uid for uid in recipient_ids if uid not in online_ids]
 
     # Concurrent, not sequential: one at a time, this loop's latency scales
-    # with the chat's offline member count - for a large group that's a real
-    # delay on the sender's own ack, since send_message() awaits _fan_out()
-    # before returning.
+    # with the chat's offline member count. It runs in the fan-out worker now,
+    # off the request path entirely.
     await asyncio.gather(
         *(
             notification_service.send_push(

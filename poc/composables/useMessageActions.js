@@ -268,14 +268,30 @@ function useMessageActions(ctx) {
       return;
     }
 
+    const clientMessageId = crypto.randomUUID();
     const payload = {
       type: 'send_message',
       chat_id: ctx.activeChatId.value,
-      client_message_id: crypto.randomUUID(),
+      client_message_id: clientMessageId,
       content,
       message_type: 1,
     };
     if (replyingToMessage.value) payload.reply_to_message_id = replyingToMessage.value.id;
+
+    // The send path is async server-side now (queued, then persisted + fanned
+    // out by a worker). Render the bubble immediately keyed by
+    // client_message_id; useWsRouter reconciles it when the new_message echo
+    // arrives, or marks it failed on message_failed.
+    if (ctx.activeChatId.value === payload.chat_id) {
+      ctx.messages.value.push({
+        id: null, client_message_id: clientMessageId, chat_id: payload.chat_id,
+        sender_id: ctx.currentUser.value.id, type: 1, content,
+        created_at: new Date().toISOString(), is_edited: false, edited_at: null,
+        status: 'SENT', reply_to_message_id: payload.reply_to_message_id || null,
+        pending: true, send_failed: false,
+      });
+    }
+
     ctx.log('WS →', payload);
     ctx.sendRaw(payload);
     ctx.messageInput.value = '';

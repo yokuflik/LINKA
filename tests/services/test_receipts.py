@@ -32,7 +32,7 @@ async def _group(session: AsyncSession, owner_id: int, member_ids) -> int:
 
 
 async def _send(session, sender_id, chat_id, content="hi", type=1):
-    return await message_service.send_message(
+    return await message_service.process_outgoing(
         session, sender_id=sender_id, chat_id=chat_id,
         client_message_id=str(uuid.uuid4()), content=content, type=type,
     )

@@ -10,6 +10,7 @@ from database.crud.crud_participant import get_all_chat_ids_for_user, is_partici
 from database.crud.crud_private_chat_pair import get_pair_chat_id
 from services import auth_service, message_service, presence_service, rate_limit_service, realtime_service
 from services.connection_manager import connection_manager
+from services.fanout import send_queue
 from services.storage.errors import MediaNotFoundError, MediaValidationError
 
 logger = logging.getLogger(__name__)
@@ -160,33 +161,52 @@ async def _handle_send_message(user_id: int, payload: dict, websocket: WebSocket
         await websocket.send_json({"type": "error", "code": "rate_limited", "client_message_id": payload.get("client_message_id")})
         return
 
+    chat_id = int(payload["chat_id"])
+    client_message_id = payload["client_message_id"]
     reply_to_message_id = payload.get("reply_to_message_id")
 
     # Media message payload: {"media": {"key", "name"?, "duration_seconds"?}}
     # plus message_type 2/3/4/5. The key is HEAD-verified against storage in
-    # message_service - a raw client key is never trusted.
+    # the fan-out worker - a raw client key is never trusted.
     media = payload.get("media")
     if media is not None and not isinstance(media, dict):
         raise ValueError("media must be an object")
 
+    # Authorization stays synchronous - it's a cheap participant check and a
+    # non-participant must never get a "queued" ack. Everything else (persist,
+    # fan-out, push) is deferred to the send worker.
     async with session_scope() as session:
-        message = await message_service.send_message(
-            session,
+        if not await is_participant(session, chat_id, user_id):
+            raise message_service.NotAParticipantError(
+                f"User {user_id} is not a participant of chat {chat_id}"
+            )
+
+    try:
+        await send_queue.enqueue_outgoing_message(
+            chat_id=chat_id,
             sender_id=user_id,
-            chat_id=int(payload["chat_id"]),
-            client_message_id=payload["client_message_id"],
+            client_message_id=client_message_id,
             content=payload.get("content"),
             type=payload.get("message_type", 1),
             reply_to_message_id=int(reply_to_message_id) if reply_to_message_id is not None else None,
-            media=media,
+            media_key=media.get("key") if media else None,
+            media_name=media.get("name") if media else None,
+            media_duration_seconds=media.get("duration_seconds") if media else None,
         )
+    except Exception:
+        # A dropped enqueue loses the message while the sender thinks it sent -
+        # never swallow it (unlike the receipt stream).
+        logger.exception("send_message: enqueue failed for user %s chat %s", user_id, chat_id)
+        await websocket.send_json({
+            "type": "error", "code": "internal_error", "client_message_id": client_message_id,
+        })
+        return
 
     await websocket.send_json({
         "type": "ack",
         "for": "send_message",
-        "client_message_id": payload["client_message_id"],
-        "message_id": str(message.id),
-        "created_at": message.created_at.isoformat(),
+        "client_message_id": client_message_id,
+        "status": "queued",
     })
 
 

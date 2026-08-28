@@ -3,13 +3,13 @@ from typing import Any, AsyncIterator
 
 from services.redis_client import redis_client
 
-_CHANNEL_PREFIX = "chat_events:"
 _USER_CHANNEL_PREFIX = "user_events:"
 _PRESENCE_CHANNEL_PREFIX = "presence_events:"
+_INSTANCE_INBOX_PREFIX = "instance_inbox:"
 
 
-def _channel(chat_id: int) -> str:
-    return f"{_CHANNEL_PREFIX}{chat_id}"
+def _instance_inbox_channel(server_id: str) -> str:
+    return f"{_INSTANCE_INBOX_PREFIX}{server_id}"
 
 
 def _user_channel(user_id: int) -> str:
@@ -22,34 +22,51 @@ def _presence_channel(user_id: int) -> str:
 
 async def publish_event(chat_id: int, event: dict[str, Any]) -> None:
     """
-    Fans a single event (new message, edit, delete, read-receipt, typing...)
-    out to every FastAPI instance subscribed to this chat's channel - this is
-    the piece that lets a 500-member group message avoid a 500-iteration loop
-    on the server that received it: that server publishes once, and every
-    instance with a locally-connected member of the chat delivers it to just
-    its own WebSocket clients.
+    Fans a single chat-scoped event (new message, edit, delete, read-receipt,
+    typing...) out to exactly the FastAPI processes that currently serve this
+    chat - i.e. have a locally-connected member of it.
+
+    Routing layer (FANOUT_REWRITE_PLAN.md step 3): instead of publishing to a
+    per-chat channel every process subscribes to and filters, we look up the
+    serving processes in ``routing.instances_for_chat`` and publish once to
+    each one's personal inbox channel. A 500-member group whose members sit on
+    3 processes costs 3 publishes, not one-per-subscribed-process.
+
+    The event carries ``chat_id`` so the receiving process routes it to its
+    own local subscribers of that chat.
     """
-    await redis_client.publish(_channel(chat_id), json.dumps(event))
+    # Imported here, not at module load, to avoid a circular import
+    # (routing -> redis_client is fine, but keep the dependency direction of
+    # services/fanout -> realtime_service one-way).
+    from services.fanout import routing
+
+    event = {**event, "chat_id": str(chat_id)}
+    payload = json.dumps(event)
+    server_ids = await routing.instances_for_chat(chat_id)
+    for server_id in server_ids:
+        await redis_client.publish(_instance_inbox_channel(server_id), payload)
 
 
-async def subscribe_to_chat(chat_id: int) -> AsyncIterator[dict[str, Any]]:
+async def publish_to_instance(server_id: str, event: dict[str, Any]) -> None:
+    await redis_client.publish(_instance_inbox_channel(server_id), json.dumps(event))
+
+
+async def subscribe_to_instance_inbox(server_id: str) -> AsyncIterator[dict[str, Any]]:
     """
-    Per-chat subscription, used when at least one of this chat's members is
-    connected to this particular server instance. Yields decoded events as
-    they arrive; the caller (the WebSocket handler) is responsible for
-    routing each event to its own locally-connected clients and for closing
-    the subscription (via `.aclose()` on the returned generator, e.g. through
-    `async with contextlib.aclosing(...)`) when the last local member leaves.
+    One channel per process. Every chat-scoped event destined for any chat
+    this process serves arrives here; the consumer (connection_manager)
+    dispatches by ``event["chat_id"]`` to local subscribers. Same generator
+    contract as the old ``subscribe_to_chat``.
     """
     pubsub = redis_client.pubsub()
-    await pubsub.subscribe(_channel(chat_id))
+    await pubsub.subscribe(_instance_inbox_channel(server_id))
     try:
         async for message in pubsub.listen():
             if message["type"] != "message":
                 continue
             yield json.loads(message["data"])
     finally:
-        await pubsub.unsubscribe(_channel(chat_id))
+        await pubsub.unsubscribe(_instance_inbox_channel(server_id))
         await pubsub.aclose()
 
 

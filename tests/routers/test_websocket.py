@@ -5,13 +5,31 @@ import pytest
 from fastapi import WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_message import get_message_by_id
+from database.connection import session_scope
+from database.crud.crud_message import get_chat_messages
 from database.crud.crud_user import create_user
 from routers.websocket import _dispatch, websocket_endpoint
 from services import auth_service, chat_service, presence_service
 from services.connection_manager import connection_manager
+from services.fanout import worker as send_worker
 
 pytestmark = pytest.mark.asyncio
+
+
+async def _send_and_drain(user_id, chat_id, ws, *, content="hi"):
+    """
+    Dispatch a send_message frame (async / queued now) then drain the send
+    worker so the message is actually persisted. Returns its id as a string.
+    """
+    await _dispatch(
+        user_id=user_id, connection_id="c1",
+        payload={"type": "send_message", "chat_id": chat_id, "client_message_id": str(uuid.uuid4()), "content": content},
+        websocket=ws,
+    )
+    async with session_scope() as session:
+        await send_worker.drain_once(session, claim_stale=False)
+        messages = await get_chat_messages(session, chat_id=chat_id, limit=50)
+    return str(messages[0].id)
 
 _DISCONNECT = object()
 
@@ -91,7 +109,12 @@ async def test_dispatch_send_message_success(db_session: AsyncSession, redis_db)
 
     assert ws.sent[0]["type"] == "ack"
     assert ws.sent[0]["for"] == "send_message"
-    assert "message_id" in ws.sent[0]
+    assert ws.sent[0]["status"] == "queued"
+
+    # The message is persisted by the send worker, not on the request path.
+    async with session_scope() as session:
+        written = await send_worker.drain_once(session, claim_stale=False)
+    assert written == 1
 
 
 async def test_dispatch_send_message_missing_field_returns_bad_request(db_session: AsyncSession, redis_db):
@@ -149,12 +172,7 @@ async def test_dispatch_send_message_is_rate_limited(db_session: AsyncSession, r
 async def test_dispatch_edit_message_permission_denied(db_session: AsyncSession, redis_db):
     chat_id = await _make_group(db_session, 1, [2])
     ws = FakeWebSocket()
-    await _dispatch(
-        user_id=1, connection_id="c1",
-        payload={"type": "send_message", "chat_id": chat_id, "client_message_id": str(uuid.uuid4()), "content": "hi"},
-        websocket=ws,
-    )
-    message_id = ws.sent[0]["message_id"]
+    message_id = await _send_and_drain(1, chat_id, ws)
     ws.sent.clear()
 
     await _dispatch(
@@ -170,12 +188,7 @@ async def test_dispatch_edit_message_permission_denied(db_session: AsyncSession,
 async def test_dispatch_delete_and_mark_read(db_session: AsyncSession, redis_db):
     chat_id = await _make_group(db_session, 1, [2])
     ws = FakeWebSocket()
-    await _dispatch(
-        user_id=1, connection_id="c1",
-        payload={"type": "send_message", "chat_id": chat_id, "client_message_id": str(uuid.uuid4()), "content": "hi"},
-        websocket=ws,
-    )
-    message_id = ws.sent[0]["message_id"]
+    message_id = await _send_and_drain(1, chat_id, ws)
     ws.sent.clear()
 
     await _dispatch(user_id=2, connection_id="c2", payload={"type": "mark_read", "chat_id": chat_id, "message_id": message_id}, websocket=ws)
@@ -186,26 +199,29 @@ async def test_dispatch_delete_and_mark_read(db_session: AsyncSession, redis_db)
 
 
 async def test_dispatch_internal_error_is_reported_not_raised(db_session: AsyncSession, redis_db, monkeypatch):
-    from services import message_service
+    # A failed enqueue must surface a synchronous error to the sender - the
+    # message is otherwise silently lost while the client thinks it sent.
+    chat_id = await _make_group(db_session, 1, [2])
 
     async def boom(*args, **kwargs):
-        raise RuntimeError("something broke")
+        raise RuntimeError("stream unreachable")
 
-    monkeypatch.setattr(message_service, "send_message", boom)
+    monkeypatch.setattr("routers.websocket.send_queue.enqueue_outgoing_message", boom)
     ws = FakeWebSocket()
 
     await _dispatch(
         user_id=1, connection_id="c1",
-        payload={"type": "send_message", "chat_id": 1, "client_message_id": "x", "content": "hi"},
+        payload={"type": "send_message", "chat_id": chat_id, "client_message_id": "x", "content": "hi"},
         websocket=ws,
     )
 
     assert ws.sent[0]["type"] == "error"
     assert ws.sent[0]["code"] == "internal_error"
+    assert ws.sent[0]["client_message_id"] == "x"
     # The real exception text must never reach the client - it's exactly the
     # kind of thing (a DB error, an internal stack detail) that shouldn't be
     # exposed; it still goes to the server log via logger.exception().
-    assert "something broke" not in ws.sent[0]["message"]
+    assert "stream unreachable" not in str(ws.sent[0])
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +256,7 @@ async def test_endpoint_full_session_lifecycle(session_factory, redis_db):
 
     ack = next(m for m in ws.sent if m.get("for") == "send_message")
     assert ack["client_message_id"] == client_message_id
+    assert ack["status"] == "queued"
 
     await ws.push_disconnect()
     await asyncio.wait_for(task, timeout=2.0)
@@ -247,13 +264,13 @@ async def test_endpoint_full_session_lifecycle(session_factory, redis_db):
     assert 1 not in connection_manager.get_local_user_ids()
     assert await presence_service.is_online(1) is False
 
+    # No send worker runs in the test process - drain the queue by hand, then
+    # confirm the message landed.
     async with session_factory() as verify_session:
-        # The ack's message_id is a string on the wire (see MessageOut.IdStr /
-        # the header comment in poc/index.html) - back to an int for a
-        # direct CRUD-layer call, exactly what a real client would do.
-        persisted = await get_message_by_id(verify_session, chat_id=chat_id, message_id=int(ack["message_id"]))
-    assert persisted is not None
-    assert persisted.content == "hello"
+        await send_worker.drain_once(verify_session, claim_stale=False)
+    async with session_factory() as verify_session:
+        messages = await get_chat_messages(verify_session, chat_id=chat_id, limit=50)
+    assert any(m.content == "hello" for m in messages)
 
 
 async def test_endpoint_subscribes_to_every_chat_the_user_is_in(session_factory, redis_db):

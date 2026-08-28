@@ -13,7 +13,10 @@ from routers.chats import router as chats_router
 from routers.messages import router as messages_router
 from routers.users import router as users_router
 from routers.websocket import router as websocket_router
+from config import ROUTING_HEARTBEAT_INTERVAL_SECONDS, SERVER_ID
 from services import auth_service, chat_service, message_service
+from services.fanout import fanout_worker, routing
+from services.fanout import worker as send_worker
 from services.receipts import worker as receipt_worker
 from services.redis_client import close_redis
 from services.storage import media_service
@@ -40,13 +43,44 @@ async def lifespan(app: FastAPI):
     # the shared consumer group spreads the load across replicas.
     receipt_task = asyncio.create_task(receipt_worker.run_forever())
 
+    # Background consumer draining message_send_stream: persists each queued
+    # outgoing message and fans it out (see services/fanout). Same one-task-
+    # per-process / shared-consumer-group model as the receipt worker.
+    send_task = asyncio.create_task(send_worker.run_forever())
+
+    # Background consumer draining message_fanout_stream: builds and publishes
+    # the new_message event and pushes to offline members. Second hop after
+    # the send worker (see services/fanout/fanout_worker).
+    fanout_task = asyncio.create_task(fanout_worker.run_forever())
+
+    # Routing heartbeat (FANOUT_REWRITE_PLAN.md step 3): re-asserts this
+    # process's chat_instances registrations and refreshes their TTL, so a
+    # crashed process's entries expire instead of lingering.
+    async def _routing_heartbeat() -> None:
+        while True:
+            try:
+                await routing.heartbeat(SERVER_ID)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logging.getLogger(__name__).exception("routing heartbeat failed")
+            await asyncio.sleep(ROUTING_HEARTBEAT_INTERVAL_SECONDS)
+
+    heartbeat_task = asyncio.create_task(_routing_heartbeat())
+
     yield
 
-    receipt_task.cancel()
+    for task in (receipt_task, send_task, fanout_task, heartbeat_task):
+        task.cancel()
+    for task in (receipt_task, send_task, fanout_task, heartbeat_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     try:
-        await receipt_task
-    except asyncio.CancelledError:
-        pass
+        await routing.unregister_instance(SERVER_ID)
+    except Exception:
+        logging.getLogger(__name__).warning("routing unregister failed at shutdown")
     await dispose_engine()
     await close_redis()
 

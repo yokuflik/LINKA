@@ -4,7 +4,9 @@ from typing import Awaitable, Callable
 
 from fastapi import WebSocket
 
+from config import SERVER_ID
 from services import realtime_service
+from services.fanout import routing
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +18,10 @@ class ConnectionManager:
     realtime_service). Three responsibilities live here together because
     they're tightly coupled:
       - which local sockets belong to which user (multi-device)
-      - which chat-event channels this instance actually needs a Redis
-        subscription for (ref-counted per chat_id by *connection*)
+      - which chats this instance currently serves (ref-counted per chat_id
+        by *connection*); this drives the Redis routing table so the fan-out
+        worker publishes a chat's events only to the processes that have a
+        local member - see services/fanout/routing.py
       - each user's personal channel, used to react to a chat being created
         *after* their connection was already established - see connect()
         and _handle_user_channel_event() for why this exists at all.
@@ -28,12 +32,17 @@ class ConnectionManager:
         self._user_by_connection: dict[str, int] = {}
         self._connections_by_user: dict[int, set[str]] = {}
 
-        # chat_id -> connection_ids currently interested in it
+        # chat_id -> connection_ids currently interested in it. Purely a local
+        # routing table now: dispatch of an inbox event to the right sockets.
         self._chat_subscribers: dict[int, set[str]] = {}
         # connection_id -> chat_ids it's interested in (needed to clean up on disconnect)
         self._chats_by_connection: dict[str, set[int]] = {}
-        # chat_id -> the background task consuming realtime_service.subscribe_to_chat(chat_id)
-        self._chat_listener_tasks: dict[int, asyncio.Task] = {}
+
+        # One Redis subscription per process (not per chat): every chat-scoped
+        # event for any chat this process serves arrives on this instance's
+        # inbox channel. Started lazily on the first connect, stopped when the
+        # last connection goes away.
+        self._instance_inbox_task: asyncio.Task | None = None
 
         # Same three-dict shape as above, but for each user's personal
         # channel instead of a chat's - keyed separately from the chat_id
@@ -58,6 +67,8 @@ class ConnectionManager:
         self._user_by_connection[connection_id] = user_id
         self._connections_by_user.setdefault(user_id, set()).add(connection_id)
         self._chats_by_connection[connection_id] = set(chat_ids)
+
+        self._ensure_instance_inbox_listener()
 
         for chat_id in chat_ids:
             await self._subscribe_connection_to_chat(connection_id, chat_id)
@@ -85,6 +96,9 @@ class ConnectionManager:
         for target_user_id in self._presence_watches_by_connection.pop(connection_id, set()):
             await self._unsubscribe_connection_from_presence(connection_id, target_user_id)
 
+        if not self._sockets_by_connection:
+            self._stop_instance_inbox_listener()
+
     def get_local_user_ids(self) -> set[int]:
         """Every user with at least one connection to *this* process right now."""
         return set(self._connections_by_user.keys())
@@ -99,7 +113,12 @@ class ConnectionManager:
         subscribers.add(connection_id)
 
         if is_first_subscriber:
-            self._chat_listener_tasks[chat_id] = asyncio.create_task(self._listen_to_chat(chat_id))
+            # This process now serves this chat - register it so the fan-out
+            # worker routes the chat's events to us.
+            try:
+                await routing.add_chat_for_instance(SERVER_ID, chat_id)
+            except Exception:
+                logger.exception("routing: add_chat_for_instance(%s) failed", chat_id)
 
     async def _unsubscribe_connection_from_chat(self, connection_id: str, chat_id: int) -> None:
         subscribers = self._chat_subscribers.get(chat_id)
@@ -109,17 +128,38 @@ class ConnectionManager:
         subscribers.discard(connection_id)
         if not subscribers:
             del self._chat_subscribers[chat_id]
-            task = self._chat_listener_tasks.pop(chat_id, None)
-            if task is not None:
-                task.cancel()
+            try:
+                await routing.remove_chat_for_instance(SERVER_ID, chat_id)
+            except Exception:
+                logger.exception("routing: remove_chat_for_instance(%s) failed", chat_id)
 
-    async def _listen_to_chat(self, chat_id: int) -> None:
+    # -----------------------------------------------------------------
+    # Instance inbox - one Redis subscription per process
+    # -----------------------------------------------------------------
+
+    def _ensure_instance_inbox_listener(self) -> None:
+        if self._instance_inbox_task is None or self._instance_inbox_task.done():
+            self._instance_inbox_task = asyncio.create_task(self._listen_to_instance_inbox())
+
+    def _stop_instance_inbox_listener(self) -> None:
+        task = self._instance_inbox_task
+        self._instance_inbox_task = None
+        if task is not None:
+            task.cancel()
+
+    async def _listen_to_instance_inbox(self) -> None:
         await self._run_resilient_listener(
-            label=f"chat {chat_id}",
-            subscribe=lambda: realtime_service.subscribe_to_chat(chat_id),
-            on_event=lambda event: self._broadcast_to_chat(chat_id, event),
-            still_wanted=lambda: chat_id in self._chat_subscribers,
+            label=f"instance inbox {SERVER_ID}",
+            subscribe=lambda: realtime_service.subscribe_to_instance_inbox(SERVER_ID),
+            on_event=lambda event: self._dispatch_inbox_event(event),
+            still_wanted=lambda: self._instance_inbox_task is not None,
         )
+
+    async def _dispatch_inbox_event(self, event: dict) -> None:
+        chat_id_raw = event.get("chat_id")
+        if chat_id_raw is None:
+            return
+        await self._broadcast_to_chat(int(chat_id_raw), event)
 
     async def _broadcast_to_chat(self, chat_id: int, event: dict) -> None:
         # Snapshotted, not iterated live: a concurrent disconnect from a

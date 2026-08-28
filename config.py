@@ -186,6 +186,61 @@ RECEIPT_WORKER_BLOCK_MS = int(os.environ.get("RECEIPT_WORKER_BLOCK_MS", "2000"))
 RECEIPT_STREAM_CLAIM_IDLE_MS = int(os.environ.get("RECEIPT_STREAM_CLAIM_IDLE_MS", "60000"))
 
 
+# --- Outgoing message send queue (services/fanout) ---
+# The WebSocket send path no longer writes the message or fans it out inline:
+# it XADDs a tiny payload onto this Redis Stream and ACKs {"status":"queued"}
+# immediately. A background worker (services/fanout/worker.py) drains it,
+# persists each message and runs the fan-out. Two things this buys: the
+# request path stops blocking on an N-participant fan-out, and a large group
+# send no longer holds a pooled DB connection for the sender's whole ack.
+# Unlike the receipt stream, an XADD failure here is NOT swallowed - a lost
+# entry means a message the sender thinks was sent; the caller returns a sync
+# error instead.
+MESSAGE_SEND_STREAM_KEY = os.environ.get("MESSAGE_SEND_STREAM_KEY", "message_send_stream")
+MESSAGE_SEND_STREAM_GROUP = os.environ.get("MESSAGE_SEND_STREAM_GROUP", "message_send_writers")
+MESSAGE_SEND_STREAM_MAXLEN = int(os.environ.get("MESSAGE_SEND_STREAM_MAXLEN", "1000000"))
+SEND_WORKER_BATCH = int(os.environ.get("SEND_WORKER_BATCH", "200"))
+SEND_WORKER_BLOCK_MS = int(os.environ.get("SEND_WORKER_BLOCK_MS", "2000"))
+SEND_STREAM_CLAIM_IDLE_MS = int(os.environ.get("SEND_STREAM_CLAIM_IDLE_MS", "60000"))
+# Shard the send stream by chat_id (FANOUT_REWRITE_PLAN.md step 4) so a single
+# write worker stops being the throughput ceiling. shard = chat_id % N keeps
+# every message for one chat on one shard / one consumer, preserving order.
+# The unsharded key stays the shard-0 key so an in-flight upgrade doesn't
+# strand entries. 1 = effectively unsharded.
+SEND_STREAM_SHARDS = int(os.environ.get("SEND_STREAM_SHARDS", "4"))
+
+
+# --- Message fan-out queue (services/fanout, step 2) ---
+# The send worker no longer fans a persisted message out inline: it XADDs a
+# tiny reference (message id + chat + sender + client_message_id) onto this
+# second stream and a separate fan-out worker (services/fanout/fanout_worker.py)
+# builds the new_message event, publishes it, and pushes to offline members.
+# Two streams on purpose: the DB write and the Redis/network fan-out fail and
+# scale differently. Re-running fan-out for a message just re-publishes -
+# clients dedupe by message_id - so a redelivered entry is harmless.
+MESSAGE_FANOUT_STREAM_KEY = os.environ.get("MESSAGE_FANOUT_STREAM_KEY", "message_fanout_stream")
+MESSAGE_FANOUT_STREAM_GROUP = os.environ.get("MESSAGE_FANOUT_STREAM_GROUP", "message_fanout_workers")
+MESSAGE_FANOUT_STREAM_MAXLEN = int(os.environ.get("MESSAGE_FANOUT_STREAM_MAXLEN", "1000000"))
+FANOUT_WORKER_BATCH = int(os.environ.get("FANOUT_WORKER_BATCH", "200"))
+FANOUT_WORKER_BLOCK_MS = int(os.environ.get("FANOUT_WORKER_BLOCK_MS", "2000"))
+FANOUT_STREAM_CLAIM_IDLE_MS = int(os.environ.get("FANOUT_STREAM_CLAIM_IDLE_MS", "60000"))
+# Sharded like the send stream (FANOUT_REWRITE_PLAN.md step 4), same chat_id % N
+# rule. Fan-out ordering per chat matters less than the write stream's but is
+# cheap to keep. 1 = effectively unsharded.
+FANOUT_STREAM_SHARDS = int(os.environ.get("FANOUT_STREAM_SHARDS", "4"))
+
+
+# --- Routing layer (FANOUT_REWRITE_PLAN.md step 3) ---
+# Instead of every process subscribing to every chat one of its clients is in,
+# each process registers itself in Redis as serving a chat (chat_instances:{id}
+# set), and the fan-out worker publishes a chat event only to the inbox
+# channels (instance_inbox:{server_id}) of the processes that actually have a
+# local member. chat_instances entries carry a TTL refreshed by a heartbeat so
+# a crashed process's registrations expire instead of lingering forever.
+CHAT_INSTANCE_TTL_SECONDS = int(os.environ.get("CHAT_INSTANCE_TTL_SECONDS", "90"))
+ROUTING_HEARTBEAT_INTERVAL_SECONDS = int(os.environ.get("ROUTING_HEARTBEAT_INTERVAL_SECONDS", "30"))
+
+
 # --- Message media <-> upload-kind mapping ---
 # Message.type integer -> the storage upload kind it corresponds to.
 # 2=image, 3=video, 4=audio, 5=file (1=text, 6=system carry no media).

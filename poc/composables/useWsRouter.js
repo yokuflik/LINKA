@@ -49,6 +49,24 @@ function useWsRouter(ctx) {
     if (msg.type === 'ack') { log('ack:', msg.for, msg); return; }
     if (msg.type === 'heartbeat_ack') { return; }
 
+    // The send worker couldn't persist a queued message (bad media, no longer
+    // a participant, too long). Flag the optimistic bubble so the user sees it
+    // failed rather than hanging on 🕓 forever.
+    if (msg.event === 'message_failed') {
+      const m = ctx.messages.value.find((x) => x.client_message_id === msg.client_message_id);
+      if (m) { m.pending = false; m.send_failed = true; }
+      logError('message failed to send:', msg.reason);
+      return;
+    }
+
+    // A duplicate stream entry for a client_message_id already written - just
+    // reconcile the optimistic bubble, no new bubble to render.
+    if (msg.event === 'message_already_sent') {
+      const m = ctx.messages.value.find((x) => x.client_message_id === msg.client_message_id);
+      if (m) { m.id = msg.message_id; m.pending = false; m.send_failed = false; }
+      return;
+    }
+
     if (msg.type === 'presence_status' || msg.type === 'presence_update') {
       // "Last seen" is intentionally not tracked here - only the current
       // online/offline status (see presenceLabelFor).
@@ -60,7 +78,27 @@ function useWsRouter(ctx) {
       // A message from someone means they're no longer typing - drop their
       // typing indicator now instead of leaving it to expire 5s later.
       if (msg.sender_id != null) clearUserTyping(msg.chat_id, msg.sender_id);
-      if (msg.chat_id === ctx.activeChatId.value) {
+      // Reconcile an optimistic bubble (our own send) instead of adding a
+      // duplicate. Match by client_message_id, which the server echoes on the
+      // event for exactly this purpose (never persisted on the message).
+      const optimistic = msg.client_message_id
+        ? ctx.messages.value.find((x) => x.client_message_id === msg.client_message_id)
+        : null;
+      if (optimistic) {
+        optimistic.id = msg.message_id;
+        optimistic.created_at = msg.created_at;
+        optimistic.status = msg.status;
+        optimistic.type = msg.type;
+        optimistic.content = msg.content;
+        optimistic.reply_to_message_id = msg.reply_to_message_id;
+        optimistic.media_url = msg.media_url;
+        optimistic.media_mime = msg.media_mime;
+        optimistic.media_size = msg.media_size;
+        optimistic.media_name = msg.media_name;
+        optimistic.media_duration_seconds = msg.media_duration_seconds;
+        optimistic.pending = false;
+        optimistic.send_failed = false;
+      } else if (msg.chat_id === ctx.activeChatId.value) {
         // Decide before pushing: was the user already at the bottom?
         const wasPinned = ctx.isPinnedToBottom();
         ctx.messages.value.push({

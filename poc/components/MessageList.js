@@ -53,7 +53,7 @@ const MessageList = {
   template: `
     <div ref="messagesEl" @scroll="onScroll" class="flex-1 overflow-y-auto p-4 space-y-2">
       <p v-if="messagesError" class="text-sm text-red-600">{{ messagesError }}</p>
-      <template v-for="m in messages" :key="m.id">
+      <template v-for="m in messages" :key="m.id || m.client_message_id">
         <!-- System messages (sender_id == null, e.g. "X added Y to the group") -
              centered, small, gray pill, like WhatsApp's own group-event lines.
              shouldShowSystemMessage filters out "role_changed" notices for
@@ -154,7 +154,9 @@ const MessageList = {
         <div class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
              :class="m.sender_id === currentUser.id ? 'justify-end' : ''">
           <span>{{ new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
-          <span v-if="m.sender_id === currentUser.id" class="text-sm font-bold leading-none" :class="statusTickClass(m.status)">{{ statusTickSymbol(m.status) }}</span>
+          <span v-if="m.send_failed" class="text-sm font-bold leading-none text-red-500" title="Send failed">⚠️</span>
+          <span v-else-if="m.pending" class="text-sm leading-none text-slate-400" title="Sending…">🕓</span>
+          <span v-else-if="m.sender_id === currentUser.id" class="text-sm font-bold leading-none" :class="statusTickClass(m.status)">{{ statusTickSymbol(m.status) }}</span>
         </div>
         </div>
       </div>

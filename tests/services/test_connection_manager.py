@@ -4,6 +4,7 @@ import pytest
 
 from services import realtime_service
 from services.connection_manager import ConnectionManager
+from services.fanout import routing
 
 pytestmark = pytest.mark.asyncio
 
@@ -65,7 +66,7 @@ async def test_broadcast_delivers_a_published_event_to_a_subscribed_connection(m
     await realtime_service.publish_event(100, {"event": "new_message", "message_id": 1})
     await asyncio.sleep(0.2)
 
-    assert ws.sent == [{"event": "new_message", "message_id": 1}]
+    assert ws.sent == [{"event": "new_message", "message_id": 1, "chat_id": "100"}]
 
     await manager.disconnect("c1")
 
@@ -80,19 +81,21 @@ async def test_broadcast_does_not_leak_to_a_connection_subscribed_to_a_different
     await realtime_service.publish_event(100, {"event": "new_message", "message_id": 1})
     await asyncio.sleep(0.2)
 
-    assert ws_a.sent == [{"event": "new_message", "message_id": 1}]
+    assert ws_a.sent == [{"event": "new_message", "message_id": 1, "chat_id": "100"}]
     assert ws_b.sent == []
 
     await manager.disconnect("c1")
     await manager.disconnect("c2")
 
 
-async def test_two_connections_in_the_same_chat_share_one_listener_task(manager, redis_db):
+async def test_two_connections_in_the_same_chat_share_one_instance_registration(manager, redis_db):
     await manager.connect(user_id=1, connection_id="c1", websocket=FakeWebSocket(), chat_ids=[100])
     await manager.connect(user_id=2, connection_id="c2", websocket=FakeWebSocket(), chat_ids=[100])
 
-    assert len(manager._chat_listener_tasks) == 1
+    # One process-wide inbox listener, not one task per chat.
+    assert manager._instance_inbox_task is not None
     assert manager._chat_subscribers[100] == {"c1", "c2"}
+    assert await routing.instances_for_chat(100)  # this process is registered
 
     await manager.disconnect("c1")
     await manager.disconnect("c2")
@@ -103,11 +106,11 @@ async def test_last_disconnect_from_a_chat_removes_its_subscription_bookkeeping(
     await manager.connect(user_id=2, connection_id="c2", websocket=FakeWebSocket(), chat_ids=[100])
 
     await manager.disconnect("c1")
-    assert 100 in manager._chat_listener_tasks, "one connection remains, the subscription must stay alive"
+    assert 100 in manager._chat_subscribers, "one connection remains, the chat is still served"
 
     await manager.disconnect("c2")
-    assert 100 not in manager._chat_listener_tasks
     assert 100 not in manager._chat_subscribers
+    assert await routing.instances_for_chat(100) == set()
 
 
 async def test_resubscribing_to_a_chat_after_everyone_left_still_works(manager, redis_db):
@@ -127,7 +130,7 @@ async def test_resubscribing_to_a_chat_after_everyone_left_still_works(manager, 
     await realtime_service.publish_event(100, {"event": "new_message", "message_id": 2})
     await asyncio.sleep(0.2)
 
-    assert ws2.sent == [{"event": "new_message", "message_id": 2}]
+    assert ws2.sent == [{"event": "new_message", "message_id": 2, "chat_id": "100"}]
     await manager.disconnect("c2")
 
 
@@ -141,7 +144,7 @@ async def test_a_dead_connection_is_dropped_without_blocking_delivery_to_others(
     await realtime_service.publish_event(100, {"event": "new_message", "message_id": 1})
     await asyncio.sleep(0.2)
 
-    assert healthy_ws.sent == [{"event": "new_message", "message_id": 1}]
+    assert healthy_ws.sent == [{"event": "new_message", "message_id": 1, "chat_id": "100"}]
     # The failed send must have triggered a full disconnect for that connection
     assert 1 not in manager.get_local_user_ids()
     assert 2 in manager.get_local_user_ids()
@@ -159,13 +162,13 @@ async def test_many_connections_joining_and_leaving_the_same_chat_concurrently(m
         for i, (cid, ws) in enumerate(sockets.items())
     ])
     assert manager._chat_subscribers[100] == set(sockets.keys())
-    assert len(manager._chat_listener_tasks) == 1
+    assert manager._instance_inbox_task is not None
 
     await asyncio.gather(*[manager.disconnect(cid) for cid in sockets])
 
     assert manager.get_local_user_ids() == set()
     assert 100 not in manager._chat_subscribers
-    assert 100 not in manager._chat_listener_tasks
+    assert manager._instance_inbox_task is None
 
 
 async def test_concurrent_disconnect_during_an_in_flight_broadcast_does_not_crash(manager, redis_db):
@@ -192,7 +195,7 @@ async def test_concurrent_disconnect_during_an_in_flight_broadcast_does_not_cras
     )
     await asyncio.sleep(0.3)  # let the slow send (and the broadcast task) finish
 
-    assert slow_ws.sent == [{"event": "new_message", "message_id": 1}]
+    assert slow_ws.sent == [{"event": "new_message", "message_id": 1, "chat_id": "100"}]
     await manager.disconnect("slow")
 
 
@@ -208,11 +211,11 @@ async def test_one_slow_connection_does_not_delay_delivery_to_others(manager, re
     # The fast connection must receive its copy well before the slow one
     # finishes - sends are dispatched concurrently, not queued behind it.
     await asyncio.sleep(0.05)
-    assert fast_ws.sent == [{"event": "new_message", "message_id": 1}]
+    assert fast_ws.sent == [{"event": "new_message", "message_id": 1, "chat_id": "100"}]
     assert slow_ws.sent == [], "the slow send should still be in flight at this point"
 
     await asyncio.sleep(0.4)
-    assert slow_ws.sent == [{"event": "new_message", "message_id": 1}]
+    assert slow_ws.sent == [{"event": "new_message", "message_id": 1, "chat_id": "100"}]
 
     await manager.disconnect("slow")
     await manager.disconnect("fast")
@@ -225,15 +228,15 @@ async def test_listener_recovers_from_a_transient_failure_instead_of_dying(manag
     # the bookkeeping still showed subscribers, so no new listener task was
     # ever spawned to replace the dead one, even for a brand new connection.
     call_count = {"n": 0}
-    original_broadcast = manager._broadcast_to_chat
+    original_dispatch = manager._dispatch_inbox_event
 
-    async def flaky_broadcast(chat_id, event):
+    async def flaky_dispatch(event):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise ConnectionError("simulated transient Redis blip")
-        await original_broadcast(chat_id, event)
+        await original_dispatch(event)
 
-    monkeypatch.setattr(manager, "_broadcast_to_chat", flaky_broadcast)
+    monkeypatch.setattr(manager, "_dispatch_inbox_event", flaky_dispatch)
 
     ws = FakeWebSocket()
     await manager.connect(user_id=1, connection_id="c1", websocket=ws, chat_ids=[100])
@@ -243,13 +246,13 @@ async def test_listener_recovers_from_a_transient_failure_instead_of_dying(manag
     await realtime_service.publish_event(100, {"event": "new_message", "message_id": 1})
     await asyncio.sleep(0.8)  # covers the listener's 0.5s backoff plus the resubscribe round trip
 
-    assert 100 in manager._chat_listener_tasks, "the listener must still be registered, not dead"
+    assert manager._instance_inbox_task is not None, "the listener must still be registered, not dead"
 
     # A second event, after recovery, must still get delivered
     await realtime_service.publish_event(100, {"event": "new_message", "message_id": 2})
     await asyncio.sleep(0.2)
 
-    assert ws.sent == [{"event": "new_message", "message_id": 2}]
+    assert ws.sent == [{"event": "new_message", "message_id": 2, "chat_id": "100"}]
     await manager.disconnect("c1")
 
 
@@ -278,7 +281,7 @@ async def test_added_to_chat_event_dynamically_subscribes_the_connection(manager
     await realtime_service.publish_event(200, {"event": "new_message", "message_id": 1})
     await asyncio.sleep(0.2)
     assert {"event": "added_to_chat", "chat_id": "200"} in ws.sent
-    assert {"event": "new_message", "message_id": 1} in ws.sent
+    assert {"event": "new_message", "message_id": 1, "chat_id": "200"} in ws.sent
 
     await manager.disconnect("c1")
 

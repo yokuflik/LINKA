@@ -316,7 +316,7 @@ async def test_message_history_returns_messages_sent_over_the_service_layer(clie
     # ids on the wire are strings (see routers/schemas.py's IdStr) - back to
     # ints for this direct service-layer call, same as a real dispatch layer
     # (WebSocket or REST) would do when parsing a request.
-    await message_service.send_message(
+    await message_service.process_outgoing(
         db_session, sender_id=int(user["id"]), chat_id=int(chat_id), client_message_id=str(uuid.uuid4()), content="hello from the service layer"
     )
 
@@ -373,7 +373,7 @@ async def test_chat_and_message_ids_are_strings_on_the_wire(client, db_session: 
     assert isinstance(chat["id"], str)
     assert chat["last_message_id"] is None  # nullable id field - must stay None, not "None" or 0
 
-    await message_service.send_message(
+    await message_service.process_outgoing(
         db_session, sender_id=int(user["id"]), chat_id=int(chat["id"]), client_message_id=str(uuid.uuid4()), content="hi"
     )
 

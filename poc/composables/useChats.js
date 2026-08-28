@@ -17,6 +17,11 @@ function useChats(ctx) {
   // ---------------------------------------------------------------
   const chats = ref([]);
   const activeChatId = ref(null);
+  // A private chat the user has "opened" from the sidebar but not yet
+  // committed: nothing is created server-side until the first message is
+  // sent. Shape: { otherUserId, phone, user } or null. Leaving the pane
+  // (selecting any real chat, or closing it) discards it silently.
+  const draftChat = ref(null);
   const messages = ref([]);
   const messageInput = ref('');
   const chatsError = ref('');
@@ -155,11 +160,35 @@ function useChats(ctx) {
 
   const activeChatItem = computed(() => chats.value.find((c) => c.chat.id === activeChatId.value) || null);
 
-  const activeChatLabel = computed(() => activeChatItem.value ? chatDisplayName(activeChatItem.value.chat) : '');
-  const activeChatIsGroup = computed(() => !!(activeChatItem.value && activeChatItem.value.chat.is_group));
-  const activeChatAvatarUrl = computed(() => activeChatItem.value ? ctx.chatAvatarUrl(activeChatItem.value.chat) : null);
-  const activeChatAvatarName = computed(() => activeChatItem.value ? ctx.chatAvatarName(activeChatItem.value.chat) : '');
-  const activeChatAvatarColorKey = computed(() => activeChatItem.value ? ctx.chatAvatarColorKey(activeChatItem.value.chat) : '');
+  // The pane is showing something when there's a real active chat OR an
+  // uncommitted draft private chat.
+  const activePaneVisible = computed(() => !!activeChatId.value || !!draftChat.value);
+
+  function draftUser() {
+    const u = draftChat.value && ctx.userById.value[draftChat.value.otherUserId];
+    return u || (draftChat.value ? draftChat.value.user : null);
+  }
+
+  const activeChatLabel = computed(() => {
+    if (draftChat.value) {
+      const u = draftUser();
+      return `Chat with ${ctx.contactDisplayName(u ? u.phone_number : draftChat.value.phone)}`;
+    }
+    return activeChatItem.value ? chatDisplayName(activeChatItem.value.chat) : '';
+  });
+  const activeChatIsGroup = computed(() => !draftChat.value && !!(activeChatItem.value && activeChatItem.value.chat.is_group));
+  const activeChatAvatarUrl = computed(() => {
+    if (draftChat.value) { const u = draftUser(); return u ? ctx.userAvatarUrl(u) : null; }
+    return activeChatItem.value ? ctx.chatAvatarUrl(activeChatItem.value.chat) : null;
+  });
+  const activeChatAvatarName = computed(() => {
+    if (draftChat.value) { const u = draftUser(); return ctx.contactDisplayName(u ? u.phone_number : draftChat.value.phone); }
+    return activeChatItem.value ? ctx.chatAvatarName(activeChatItem.value.chat) : '';
+  });
+  const activeChatAvatarColorKey = computed(() => {
+    if (draftChat.value) return String(draftChat.value.otherUserId);
+    return activeChatItem.value ? ctx.chatAvatarColorKey(activeChatItem.value.chat) : '';
+  });
 
   // How many member names fit in the header before the rest collapse to "...".
   const MAX_VISIBLE_MEMBERS = 8;
@@ -293,7 +322,34 @@ function useChats(ctx) {
     }
   }
 
+  // Open an uncommitted private chat. No server call - just enough state for
+  // the pane, header and presence to render. Promoted to a real chat by the
+  // first send (see useMessageSend), discarded by opening any real chat.
+  function openDraftChat(otherUser) {
+    ctx.unsubscribeFromPresence();
+    activeChatId.value = null;
+    messages.value = [];
+    messagesError.value = '';
+    hasMoreMessages.value = false;
+    ctx.replyingToMessage.value = null;
+    if (ctx.editingMessage.value) ctx.cancelEdit();
+    ctx.closeMessageContextMenu();
+    ctx.userById.value[otherUser.id] = otherUser;
+    draftChat.value = { otherUserId: otherUser.id, phone: otherUser.phone_number, user: otherUser };
+    // Presence by user id: the subscribe_presence gate is the target's
+    // privacy.online setting, not a shared chat - so "everyone" resolves
+    // even with no chat row yet ("contacts" won't, by design).
+    ctx.subscribeToPresence(otherUser.id);
+  }
+
+  function discardDraftChat() {
+    if (!draftChat.value) return;
+    ctx.unsubscribeFromPresence();
+    draftChat.value = null;
+  }
+
   async function selectChat(chatId) {
+    discardDraftChat();
     activeChatId.value = chatId;
     messages.value = [];
     messagesError.value = '';
@@ -351,7 +407,8 @@ function useChats(ctx) {
   document.addEventListener('visibilitychange', refreshActiveChatUsers);
 
   return {
-    chats, activeChatId, messages, messageInput, chatsError, messagesError, messagesEl,
+    chats, activeChatId, draftChat, messages, messageInput, chatsError, messagesError, messagesEl,
+    activePaneVisible, openDraftChat, discardDraftChat,
     hasMoreMessages, loadingOlderMessages,
     privateChatTitles, privateChatOtherUserId, userById, groupChatMembers,
     resolvePrivateChatTitle, resolveChatMemberPhones,

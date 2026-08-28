@@ -10,8 +10,9 @@ function usePresence(ctx) {
   // backend's one-active-subscription-at-a-time contract.
   let presenceSubscribedUserId = null;
 
-  // user_id -> { status: 'online'|'offline' }, populated by the initial
-  // presence_status pull and kept current by live presence_update pushes.
+  // user_id -> { status: 'online'|'offline', last_seen_at: ISO|null },
+  // populated by the initial presence_status pull and kept current by live
+  // presence_update pushes.
   const presenceByUserId = ref({});
 
   function subscribeToPresence(userId) {
@@ -40,7 +41,9 @@ function usePresence(ctx) {
   // so drop the local marker and re-subscribe for the currently open chat.
   function resubscribePresenceForActiveChat() {
     presenceSubscribedUserId = null;
-    if (!ctx.activeChatIsGroup.value && ctx.activeChatId.value) {
+    if (ctx.draftChat && ctx.draftChat.value) {
+      subscribeToPresence(ctx.draftChat.value.otherUserId);
+    } else if (!ctx.activeChatIsGroup.value && ctx.activeChatId.value) {
       subscribeToPresenceForChat(ctx.activeChatId.value);
     }
   }
@@ -50,6 +53,10 @@ function usePresence(ctx) {
   // "already subscribed" short-circuit in subscribeToPresence - that's the
   // whole point here.
   function refreshPresenceSubscription() {
+    if (ctx.draftChat && ctx.draftChat.value) {
+      ctx.sendRaw({ type: 'subscribe_presence', user_id: ctx.draftChat.value.otherUserId });
+      return;
+    }
     if (ctx.activeChatIsGroup.value || !ctx.activeChatId.value) return;
     const otherUserId = ctx.privateChatOtherUserId.value[ctx.activeChatId.value];
     if (otherUserId) ctx.sendRaw({ type: 'subscribe_presence', user_id: otherUserId });
@@ -67,13 +74,34 @@ function usePresence(ctx) {
     presenceByUserId.value = {};
   }
 
-  // "Last seen" is deliberately not shown - only ever "online", or nothing.
+  // 'Last seen' is only ever shown when the user is NOT online: 'online' if
+  // connected, otherwise 'last seen <relative time>' when we have a stamp,
+  // otherwise nothing.
+  function formatLastSeen(iso) {
+    const then = new Date(iso);
+    if (isNaN(then)) return '';
+    const secs = Math.round((Date.now() - then) / 1000);
+    if (secs < 60) return 'last seen just now';
+    const mins = Math.round(secs / 60);
+    if (mins < 60) return `last seen ${mins} min ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `last seen ${hours} hr ago`;
+    const days = Math.round(hours / 24);
+    if (days < 7) return `last seen ${days} day${days > 1 ? 's' : ''} ago`;
+    return `last seen on ${then.toLocaleDateString()}`;
+  }
+
   function presenceLabelFor(userId) {
     const info = presenceByUserId.value[userId];
-    return info && info.status === 'online' ? 'online' : '';
+    if (!info) return '';
+    if (info.status === 'online') return 'online';
+    return info.last_seen_at ? formatLastSeen(info.last_seen_at) : '';
   }
 
   const activeChatPresenceLabel = computed(() => {
+    // Draft (uncommitted) private chat: presence still shows, gated by the
+    // target's privacy.online == "everyone".
+    if (ctx.draftChat && ctx.draftChat.value) return presenceLabelFor(ctx.draftChat.value.otherUserId);
     if (ctx.activeChatIsGroup.value || !ctx.activeChatId.value) return '';
     const otherUserId = ctx.privateChatOtherUserId.value[ctx.activeChatId.value];
     return otherUserId ? presenceLabelFor(otherUserId) : '';

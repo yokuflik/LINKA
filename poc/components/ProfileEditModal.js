@@ -10,11 +10,8 @@ const ProfileEditModal = {
     heading: { type: String, required: true },
     nameLabel: { type: String, required: true },
     aboutLabel: { type: String, required: true },
-    form: { type: Object, required: true },           // { display_name|title, about_text, [privacy_online] }
+    form: { type: Object, required: true },           // { display_name|title, about_text }
     nameKey: { type: String, required: true },        // 'display_name' | 'title'
-    // When passed (user profile only), renders a "who can see I'm online"
-    // picker bound to form.privacy_online. Omitted for the group form.
-    onlineVisibilityOptions: { type: Array, default: null },
     currentAvatarUrl: { default: null },
     avatarName: { default: '' },
     previewUrl: { default: null },
@@ -69,14 +66,6 @@ const ProfileEditModal = {
         <label class="block text-xs font-medium text-slate-500 mb-1">{{ aboutLabel }}</label>
         <textarea :value="form.about_text" @input="setField('about_text', $event.target.value)" rows="2"
                   class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg mb-3 resize-none"></textarea>
-
-        <div v-if="onlineVisibilityOptions" class="mb-3 pt-3 border-t border-slate-100">
-          <label class="block text-xs font-medium text-slate-500 mb-1">Who can see when I'm online</label>
-          <select :value="form.privacy_online" @change="setField('privacy_online', $event.target.value)"
-                  class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg bg-white">
-            <option v-for="opt in onlineVisibilityOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-          </select>
-        </div>
 
         <p v-if="error" class="mb-2 text-xs text-red-600">{{ error }}</p>
 

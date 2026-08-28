@@ -4,7 +4,7 @@
 // be added without touching this file's transport.
 // Global `useSettings(ctx)` factory (no build step, loaded via <script src>).
 //
-// Needs from ctx: apiFetch, logError.
+// Needs from ctx: apiFetch, logError, showToast.
 function useSettings(ctx) {
   const { ref } = Vue;
 
@@ -40,10 +40,54 @@ function useSettings(ctx) {
 
   function resetSettings() {
     userSettings.value = null;
+    showSettingsModal.value = false;
+  }
+
+  // ---------------------------------------------------------------
+  // The ⚙ Settings modal (privacy only): online visibility + read receipts.
+  // ---------------------------------------------------------------
+  const showSettingsModal = ref(false);
+  const settingsForm = ref({ privacy_online: 'everyone', privacy_read_receipts: true });
+  const settingsBusy = ref(false);
+  const settingsError = ref('');
+
+  function privacyOf(s) {
+    const p = (s && s.privacy) || {};
+    return {
+      privacy_online: p.online || 'everyone',
+      privacy_read_receipts: p.read_receipts !== false,
+    };
+  }
+
+  async function openSettingsModal() {
+    if (!userSettings.value) await loadSettings();
+    settingsForm.value = privacyOf(userSettings.value);
+    settingsError.value = '';
+    showSettingsModal.value = true;
+  }
+
+  async function submitSettings() {
+    settingsError.value = '';
+    settingsBusy.value = true;
+    try {
+      const current = privacyOf(userSettings.value);
+      const patch = {};
+      if (settingsForm.value.privacy_online !== current.privacy_online) patch.online = settingsForm.value.privacy_online;
+      if (settingsForm.value.privacy_read_receipts !== current.privacy_read_receipts) patch.read_receipts = settingsForm.value.privacy_read_receipts;
+      if (Object.keys(patch).length) await saveSettings({ privacy: patch });
+      showSettingsModal.value = false;
+      ctx.showToast('Settings saved');
+    } catch (err) {
+      settingsError.value = err.message || String(err);
+    } finally {
+      settingsBusy.value = false;
+    }
   }
 
   return {
     userSettings, ONLINE_VISIBILITY_OPTIONS,
     loadSettings, saveSettings, resetSettings,
+    showSettingsModal, settingsForm, settingsBusy, settingsError,
+    openSettingsModal, submitSettings,
   };
 }

@@ -68,9 +68,12 @@ function useWsRouter(ctx) {
     }
 
     if (msg.type === 'presence_status' || msg.type === 'presence_update') {
-      // "Last seen" is intentionally not tracked here - only the current
-      // online/offline status (see presenceLabelFor).
-      presenceByUserId.value[msg.user_id] = { status: msg.status };
+      // last_seen_at is only meaningful while offline; the label helper
+      // ignores it when status === 'online' (see presenceLabelFor).
+      presenceByUserId.value[msg.user_id] = {
+        status: msg.status,
+        last_seen_at: msg.last_seen_at || null,
+      };
       return;
     }
 

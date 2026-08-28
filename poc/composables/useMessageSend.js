@@ -44,13 +44,25 @@ function useMessageSend(ctx) {
   // ---------------------------------------------------------------
   // Sending a message (over the WebSocket, per the real /ws protocol)
   // ---------------------------------------------------------------
-  function sendMessage() {
+  async function sendMessage() {
     const content = ctx.messageInput.value.trim();
-    if (!content || !ctx.activeChatId.value) return;
+    if (!content) return;
     if (!ctx.wsIsOpen()) {
       ctx.logError('cannot send - WebSocket is not connected (status:', ctx.wsStatus.value, ')');
       return;
     }
+
+    // First message into an uncommitted draft chat: create the chat now,
+    // then fall through to the normal send with a real activeChatId.
+    if (!ctx.activeChatId.value && ctx.draftChat.value) {
+      try {
+        await ctx.commitDraftChat();
+      } catch (err) {
+        ctx.logError('failed to create chat for draft:', err.message);
+        return;
+      }
+    }
+    if (!ctx.activeChatId.value) return;
 
     // Editing an existing message rather than sending a new one.
     if (ctx.editingMessage.value) {

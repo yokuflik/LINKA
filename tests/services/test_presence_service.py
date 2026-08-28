@@ -61,6 +61,34 @@ async def test_heartbeat_keeps_presence_alive_past_the_ttl(redis_db, monkeypatch
     assert await presence_service.is_online(1) is True
 
 
+async def test_last_seen_is_stamped_on_every_device_disconnect(redis_db):
+    # "Last seen" follows the most recently connected device: even while the
+    # user is still online on another device, the stored timestamp advances
+    # each time a device drops, so it is current the instant the last one goes.
+    await presence_service.mark_online(1, "conn-a", "server-1")
+    await presence_service.mark_online(1, "conn-b", "server-2")
+
+    await presence_service.mark_offline(1, "conn-a")
+    assert await presence_service.is_online(1) is True
+    after_first_drop = (await presence_service.get_status(1))["last_seen_at"]
+    assert after_first_drop is not None
+
+    await asyncio.sleep(0.01)
+    await presence_service.mark_offline(1, "conn-b")
+    status = await presence_service.get_status(1)
+    assert status["status"] == "offline"
+    assert status["last_seen_at"] > after_first_drop
+
+
+async def test_last_seen_advances_on_connect_and_heartbeat(redis_db):
+    await presence_service.mark_online(1, "conn-a", "server-1")
+    first = (await presence_service.get_status(1))["last_seen_at"]
+
+    await asyncio.sleep(0.01)
+    await presence_service.heartbeat(1, "conn-a")
+    assert (await presence_service.get_status(1))["last_seen_at"] > first
+
+
 async def test_get_online_participants_filters_a_mixed_list(redis_db):
     await presence_service.mark_online(1, "conn-a", "server-1")
     await presence_service.mark_online(3, "conn-b", "server-1")

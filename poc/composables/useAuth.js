@@ -158,6 +158,7 @@ function useAuth(ctx) {
     ctx.chats.value = [];
     ctx.messages.value = [];
     ctx.activeChatId.value = null;
+    ctx.draftChat.value = null;
     ctx.resetPresence();
     ctx.resetTyping();
     ctx.resetSettings();

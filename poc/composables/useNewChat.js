@@ -15,33 +15,47 @@ function useNewChat(ctx) {
   const newPrivatePhone = ref('');
   const chatFormError = ref('');
 
+  // Opening a private chat no longer creates it: we resolve the phone number
+  // to a user and open a *draft* pane. The chat row is created server-side
+  // only when the first message is sent (useMessageSend.sendMessage). If an
+  // actual chat with that user already exists, just open it.
   async function createPrivateChat() {
     chatFormError.value = '';
     const phone = newPrivatePhone.value.trim();
     if (!phone) { chatFormError.value = 'Enter a phone number.'; return; }
     try {
-      // /users/by-phone resolves the number to a user id first - the
-      // create-chat endpoint itself still takes other_user_id, it just
-      // doesn't know about phone numbers.
       const target = await ctx.apiFetch(`/users/by-phone?phone_number=${encodeURIComponent(phone)}`);
-      const chat = await ctx.apiFetch('/chats/private', {
-        method: 'POST',
-        body: JSON.stringify({ other_user_id: target.id }),
-      });
-      // Cache everything resolvePrivateChatTitle would have fetched - it
-      // early-returns once the title is set, so without this the new chat
-      // has no privateChatOtherUserId / userById entry and its avatar
-      // (and presence) never resolve until the next full reload.
-      ctx.privateChatTitles.value[chat.id] = target.phone_number;
-      ctx.privateChatOtherUserId.value[chat.id] = target.id;
-      ctx.userById.value[target.id] = target;
       newPrivatePhone.value = '';
       showNewPrivate.value = false;
-      await ctx.loadChats();
-      await ctx.selectChat(chat.id);
+
+      const existing = ctx.chats.value.find(
+        (c) => !c.chat.is_group && ctx.privateChatOtherUserId.value[c.chat.id] === target.id
+      );
+      if (existing) { await ctx.selectChat(existing.chat.id); return; }
+
+      ctx.openDraftChat(target);
     } catch (err) {
       chatFormError.value = err.status === 404 ? `No user with phone number ${phone}` : err.message;
     }
+  }
+
+  // Commit the open draft chat: POST /chats/private, cache what
+  // resolvePrivateChatTitle would have, refresh the list, make it active.
+  // Returns the new chat id, or null if there's no draft.
+  async function commitDraftChat() {
+    const draft = ctx.draftChat.value;
+    if (!draft) return null;
+    const chat = await ctx.apiFetch('/chats/private', {
+      method: 'POST',
+      body: JSON.stringify({ other_user_id: draft.otherUserId }),
+    });
+    ctx.privateChatTitles.value[chat.id] = draft.phone;
+    ctx.privateChatOtherUserId.value[chat.id] = draft.otherUserId;
+    // selectChat() discards the draft (and its presence sub); re-subscribe
+    // happens inside selectChat for the now-real chat.
+    await ctx.loadChats();
+    await ctx.selectChat(chat.id);
+    return chat.id;
   }
 
   // Upload a picked photo straight to storage and return its object key.
@@ -122,6 +136,6 @@ function useNewChat(ctx) {
   return {
     showNewPrivate, showNewGroupModal, newGroupBusy, newGroupError,
     newPrivatePhone, chatFormError,
-    createPrivateChat, uploadAvatarBytes, createGroupChat,
+    createPrivateChat, commitDraftChat, uploadAvatarBytes, createGroupChat,
   };
 }

@@ -23,9 +23,16 @@ async def get_online_visibility(session: AsyncSession, user_id: int) -> str:
     """
     Shortcut for the presence layer: the resolved `privacy.online` value
     (`everyone` | `contacts` | `nobody`) for a user, defaults included.
+    Governs the whole presence signal - online indicator and last-seen.
     """
     settings = await get_user_settings(session, user_id)
     return settings["privacy"]["online"]
+
+
+async def get_read_receipts_enabled(session: AsyncSession, user_id: int) -> bool:
+    """Resolved `privacy.read_receipts` for a user (default True). See ADR 0003."""
+    settings = await get_user_settings(session, user_id)
+    return bool(settings["privacy"]["read_receipts"])
 
 
 async def update_user_settings(

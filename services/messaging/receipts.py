@@ -24,6 +24,10 @@ from config import (
 from database.crud import crud_receipt
 from services import realtime_service
 from services.messaging.errors import MessageNotFoundError, NotAParticipantError, NotAVoiceMessageError
+from services.messaging.receipt_privacy import (
+    read_receipts_hidden_for_message,
+    reader_hides_read_receipts,
+)
 from services.receipts import receipt_log
 from services.redis_client import redis_client
 
@@ -77,7 +81,12 @@ async def mark_as_read(session: AsyncSession, user_id: int, chat_id: int, messag
     )
     if participant is None:
         return
+    # Watermark + detailed log always advance; the sender-facing live event
+    # is suppressed only when *this reader* turned their own read receipts
+    # off in a 1:1 chat (asymmetric - ADR 0003).
     await _record_receipt(chat_id, user_id, RECEIPT_KIND_READ, message_id, occurred_at)
+    if await reader_hides_read_receipts(session, chat_id, reader_id=user_id):
+        return
     await realtime_service.publish_event(
         chat_id,
         {
@@ -113,6 +122,8 @@ async def mark_as_played(session: AsyncSession, user_id: int, chat_id: int, mess
     if participant is None:
         return
     await _record_receipt(chat_id, user_id, RECEIPT_KIND_PLAYED, message_id, occurred_at)
+    if await reader_hides_read_receipts(session, chat_id, reader_id=user_id):
+        return
     await realtime_service.publish_event(
         chat_id,
         {
@@ -167,6 +178,14 @@ async def get_message_receipts(
 
     chat = await get_chat_by_id(session, chat_id)
     participants = await get_chat_participants(session, chat_id)
+    # 1:1 only: the sole reader (the other participant) has read receipts off.
+    hide_read = await read_receipts_hidden_for_message(
+        session,
+        chat_id,
+        sender_id=message.sender_id,
+        chat=chat,
+        participant_user_ids=[p.user_id for p in participants],
+    )
     # Everyone but the sender is eligible to "receive/read/play" the message.
     eligible = [p.user_id for p in participants if p.user_id != message.sender_id]
     is_audio = message.type == AUDIO_MESSAGE_TYPE
@@ -234,6 +253,16 @@ async def get_message_receipts(
             "read": len(read_by),
             "played": len(played_by),
         }
+
+    if hide_read:
+        # 1:1 chat where a peer hid read receipts: READ/PLAYED are masked to
+        # DELIVERED for both users (ADR 0003). Delivery data is untouched.
+        payload["counts"]["read"] = 0
+        payload["counts"]["played"] = 0
+        if not truncated:
+            payload["read_by"] = []
+            payload["played_by"] = []
+            payload["pending"] = [str(uid) for uid in eligible]
 
     await redis_client.set(cache_key, json.dumps(payload), ex=_RECEIPT_DETAIL_CACHE_TTL_SECONDS)
     return payload

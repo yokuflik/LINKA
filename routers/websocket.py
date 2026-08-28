@@ -241,8 +241,9 @@ async def _handle_send_message(user_id: int, connection_id: str, payload: dict, 
 
 async def _presence_authorized(session, watcher_id: int, target_user_id: int) -> bool:
     """
-    Whether `watcher_id` is allowed to see `target_user_id`'s online status,
-    per the target's `privacy.online` setting:
+    Whether `watcher_id` is allowed to see `target_user_id`'s presence -
+    both the live online indicator AND the "last seen" timestamp, which are
+    a single signal gated together by the target's `privacy.online` setting:
       - `nobody`   -> never.
       - `contacts` -> only if a PrivateChatPair between the two exists
                       (get_pair_chat_id) - "someone I have a chat with".

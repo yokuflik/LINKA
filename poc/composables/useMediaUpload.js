@@ -30,7 +30,10 @@ function useMediaUpload(ctx) {
 
   async function sendMediaMessage(file, forceKind) {
     ctx.messagesError.value = '';
-    if (!ctx.activeChatId.value) return;
+    if (!ctx.activeChatId.value) {
+      if (ctx.draftChat.value) ctx.messagesError.value = 'Send a message first to start the chat.';
+      return;
+    }
     const kind = mediaKindForMime(file.type, forceKind);
     if (!kind) {
       ctx.messagesError.value = 'Unsupported file type: ' + (file.type || 'unknown');
@@ -111,7 +114,10 @@ function useMediaUpload(ctx) {
 
   async function startRecording() {
     ctx.messagesError.value = '';
-    if (!ctx.activeChatId.value) return;
+    if (!ctx.activeChatId.value) {
+      if (ctx.draftChat.value) ctx.messagesError.value = 'Send a message first to start the chat.';
+      return;
+    }
     if (isRecording.value) return;
     if (!navigator.mediaDevices || !window.MediaRecorder) {
       ctx.messagesError.value = 'Voice recording is not supported in this browser.';

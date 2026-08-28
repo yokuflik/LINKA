@@ -23,10 +23,15 @@ PRIVACY_VISIBILITY = ("everyone", "contacts", "nobody")
 # this; reads merge the stored blob over a deepcopy of this.
 DEFAULT_USER_SETTINGS: dict[str, Any] = {
     "privacy": {
-        # Who may see the "last seen" timestamp.
-        "last_seen": "everyone",
-        # Who may see the live online / connected indicator.
+        # Who may see presence at all: the live online / connected
+        # indicator AND the "last seen" timestamp - they are one signal,
+        # gated together (see ADR 0002).
         "online": "everyone",
+        # WhatsApp-style blue ticks. When false, in 1:1 chats this user
+        # neither sends nor sees READ/PLAYED receipts (symmetric); groups
+        # are unaffected. Delivery (grey) ticks are never hidden. See
+        # ADR 0003.
+        "read_receipts": True,
     },
 }
 
@@ -34,7 +39,6 @@ DEFAULT_USER_SETTINGS: dict[str, Any] = {
 # that is not listed here is treated as free-form (type-checked only
 # against the default's Python type).
 _ENUMS: dict[str, tuple] = {
-    "privacy.last_seen": PRIVACY_VISIBILITY,
     "privacy.online": PRIVACY_VISIBILITY,
 }
 
@@ -45,10 +49,16 @@ def default_settings() -> dict[str, Any]:
 
 
 def merge_with_defaults(stored: dict[str, Any] | None) -> dict[str, Any]:
-    """Overlay a sparse stored blob on top of the canonical defaults."""
+    """
+    Overlay a sparse stored blob on top of the canonical defaults.
+
+    Keys no longer in the canonical shape (e.g. a retired setting like the
+    old `privacy.last_seen`) are dropped, so a stale blob never leaks a
+    removed setting back to clients.
+    """
     merged = default_settings()
     if stored:
-        _deep_merge(merged, stored)
+        _deep_merge(merged, _prune_to_spec(stored, DEFAULT_USER_SETTINGS))
     return merged
 
 
@@ -73,6 +83,17 @@ def apply_patch(stored: dict[str, Any] | None, patch: dict[str, Any]) -> dict[st
 
 
 # --- internals ---------------------------------------------------------
+
+def _prune_to_spec(node: Any, spec: Any) -> Any:
+    """Recursively drop keys from `node` that are absent from `spec`."""
+    if not isinstance(node, dict) or not isinstance(spec, dict):
+        return node
+    return {
+        key: _prune_to_spec(value, spec[key])
+        for key, value in node.items()
+        if key in spec
+    }
+
 
 def _deep_merge(dst: dict, src: dict) -> None:
     for key, value in src.items():

@@ -6,8 +6,8 @@
 //
 // Needs from ctx: apiFetch, log, logError, currentUser, activeChatId,
 // activeChatItem, AVATAR_MAX_BYTES, AVATAR_MIME, shrinkImageToFit, loadChats,
-// showToast, userById, groupChatMembers, userSettings, loadSettings,
-// saveSettings.
+// showToast, userById, groupChatMembers.
+// Privacy settings live in the separate ⚙ Settings modal (useSettings.js).
 function useProfileEdit(ctx) {
   const { ref } = Vue;
   const { AVATAR_MAX_BYTES, AVATAR_MIME, shrinkImageToFit } = ctx;
@@ -93,21 +93,16 @@ function useProfileEdit(ctx) {
   // Current-user profile
   // ---------------------------------------------------------------
   const showProfileModal = ref(false);
-  // `privacy_online` is edited alongside the profile fields but saved through
-  // the separate /users/me/settings endpoint (see saveProfile).
-  const profileForm = ref({ display_name: '', about_text: '', privacy_online: 'everyone' });
+  const profileForm = ref({ display_name: '', about_text: '' });
   const profileBusy = ref(false);
   const profileError = ref('');
   const profileAvatar = makeAvatarPicker();
 
-  async function openProfileModal() {
+  function openProfileModal() {
     const u = ctx.currentUser.value || {};
-    if (!ctx.userSettings.value) await ctx.loadSettings();
-    const s = ctx.userSettings.value || {};
     profileForm.value = {
       display_name: u.display_name || '',
       about_text: u.about_text || '',
-      privacy_online: (s.privacy && s.privacy.online) || 'everyone',
     };
     profileAvatar.reset();
     profileError.value = '';
@@ -133,13 +128,6 @@ function useProfileEdit(ctx) {
       }
       const afterAvatar = await commitAvatar('/users/me', profileAvatar);
       if (afterAvatar) ctx.currentUser.value = afterAvatar;
-
-      // Privacy settings go through a separate endpoint (partial patch).
-      const s = ctx.userSettings.value || {};
-      const currentOnline = (s.privacy && s.privacy.online) || 'everyone';
-      if (profileForm.value.privacy_online !== currentOnline) {
-        await ctx.saveSettings({ privacy: { online: profileForm.value.privacy_online } });
-      }
 
       // currentUser (above) drives our own name/avatar in the app header. The
       // backend also fans a `profile_updated` event back to us over every

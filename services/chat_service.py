@@ -214,6 +214,14 @@ async def get_chat_list(
         chat.last_message_status = (
             compute_message_status(chat.last_message_id, chat) if chat.last_message_id is not None else None
         )
+        # Asymmetric read-receipt privacy (ADR 0003): in a 1:1 chat, mask
+        # READ/PLAYED -> DELIVERED when the *other* participant keeps their
+        # own read receipts off. Only 1:1 chats pay the settings lookup.
+        if chat.last_message_status is not None and not chat.is_group:
+            from services.messaging.receipt_privacy import mask_status, read_receipts_hidden_for_message
+
+            if await read_receipts_hidden_for_message(session, chat.id, sender_id=user_id, chat=chat):
+                chat.last_message_status = mask_status(chat.last_message_status)
         # Unlike last_message_status (chat-wide), this is genuinely
         # per-viewer - how many messages *this* participant hasn't read yet
         # - so it's attached to the Participant, not the Chat. One indexed

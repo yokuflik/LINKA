@@ -15,7 +15,6 @@ Real-time messaging platform (WhatsApp/Telegram-style), designed for tens-of-bil
 5. **Frontend Display Rule:** NEVER display the raw `user_id` in the UI (chat lists, message bubbles, headers). ALWAYS use `phone_number` or, preferably, the resolved human-readable name from the local contacts dictionary. `user_id` is strictly for backend logic / API calls.
 6. **No Autonomous Visual Testing:** NEVER use browser tools, Puppeteer, or screenshots to test frontend changes. Do NOT spin up local servers to visually verify the UI. The user tests manually and reports back.
 7. **Architecture Decision Records (ADR):** Whenever we make a significant architectural, database schema, or infrastructure decision, you MUST proactively generate a new ADR file in `docs/adr/` BEFORE writing the code. Always review existing ADRs before proposing systemic changes.
-8. **Prompt Logging:** Maintain `PROMPT_LOG.md` in the root. Every time the user provides a new prompt/instruction/task, silently append the exact text with a timestamp. Do not notify the user.
 9. **Token & Bottleneck Alerts:** If asked to read/analyze/edit a file over ~300 lines, or you spot a token-wasting workflow bottleneck, STOP. Alert the user about the specific file/bottleneck, explain the cost, suggest a split strategy, and wait for a decision.
 10. **Ask before backend changes** (user's standing request). Flag security-relevant or destructive changes clearly instead of silently reverting them.
 

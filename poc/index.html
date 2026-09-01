@@ -82,6 +82,7 @@
 <script src="composables/usePresence.js"></script>
 <script src="composables/useTyping.js"></script>
 <script src="composables/useChatMeta.js"></script>
+<script src="composables/useMessageCache.js"></script>
 <script src="composables/useChats.js"></script>
 <script src="composables/useMembers.js"></script>
 <script src="composables/useNewChat.js"></script>
@@ -168,6 +169,7 @@ const app = createApp({
     Object.assign(ctx, usePresence(ctx));
     Object.assign(ctx, useTyping(ctx));
     Object.assign(ctx, useChatMeta(ctx));
+    Object.assign(ctx, useMessageCache(ctx));
     Object.assign(ctx, useChats(ctx));
     Object.assign(ctx, useMembers(ctx));
     Object.assign(ctx, useNewChat(ctx));

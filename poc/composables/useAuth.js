@@ -171,6 +171,7 @@ function useAuth(ctx) {
     clearAvatar();
     phoneNumber.value = '';
     otpCode.value = '';
+    ctx.clearAllMessageCache();
     localStorage.removeItem('linka_access_token');
     localStorage.removeItem('linka_refresh_token');
     log('logged out');

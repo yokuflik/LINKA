@@ -4,13 +4,14 @@
 // Global `useChats(ctx)` factory.
 //
 // Needs from ctx (call-time): apiFetch, log, logError, currentUser,
-// contactDisplayName, chatAvatarUrl, chatAvatarName, chatAvatarColorKey,
+// chatAvatarUrl, chatAvatarName, chatAvatarColorKey,
+// loadChatMessages, saveChatMessages (useMessageCache),
 // unreadCountByChatId, markAllChatsDelivered, clearUnreadCount,
 // unsubscribeFromPresence, subscribeToPresenceForChat, sendReceipt,
 // and still-inline: replyingToMessage, closeMessageContextMenu,
 // probeLoadedImageOrientations.
 function useChats(ctx) {
-  const { ref, computed, nextTick } = Vue;
+  const { ref, computed, nextTick, watch } = Vue;
 
   // ---------------------------------------------------------------
   // Chats
@@ -54,7 +55,7 @@ function useChats(ctx) {
       const members = await ctx.apiFetch(`/chats/${chatId}/members`);
       const other = members.find((m) => m.user.id !== ctx.currentUser.value.id);
       if (other) {
-        privateChatTitles.value[chatId] = other.user.phone_number;
+        privateChatTitles.value[chatId] = other.user.display_name || other.user.phone_number;
         privateChatOtherUserId.value[chatId] = other.user.id;
         // Cache the whole UserOut so the avatar URL needs no second lookup.
         userById.value[other.user.id] = other.user;
@@ -76,21 +77,21 @@ function useChats(ctx) {
 
   function chatDisplayName(chat) {
     if (chat.is_group) return chat.title || 'Untitled group';
-    const phone = privateChatTitles.value[chat.id];
-    return phone ? `Chat with ${ctx.contactDisplayName(phone)}` : `Private chat #${chat.id}`;
+    const name = privateChatTitles.value[chat.id];
+    return name ? `Chat with ${name}` : `Private chat #${chat.id}`;
   }
 
   function senderLabel(senderId) {
     if (senderId == null) return 'system';
     const user = userById.value[senderId];
     if (!user) return senderId;
-    return ctx.contactDisplayName(user.phone_number) || user.display_name || user.phone_number;
+    return user.display_name || user.phone_number;
   }
 
   function userLabelById(userId) {
     const user = userById.value[userId];
     if (!user) return userId;
-    return ctx.contactDisplayName(user.phone_number) || user.display_name || user.phone_number;
+    return user.display_name || user.phone_number;
   }
 
   // Same as senderLabel, but says "You" for the current user - matches
@@ -128,7 +129,7 @@ function useChats(ctx) {
   function currentUserNameVariants() {
     const u = ctx.currentUser.value;
     if (!u) return [];
-    const variants = [u.display_name, u.phone_number, ctx.contactDisplayName(u.phone_number)];
+    const variants = [u.display_name, u.phone_number];
     return variants.filter((v) => typeof v === 'string' && v.length > 0);
   }
 
@@ -172,7 +173,7 @@ function useChats(ctx) {
   const activeChatLabel = computed(() => {
     if (draftChat.value) {
       const u = draftUser();
-      return `Chat with ${ctx.contactDisplayName(u ? u.phone_number : draftChat.value.phone)}`;
+      return `Chat with ${u ? (u.display_name || u.phone_number) : draftChat.value.phone}`;
     }
     return activeChatItem.value ? chatDisplayName(activeChatItem.value.chat) : '';
   });
@@ -182,7 +183,7 @@ function useChats(ctx) {
     return activeChatItem.value ? ctx.chatAvatarUrl(activeChatItem.value.chat) : null;
   });
   const activeChatAvatarName = computed(() => {
-    if (draftChat.value) { const u = draftUser(); return ctx.contactDisplayName(u ? u.phone_number : draftChat.value.phone); }
+    if (draftChat.value) { const u = draftUser(); return u ? (u.display_name || u.phone_number) : draftChat.value.phone; }
     return activeChatItem.value ? ctx.chatAvatarName(activeChatItem.value.chat) : '';
   });
   const activeChatAvatarColorKey = computed(() => {
@@ -197,7 +198,7 @@ function useChats(ctx) {
   const hiddenActiveChatMemberCount = computed(() => Math.max(0, activeChatMembers.value.length - MAX_VISIBLE_MEMBERS));
 
   function memberDisplayName(member) {
-    return ctx.contactDisplayName(member.user.phone_number) || member.user.display_name || member.user.phone_number;
+    return member.user.display_name || member.user.phone_number;
   }
 
   // 1=Member, 2=Admin, 3=Owner (see database/models/participant.py).
@@ -532,11 +533,35 @@ function useChats(ctx) {
     // to whichever private chat is open right now.
     ctx.unsubscribeFromPresence();
     if (item && !item.chat.is_group) ctx.subscribeToPresenceForChat(chatId);
+
+    // Lazy cache: if we've visited this chat before, render its stored
+    // newest page and skip the network entirely. Live WS events keep the
+    // cache fresh while connected; "load older" still fetches from the API.
+    const cached = ctx.loadChatMessages(chatId);
+    if (cached && cached.length) {
+      if (activeChatId.value !== chatId) return;
+      messages.value = cached.slice();
+      hasMoreMessages.value = cached.length >= MESSAGE_PAGE_SIZE;
+      const item2 = chats.value.find((c) => c.chat.id === chatId);
+      const newestId = cached[cached.length - 1].id;
+      if (item2) {
+        const last = cached.find((m) => m.id === item2.chat.last_message_id);
+        if (last && last.deleted_at) item2.chat.last_message_preview = '🚫 Message deleted';
+      }
+      ctx.probeLoadedImageOrientations();
+      await nextTick();
+      scrollMessagesToBottom();
+      ctx.sendReceipt('mark_delivered', chatId, newestId);
+      ctx.sendReceipt('mark_read', chatId, newestId);
+      return;
+    }
+
     try {
       const history = await ctx.apiFetch(`/chats/${chatId}/messages?limit=${MESSAGE_PAGE_SIZE}`);
       // The API returns newest-first (keyset pagination); the UI wants oldest-first.
       messages.value = history.slice().reverse();
       hasMoreMessages.value = history.length === MESSAGE_PAGE_SIZE;
+      ctx.saveChatMessages(chatId, messages.value);
       // GET /chats can't tell us the last message was soft-deleted (its
       // last_message_preview column keeps the old text). The history page
       // does carry deleted_at, so reconcile the sidebar preview here.
@@ -570,6 +595,14 @@ function useChats(ctx) {
     else resolvePrivateChatTitle(activeChatId.value, { force: true });
   }
   document.addEventListener('visibilitychange', refreshActiveChatUsers);
+
+  // Write-through: any change to the open chat's message list (live event,
+  // edit, delete, optimistic send) refreshes its cached newest page.
+  watch(messages, (list) => {
+    if (activeChatId.value && list && list.length) {
+      ctx.saveChatMessages(activeChatId.value, list);
+    }
+  }, { deep: true });
 
   return {
     chats, activeChatId, draftChat, messages, messageInput, chatsError, messagesError, messagesEl,

@@ -50,6 +50,18 @@ const MessageInput = {
       const file = event.target.files && event.target.files[0];
       if (file) this.$emit('pick-media', file);
     },
+    // Opens the device camera directly (mobile) or a webcam capture dialog
+    // (desktop) via the file input's `capture` hint, then reuses the normal
+    // image pipeline.
+    openCamera() {
+      this.closeAttachMenu();
+      this.$refs.cameraInput.value = '';
+      this.$refs.cameraInput.click();
+    },
+    onCameraPhotoChosen(event) {
+      const file = event.target.files && event.target.files[0];
+      if (file) this.$emit('pick-media', file);
+    },
     openDocumentPicker() {
       this.closeAttachMenu();
       this.$refs.documentFileInput.value = '';
@@ -133,6 +145,17 @@ const MessageInput = {
           <button v-if="messageInput.trim()" @click="$emit('send-message')"
                   class="shrink-0 px-4 py-2 bg-teal-700 text-white rounded-lg font-medium">Send</button>
         </template>
+        <!-- Camera: plain black line-art icon (matches the mic), opens the
+             device camera and sends the photo through the image pipeline. -->
+        <button type="button" @click="openCamera" v-if="!isRecording"
+                class="shrink-0 w-9 h-9 flex items-center justify-center text-slate-700 hover:text-slate-900"
+                title="Take a photo">
+          <svg viewBox="0 0 24 24" class="w-6 h-6" fill="none"
+               stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 8h3l1.5-2h7L18 8h2a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" />
+            <circle cx="12" cy="13" r="3.2" />
+          </svg>
+        </button>
         <!-- Mic toggle: 1st press records, 2nd press stops & sends. Plain
              black line-art mic (WhatsApp-style), no button background. -->
         <button type="button" @click="toggleRecording"
@@ -154,6 +177,9 @@ const MessageInput = {
                @change="onMediaFileChosen" />
         <input ref="documentFileInput" type="file" class="hidden"
                @change="onDocumentFileChosen" />
+        <input ref="cameraInput" type="file" class="hidden"
+               accept="image/*" capture="environment"
+               @change="onCameraPhotoChosen" />
       </div>
     </div>
   `,

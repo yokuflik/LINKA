@@ -73,28 +73,8 @@ function useChatMeta(ctx) {
     return at.toLocaleDateString([], { day: '2-digit', month: '2-digit', year: '2-digit' });
   }
 
-  // ---------------------------------------------------------------
-  // Local contact names - a client-only lookup, not backed by anything the
-  // server knows. Covers phone numbers "1"-"10" only; anything else falls
-  // through to whatever the server actually said.
-  // ---------------------------------------------------------------
-  const MOCK_CONTACT_NAMES = {
-    '1': 'יואל קופליק',
-    '2': 'תהל',
-    '3': 'Avi Mizrahi',
-    '4': 'Maya Gold',
-    '5': 'Yossi Avraham',
-    '6': 'Shira Peretz',
-    '7': 'Omer Azulay',
-    '8': 'Tamar Mizrahi',
-    '9': 'Itay Ben-David',
-    '10': 'Roni Katz',
-  };
-
-  function contactDisplayName(rawValue) {
-    if (rawValue == null) return rawValue;
-    return MOCK_CONTACT_NAMES[String(rawValue)] || rawValue;
-  }
+  // Peer names come straight from the server: display_name if set, else the
+  // phone number. No client-side contact book.
 
   // ---------------------------------------------------------------
   // Profile-picture avatars (WhatsApp-style small circles). The <Avatar>
@@ -104,8 +84,7 @@ function useChatMeta(ctx) {
   // ---------------------------------------------------------------
   function chatAvatarName(chat) {
     if (chat.is_group) return chat.title || '';
-    const phone = ctx.privateChatTitles.value[chat.id];
-    return phone ? contactDisplayName(phone) : '';
+    return ctx.privateChatTitles.value[chat.id] || '';
   }
   function chatAvatarColorKey(chat) {
     return chat.is_group ? chat.id : (ctx.privateChatOtherUserId.value[chat.id] || chat.id);
@@ -127,7 +106,7 @@ function useChatMeta(ctx) {
   return {
     toasts, showToast,
     previewText, bumpChatPreview, refreshMessageStatuses, updateChatPreviewIfLast,
-    formatChatTime, contactDisplayName,
+    formatChatTime,
     chatAvatarName, chatAvatarColorKey, chatAvatarUrl,
     userAvatarUrl, senderAvatarUrl, currentUserAvatarUrl,
   };

@@ -79,8 +79,8 @@ function useChatMeta(ctx) {
   // through to whatever the server actually said.
   // ---------------------------------------------------------------
   const MOCK_CONTACT_NAMES = {
-    '1': 'Daniel Cohen',
-    '2': 'Noa Levi',
+    '1': 'יואל קופליק',
+    '2': 'תהל',
     '3': 'Avi Mizrahi',
     '4': 'Maya Gold',
     '5': 'Yossi Avraham',

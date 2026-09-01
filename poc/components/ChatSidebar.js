@@ -31,7 +31,7 @@ const ChatSidebar = {
     },
   },
   template: `
-    <aside class="w-72 flex flex-col border-r border-slate-200 bg-white">
+    <aside class="w-full md:w-72 shrink-0 flex flex-col border-r border-slate-200 bg-white">
       <div class="p-3 border-b border-slate-200 flex gap-2">
         <button @click="openNewPrivate"
                 class="flex-1 text-xs px-2 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">+ Private</button>

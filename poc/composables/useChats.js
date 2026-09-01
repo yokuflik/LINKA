@@ -501,6 +501,18 @@ function useChats(ctx) {
     draftChat.value = null;
   }
 
+  // Mobile: the sidebar and the chat pane share the screen one at a time.
+  // "Back" from the chat header drops the active chat so the list shows again.
+  function closeActiveChat() {
+    discardDraftChat();
+    ctx.unsubscribeFromPresence();
+    activeChatId.value = null;
+    messages.value = [];
+    ctx.replyingToMessage.value = null;
+    if (ctx.editingMessage.value) ctx.cancelEdit();
+    ctx.closeMessageContextMenu();
+  }
+
   async function selectChat(chatId) {
     discardDraftChat();
     activeChatId.value = chatId;
@@ -561,7 +573,7 @@ function useChats(ctx) {
 
   return {
     chats, activeChatId, draftChat, messages, messageInput, chatsError, messagesError, messagesEl,
-    activePaneVisible, openDraftChat, discardDraftChat,
+    activePaneVisible, openDraftChat, discardDraftChat, closeActiveChat,
     hasMoreMessages, loadingOlderMessages,
     privateChatTitles, privateChatOtherUserId, userById, groupChatMembers,
     resolvePrivateChatTitle, resolveChatMemberPhones,

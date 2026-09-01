@@ -177,9 +177,12 @@ const MessageInput = {
                @change="onMediaFileChosen" />
         <input ref="documentFileInput" type="file" class="hidden"
                @change="onDocumentFileChosen" />
-        <input ref="cameraInput" type="file" class="hidden"
+        <!-- Not display:none: iOS Safari won't open the camera for a
+             display:none file input triggered via .click(). Kept off-screen. -->
+        <input ref="cameraInput" type="file"
                accept="image/*" capture="environment"
-               @change="onCameraPhotoChosen" />
+               @change="onCameraPhotoChosen"
+               style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px" />
       </div>
     </div>
   `,

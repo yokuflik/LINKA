@@ -130,8 +130,16 @@ function useMediaUpload(ctx) {
       return;
     }
     recordedChunks = [];
-    const mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+    // Pick a container the backend accepts (config.ALLOWED_UPLOAD_MIME['audio']).
+    // Desktop Chrome/Firefox => audio/webm; iOS Safari (16.4+) => audio/mp4.
+    const AUDIO_MIME_CANDIDATES = ['audio/webm', 'audio/mp4', 'audio/aac', 'audio/ogg'];
+    const mime = AUDIO_MIME_CANDIDATES.find(
+      (m) => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)
+    ) || '';
+    ctx.log('recording audio as', mime || '(browser default)');
     mediaRecorder = new MediaRecorder(recordingStream, mime ? { mimeType: mime } : undefined);
+    // Remember what we asked for - iOS sometimes reports an empty mimeType on stop.
+    mediaRecorder._requestedMime = mime;
     mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) recordedChunks.push(e.data); };
     mediaRecorder.onstop = onRecordingStopped;
     mediaRecorder.start();
@@ -166,7 +174,18 @@ function useMediaUpload(ctx) {
     teardownLiveMeter();
     if (recordingStream) { recordingStream.getTracks().forEach((t) => t.stop()); recordingStream = null; }
     const duration = recordingSeconds.value;
-    const type = mediaRecorder && mediaRecorder.mimeType ? mediaRecorder.mimeType.split(';')[0] : 'audio/webm';
+    // Resolve the real container: prefer what the recorder reports, fall back
+    // to what we asked for, then to the first recorded chunk's own type.
+    const reported = (mediaRecorder && mediaRecorder.mimeType) || '';
+    const requested = (mediaRecorder && mediaRecorder._requestedMime) || '';
+    const chunkType = (recordedChunks[0] && recordedChunks[0].type) || '';
+    let type = (reported || requested || chunkType || 'audio/webm').split(';')[0].trim();
+    // Map anything the backend doesn't whitelist onto the closest accepted type.
+    if (type === 'audio/x-m4a' || type === 'audio/m4a') type = 'audio/mp4';
+    if (!['audio/webm', 'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/mpeg'].includes(type)) {
+      type = 'audio/mp4';
+    }
+    ctx.log('voice recording container:', { reported, requested, chunkType, resolved: type });
     mediaRecorder = null;
     const blob = new Blob(recordedChunks, { type });
     recordedChunks = [];
@@ -179,7 +198,7 @@ function useMediaUpload(ctx) {
       ctx.messagesError.value = 'Cannot send - WebSocket is not connected.';
       return;
     }
-    const ext = type === 'audio/webm' ? 'webm' : (type === 'audio/mp4' ? 'm4a' : 'ogg');
+    const ext = { 'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3' }[type] || 'm4a';
     const name = 'voice-' + Date.now() + '.' + ext;
     mediaUploadBusy.value = true;
     try {

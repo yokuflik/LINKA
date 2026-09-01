@@ -20,6 +20,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from database.base import Base
 from database.connection import DATABASE_URL
+# Time-partition manager (ADR 0005). The DEFAULT partitions below stay as a
+# safety net; this additionally pre-creates the real dated partitions.
+from scripts.manage_partitions import ensure_partitions
 # Registers every model on Base.metadata - importing database.connection alone
 # doesn't import the model modules themselves.
 from database.models import (  # noqa: F401
@@ -89,9 +92,11 @@ async def main(drop: bool) -> None:
                 ")",
             ):
                 await conn.execute(text(ddl))
+            # Real dated partitions on top of the DEFAULT safety net (ADR 0005).
+            await ensure_partitions(conn)
             print(
                 "Created all tables (+ messages_default / message_receipt_log_default "
-                "partitions, + media/receipt columns)."
+                "partitions, + dated partitions, + media/receipt columns)."
             )
 
     await engine.dispose()

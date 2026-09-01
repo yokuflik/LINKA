@@ -1,0 +1,28 @@
+# Linka time-partition maintenance (ADR 0006).
+#
+# Install on EXACTLY ONE scheduling context (a dedicated cron host, or one
+# Kubernetes CronJob per line) - never per app replica. All times are UTC;
+# set the crontab's timezone accordingly (e.g. CRON_TZ=UTC).
+#
+# scripts/partition_maintenance.sh loads the environment (DATABASE_URL, ...)
+# and dispatches to scripts.partition_maintenance. Adjust APP_DIR / the env
+# file path in that wrapper for your deployment.
+#
+# Alerting (wire in your platform):
+#   - `ensure` exits non-zero            -> P1 page
+#   - `report` shows rows in a DEFAULT   -> page (a write missed its partition)
+#   - `report` shows < 2 future messages partitions -> page
+
+CRON_TZ=UTC
+
+# Pre-create dated partitions out to the buffer horizon. Runs first.
+10 0 * * *   /opt/linka/scripts/partition_maintenance.sh ensure
+
+# Drop message_receipt_log partitions past RECEIPT_LOG_RETENTION_DAYS.
+30 0 * * *   /opt/linka/scripts/partition_maintenance.sh prune-receipts
+
+# Freeze messages partitions older than MESSAGE_PARTITION_COLD_AFTER_MONTHS.
+0 1 * * 0    /opt/linka/scripts/partition_maintenance.sh cold
+
+# Emit partition fill / DEFAULT state for monitoring + alerting.
+*/15 * * * * /opt/linka/scripts/partition_maintenance.sh report

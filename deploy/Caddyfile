@@ -1,0 +1,40 @@
+# Linka reverse proxy (ADR 0007).
+#
+# Two sites, both driven by env vars set in .env / docker-compose.prod.yml:
+#
+#   SITE_ADDRESS  - the app + PoC.   e.g. linka.example.com   (or ":80" for
+#                   plain HTTP with no domain / no auto-TLS)
+#   S3_ADDRESS    - the MinIO endpoint the browser uses for presigned
+#                   upload/download + public avatars. e.g. s3.linka.example.com
+#                   MUST match S3_ENDPOINT_URL's host in .env.
+#
+# Caddy gets a real certificate automatically for any *.domain host; for a
+# bare ":80" it just serves HTTP.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$SITE_ADDRESS} {
+	encode zstd gzip
+
+	# Backend API + WebSocket. Everything else is the static PoC.
+	@api path /auth* /users* /chats* /ws /healthz /docs* /redoc* /openapi.json
+	handle @api {
+		reverse_proxy app:8000
+	}
+
+	handle {
+		root * /srv/poc
+		file_server
+	}
+}
+
+{$S3_ADDRESS} {
+	encode zstd gzip
+	# Large media uploads stream straight through to MinIO.
+	request_body {
+		max_size 25MB
+	}
+	reverse_proxy minio:9000
+}

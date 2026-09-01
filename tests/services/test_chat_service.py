@@ -115,7 +115,11 @@ async def test_add_member_generates_a_system_message(db_session: AsyncSession):
     await chat_service.add_member(db_session, actor_id=1, chat_id=group.id, new_user_id=2)
 
     messages = await get_chat_messages(db_session, chat_id=group.id)
-    assert any("joined" in (m.content or "") for m in messages)
+    # "<actor> added <new member> to the group" - see MessageList.js.
+    assert any(
+        m.sender_id is None and "added" in (m.content or "") and "to the group" in (m.content or "")
+        for m in messages
+    )
 
 
 async def test_plain_member_cannot_add_others(db_session: AsyncSession):

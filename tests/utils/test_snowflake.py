@@ -1,9 +1,16 @@
 import threading
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 import utils.snowflake as sf
-from utils.snowflake import SnowflakeGenerator
+from utils.snowflake import (
+    SnowflakeGenerator,
+    id_to_datetime,
+    id_to_datetime_range,
+    id_to_timestamp_ms,
+    next_id,
+)
 
 
 def test_ids_are_unique_and_monotonic_single_threaded():
@@ -89,3 +96,34 @@ def test_clock_moving_backwards_raises_instead_of_risking_a_duplicate(monkeypatc
 def test_out_of_range_machine_id_rejected(bad_machine_id):
     with pytest.raises(ValueError):
         SnowflakeGenerator(machine_id=bad_machine_id)
+
+
+def test_id_to_timestamp_ms_inverts_the_generator(monkeypatch):
+    fixed_ms = 1_800_000_123_456
+    monkeypatch.setattr(SnowflakeGenerator, "_current_millis", staticmethod(lambda: fixed_ms))
+    gen = SnowflakeGenerator(machine_id=7)
+
+    # Machine id and sequence occupy the low 22 bits and must not leak into the
+    # recovered timestamp.
+    assert id_to_timestamp_ms(gen.next_id()) == fixed_ms
+    assert id_to_timestamp_ms(gen.next_id()) == fixed_ms
+
+
+def test_id_to_datetime_is_utc_aware_and_matches_wall_clock():
+    before = datetime.now(timezone.utc)
+    dt = id_to_datetime(next_id())
+    after = datetime.now(timezone.utc)
+
+    assert dt.tzinfo is timezone.utc
+    assert before - timedelta(seconds=1) <= dt <= after + timedelta(seconds=1)
+
+
+def test_id_to_datetime_range_brackets_the_ids_with_skew():
+    lo, hi = next_id(), next_id()
+    skew = timedelta(hours=1)
+    start, end = id_to_datetime_range(lo, hi, skew=skew)
+
+    assert start == id_to_datetime(lo) - skew
+    assert end == id_to_datetime(hi) + skew
+    # Argument order does not matter.
+    assert id_to_datetime_range(hi, lo, skew=skew) == (start, end)

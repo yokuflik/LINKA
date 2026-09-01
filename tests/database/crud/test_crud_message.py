@@ -19,9 +19,20 @@ from database.crud.crud_message import (
 from database.crud.crud_participant import add_participant_to_chat, update_last_delivered_message, update_last_read_message
 from database.models.message import MessageStatus
 from database.models.participant import Participant
+from utils.snowflake import next_id
 
 # Tells pytest to run all tests in this file asynchronously
 pytestmark = pytest.mark.asyncio
+
+# crud_message derives partition-pruning bounds on `created_at` from the message
+# id (its high bits decode to a wall-clock ms - see MESSAGE_PARTITION_QUERY_SKEW_HOURS).
+# Fabricated small ints like 90010 decode to 2024-01-01 and get pruned out of a
+# now() row's partition, so tests must mint ids off a real, current base.
+_MID_BASE = next_id() & ~0x3FFFFF
+
+
+def _mid(n: int) -> int:
+    return _MID_BASE + n
 
 
 async def _make_chat_with_sender(db_session: AsyncSession, chat_id: int, user_id: int):
@@ -91,7 +102,7 @@ async def test_create_message_invalid_chat_fails(db_session: AsyncSession):
 
 async def test_get_message_by_id(db_session: AsyncSession):
     # Arrange
-    chat_id, user_id, message_id = 702, 801, 90004
+    chat_id, user_id, message_id = 702, 801, _mid(4)
     await _make_chat_with_sender(db_session, chat_id, user_id)
     await create_message(db_session, message_id=message_id, chat_id=chat_id, sender_id=user_id, content="find me")
 
@@ -107,20 +118,20 @@ async def test_get_chat_messages_orders_newest_first_and_paginates(db_session: A
     # Arrange: Insert three messages with strictly increasing (Snowflake-like) IDs
     chat_id, user_id = 703, 802
     await _make_chat_with_sender(db_session, chat_id, user_id)
-    for message_id in (90010, 90011, 90012):
+    for message_id in (_mid(10), _mid(11), _mid(12)):
         await create_message(db_session, message_id=message_id, chat_id=chat_id, sender_id=user_id, content=str(message_id))
 
     # Act: First page
     first_page = await get_chat_messages(db_session, chat_id=chat_id, limit=2)
 
     # Assert: Newest first
-    assert [m.id for m in first_page] == [90012, 90011]
+    assert [m.id for m in first_page] == [_mid(12), _mid(11)]
 
     # Act: Next page, using the last message of the first page as the cursor
     second_page = await get_chat_messages(db_session, chat_id=chat_id, before_id=first_page[-1].id, limit=2)
 
     # Assert
-    assert [m.id for m in second_page] == [90010]
+    assert [m.id for m in second_page] == [_mid(10)]
 
 
 async def test_get_chat_messages_excludes_soft_deleted_by_default(db_session: AsyncSession):
@@ -158,7 +169,7 @@ async def test_edit_message_content(db_session: AsyncSession):
 
 async def test_soft_delete_message(db_session: AsyncSession):
     # Arrange
-    chat_id, user_id, message_id = 706, 805, 90040
+    chat_id, user_id, message_id = 706, 805, _mid(40)
     await _make_chat_with_sender(db_session, chat_id, user_id)
     await create_message(db_session, message_id=message_id, chat_id=chat_id, sender_id=user_id, content="to delete")
 
@@ -338,12 +349,12 @@ async def test_count_unread_messages(db_session: AsyncSession):
     # Arrange
     chat_id, user_id = 724, 825
     await _make_chat_with_sender(db_session, chat_id, user_id)
-    await create_message(db_session, message_id=90240, chat_id=chat_id, sender_id=user_id, content="1")
-    await create_message(db_session, message_id=90241, chat_id=chat_id, sender_id=user_id, content="2")
-    m3 = await create_message(db_session, message_id=90242, chat_id=chat_id, sender_id=user_id, content="3")
-    await create_message(db_session, message_id=90243, chat_id=chat_id, sender_id=None, type=6, content="system")
-    await create_message(db_session, message_id=90244, chat_id=chat_id, sender_id=user_id, content="4")
-    await soft_delete_message(db_session, chat_id=chat_id, message_id=90244)
+    await create_message(db_session, message_id=_mid(240), chat_id=chat_id, sender_id=user_id, content="1")
+    await create_message(db_session, message_id=_mid(241), chat_id=chat_id, sender_id=user_id, content="2")
+    m3 = await create_message(db_session, message_id=_mid(242), chat_id=chat_id, sender_id=user_id, content="3")
+    await create_message(db_session, message_id=_mid(243), chat_id=chat_id, sender_id=None, type=6, content="system")
+    await create_message(db_session, message_id=_mid(244), chat_id=chat_id, sender_id=user_id, content="4")
+    await soft_delete_message(db_session, chat_id=chat_id, message_id=_mid(244))
 
     # Act + Assert: NULL cursor counts every *real*, non-deleted message
     # (4 real messages, minus the soft-deleted one = 3; the system message never counts)
@@ -353,7 +364,7 @@ async def test_count_unread_messages(db_session: AsyncSession):
     assert await count_unread_messages(db_session, chat_id, m3.id) == 0
 
     # Act + Assert: cursor before m3 -> just m3 (90243 system + 90244 deleted excluded)
-    assert await count_unread_messages(db_session, chat_id, 90241) == 1
+    assert await count_unread_messages(db_session, chat_id, _mid(241)) == 1
 
 
 async def test_edit_message_updates_preview_only_for_current_last_message(db_session: AsyncSession):

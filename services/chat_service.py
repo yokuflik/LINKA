@@ -321,6 +321,13 @@ async def update_group_details(
     if existing is None:
         return None
 
+    # Snapshot the old values now: update_chat_details issues an UPDATE ...
+    # RETURNING Chat that refreshes this same identity-mapped instance in
+    # place, so reading existing.title afterwards would already show the new
+    # value and the "did it actually change?" guards below would never fire.
+    old_title = existing.title
+    old_about_text = existing.about_text
+
     chat = await update_chat_details(
         session, chat_id=chat_id, title=title, about_text=about_text, profile_pic_url=profile_pic_url
     )
@@ -329,11 +336,11 @@ async def update_group_details(
 
     # Mirror the other group mutations: a detail change is announced in-chat.
     actor_name = await _display_name_for(session, actor_id)
-    if title is not None and title != existing.title:
+    if title is not None and title != old_title:
         await message_service.send_system_message(
             session, chat_id=chat_id, content=f'{actor_name} changed the group name to "{title}"'
         )
-    if about_text is not None and about_text != existing.about_text:
+    if about_text is not None and about_text != old_about_text:
         await message_service.send_system_message(
             session, chat_id=chat_id, content=f"{actor_name} changed the group description"
         )

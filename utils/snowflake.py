@@ -1,5 +1,6 @@
 import time
 import threading
+from datetime import datetime, timedelta, timezone
 
 from config import SNOWFLAKE_MACHINE_ID
 
@@ -73,3 +74,31 @@ _generator = SnowflakeGenerator(SNOWFLAKE_MACHINE_ID)
 
 def next_id() -> int:
     return _generator.next_id()
+
+
+_TIMESTAMP_SHIFT = _MACHINE_ID_BITS + _SEQUENCE_BITS
+
+
+def id_to_timestamp_ms(id_: int) -> int:
+    """Unix-epoch millisecond the id's 41-bit timestamp field encodes."""
+    return (id_ >> _TIMESTAMP_SHIFT) + _EPOCH_MS
+
+
+def id_to_datetime(id_: int) -> datetime:
+    """UTC-aware datetime the id was minted at (millisecond precision)."""
+    return datetime.fromtimestamp(id_to_timestamp_ms(id_) / 1000, tz=timezone.utc)
+
+
+def id_to_datetime_range(
+    low_id: int, high_id: int, *, skew: timedelta = timedelta(hours=1)
+) -> tuple[datetime, datetime]:
+    """
+    Conservative [start, end] window on `created_at` for every row whose id lies
+    in [low_id, high_id]. Widened by `skew` on both ends to absorb the gap
+    between id minting and the server-side created_at default - see
+    config.MESSAGE_PARTITION_QUERY_SKEW_HOURS. Used only as a partition-pruning
+    predicate; it is always a superset of the exact match.
+    """
+    if low_id > high_id:
+        low_id, high_id = high_id, low_id
+    return id_to_datetime(low_id) - skew, id_to_datetime(high_id) + skew

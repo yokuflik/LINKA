@@ -1,0 +1,127 @@
+# Production / demo stack for a single 1 GB free-tier host (ADR 0007).
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env up -d
+#
+# Only Caddy publishes ports (80/443). Postgres, Redis and MinIO are reachable
+# only on the internal compose network. Every stateful service has a named
+# volume and a memory ceiling. See deploy/README.md for first-boot steps.
+
+name: linka
+
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    <<: *restart
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in .env}
+      S3_ADDRESS: ${S3_ADDRESS:?set S3_ADDRESS in .env}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./poc:/srv/poc:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    mem_limit: 64m
+    depends_on:
+      app:
+        condition: service_started
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linka-app:latest
+    <<: *restart
+    env_file: .env
+    environment:
+      # Container-internal service names override whatever the .env points at
+      # for local dev, so one .env works for both `exec` scripts and the app.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    mem_limit: 320m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  db:
+    image: postgres:15-alpine
+    <<: *restart
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    command:
+      - "postgres"
+      - "-c"
+      - "config_file=/etc/postgresql/postgresql.conf"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres.prod.conf:/etc/postgresql/postgresql.conf:ro
+    mem_limit: 320m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    <<: *restart
+    # volatile-lru: only keys with a TTL (OTP, presence, refresh tokens) are
+    # evictable under pressure; the Redis Streams (capped by MAXLEN via env)
+    # and consumer groups are never dropped. AOF so a restart keeps sessions.
+    command:
+      - "redis-server"
+      - "--maxmemory"
+      - "128mb"
+      - "--maxmemory-policy"
+      - "volatile-lru"
+      - "--appendonly"
+      - "yes"
+    volumes:
+      - redisdata:/data
+    mem_limit: 160m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio
+    <<: *restart
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    volumes:
+      - minio_data:/data
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redisdata:
+  minio_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,25 @@
+# Linka time-partition maintenance - single-host compose deployment (ADR 0007).
+# Install on the ONE host running the stack:
+#
+#   crontab deploy/partition-maintenance.prod.crontab
+#
+# Assumes the repo is at /opt/linka (override with LINKA_APP_DIR in the
+# crontab environment). All times UTC.
+
+CRON_TZ=UTC
+LINKA_APP_DIR=/opt/linka
+
+# Pre-create dated partitions out to the buffer horizon. Runs first.
+10 0 * * *   /opt/linka/deploy/partition-maintenance.prod.sh ensure   >> /var/log/linka-partitions.log 2>&1
+
+# Drop message_receipt_log partitions past RECEIPT_LOG_RETENTION_DAYS.
+30 0 * * *   /opt/linka/deploy/partition-maintenance.prod.sh prune-receipts >> /var/log/linka-partitions.log 2>&1
+
+# Freeze messages partitions older than MESSAGE_PARTITION_COLD_AFTER_MONTHS.
+0 1 * * 0    /opt/linka/deploy/partition-maintenance.prod.sh cold   >> /var/log/linka-partitions.log 2>&1
+
+# Partition fill / DEFAULT state for monitoring.
+*/30 * * * * /opt/linka/deploy/partition-maintenance.prod.sh report >> /var/log/linka-partitions.log 2>&1
+
+# Nightly database dump (keep 7). The named volume is otherwise the only copy.
+15 2 * * *   cd /opt/linka && docker compose -f docker-compose.prod.yml exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' | gzip > /opt/linka/backups/linka-$(date +\%F).sql.gz && find /opt/linka/backups -name 'linka-*.sql.gz' -mtime +7 -delete

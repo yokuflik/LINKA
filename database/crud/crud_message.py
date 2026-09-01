@@ -3,14 +3,21 @@ from sqlalchemy import select, update
 from sqlalchemy.sql import func
 from sqlalchemy.exc import IntegrityError
 from typing import Sequence, Optional
+from datetime import timedelta
 import logging
 
 from database.models.message import AUDIO_MESSAGE_TYPE, Message, MessageStatus
 from database.models.chat import Chat, LAST_MESSAGE_PREVIEW_LENGTH
 from database.models.participant import Participant
 from database.crud.crud_participant import recompute_chat_receipt_cursors
+from config import MESSAGE_PARTITION_QUERY_SKEW_HOURS
+from utils.snowflake import id_to_datetime
 
 logger = logging.getLogger(__name__)
+
+# Half-width of the created_at slack applied to id-derived partition-pruning
+# predicates (see config.MESSAGE_PARTITION_QUERY_SKEW_HOURS).
+_PARTITION_SKEW = timedelta(hours=MESSAGE_PARTITION_QUERY_SKEW_HOURS)
 
 # Hard ceiling on any page size a caller can request, regardless of what they
 # pass in. Without this, `limit` is just a suggestion - someone (a bug, or a
@@ -181,7 +188,15 @@ async def get_message_by_id(session: AsyncSession, chat_id: int, message_id: int
     read in the context of its chat), so this hits the (chat_id, id) index on
     each partition instead of an unpruned scan by id alone.
     """
-    stmt = select(Message).where(Message.chat_id == chat_id, Message.id == message_id)
+    # created_at BETWEEN the id's minting instant ± skew prunes the lookup to the
+    # single weekly partition that can hold this id, instead of probing every one.
+    at = id_to_datetime(message_id)
+    stmt = select(Message).where(
+        Message.chat_id == chat_id,
+        Message.id == message_id,
+        Message.created_at >= at - _PARTITION_SKEW,
+        Message.created_at <= at + _PARTITION_SKEW,
+    )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -207,6 +222,9 @@ async def get_chat_messages(
 
     if before_id is not None:
         stmt = stmt.where(Message.id < before_id)
+        # Nothing older than this cursor was created after it: cap created_at so
+        # Postgres skips every partition newer than the cursor's week.
+        stmt = stmt.where(Message.created_at <= id_to_datetime(before_id) + _PARTITION_SKEW)
 
     if not include_deleted:
         stmt = stmt.where(Message.deleted_at.is_(None))
@@ -235,6 +253,10 @@ async def count_unread_messages(session: AsyncSession, chat_id: int, last_read_m
     )
     if last_read_message_id is not None:
         stmt = stmt.where(Message.id > last_read_message_id)
+        # Every unread message was created at/after the watermark's instant:
+        # floor created_at so the count skips all older partitions instead of
+        # scanning the chat's full history forward from an ancient cursor.
+        stmt = stmt.where(Message.created_at >= id_to_datetime(last_read_message_id) - _PARTITION_SKEW)
 
     result = await session.execute(stmt)
     return result.scalar_one()

@@ -1,15 +1,19 @@
 # Linka reverse proxy (ADR 0007).
 #
-# Two sites, both driven by env vars set in .env / docker-compose.prod.yml:
+# SITE_ADDRESS drives everything:
+#   - a hostname (linka.example.com)  -> automatic HTTPS via Let's Encrypt
+#   - ":80"                           -> plain HTTP, reached by the server's
+#                                        raw IP (no domain yet)
 #
-#   SITE_ADDRESS  - the app + PoC.   e.g. linka.example.com   (or ":80" for
-#                   plain HTTP with no domain / no auto-TLS)
-#   S3_ADDRESS    - the MinIO endpoint the browser uses for presigned
-#                   upload/download + public avatars. e.g. s3.linka.example.com
-#                   MUST match S3_ENDPOINT_URL's host in .env.
+# The API + WebSocket and the static PoC are served from the SAME origin, so
+# the browser makes same-origin calls and CORS never comes into play.
 #
-# Caddy gets a real certificate automatically for any *.domain host; for a
-# bare ":80" it just serves HTTP.
+# Object storage (MinIO) is NOT proxied here: without a dedicated hostname a
+# path prefix would break S3 SigV4 (the signed path must reach MinIO
+# unchanged). Until you add a domain, MinIO stays on the internal network and
+# the app talks to it directly (S3_ENDPOINT_URL=http://minio:9000). Browser
+# media upload/download starts working once S3 gets its own hostname — see
+# deploy/README.md.
 
 {
 	email {$ACME_EMAIL}
@@ -28,13 +32,4 @@
 		root * /srv/poc
 		file_server
 	}
-}
-
-{$S3_ADDRESS} {
-	encode zstd gzip
-	# Large media uploads stream straight through to MinIO.
-	request_body {
-		max_size 25MB
-	}
-	reverse_proxy minio:9000
 }

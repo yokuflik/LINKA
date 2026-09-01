@@ -85,7 +85,52 @@ const MessageList = {
       return (m.type === 2 || m.type === 3) && m.media_url && !m.content && m.reply_to_message_id == null
         && m.deleted_at == null;
     }
-    return { messagesEl, onScroll, isBareMedia, rows };
+
+    // Long-press = right-click on touch devices (WhatsApp/Telegram/iMessage
+    // convention). Hold ~450ms without moving more than a few px, then open
+    // the same context menu at the touch point. A move/scroll or an early
+    // lift cancels it, so a tap or a swipe-scroll still works normally.
+    let pressTimer = null;
+    let pressStart = null;
+    let pressFired = false;
+    const LONG_PRESS_MS = 450;
+    const MOVE_TOLERANCE_PX = 10;
+
+    function onTouchStart(m, event) {
+      if (!event.touches || event.touches.length !== 1) return;
+      const t = event.touches[0];
+      pressStart = { x: t.clientX, y: t.clientY };
+      pressFired = false;
+      clearTimeout(pressTimer);
+      pressTimer = setTimeout(() => {
+        pressFired = true;
+        if (navigator.vibrate) navigator.vibrate(10);
+        emit('message-contextmenu', {
+          message: m,
+          event: { clientX: pressStart.x, clientY: pressStart.y },
+        });
+      }, LONG_PRESS_MS);
+    }
+    function onTouchMove(event) {
+      if (!pressStart || !event.touches || !event.touches.length) return;
+      const t = event.touches[0];
+      if (Math.abs(t.clientX - pressStart.x) > MOVE_TOLERANCE_PX ||
+          Math.abs(t.clientY - pressStart.y) > MOVE_TOLERANCE_PX) {
+        clearTimeout(pressTimer);
+      }
+    }
+    function onTouchEnd(event) {
+      clearTimeout(pressTimer);
+      // Swallow the click/tap that follows a long-press so it doesn't also
+      // trigger the bubble's normal tap behaviour (e.g. opening a file).
+      if (pressFired && event.cancelable) event.preventDefault();
+      pressStart = null;
+    }
+
+    return {
+      messagesEl, onScroll, isBareMedia, rows,
+      onTouchStart, onTouchMove, onTouchEnd,
+    };
   },
   expose: ['messagesEl'],
   template: `
@@ -121,7 +166,11 @@ const MessageList = {
                      ? 'px-3 py-2 rounded-2xl bubble-tail bg-teal-700 text-white rounded-br-none bubble-tail-mine'
                      : 'px-3 py-2 rounded-2xl bubble-tail bg-white border border-slate-200 rounded-bl-none bubble-tail-theirs')
              ]"
-             @contextmenu.prevent="$emit('message-contextmenu', { message: m, event: $event })">
+             @contextmenu.prevent="$emit('message-contextmenu', { message: m, event: $event })"
+             @touchstart.passive="onTouchStart(m, $event)"
+             @touchmove.passive="onTouchMove($event)"
+             @touchend="onTouchEnd($event)"
+             @touchcancel="onTouchEnd($event)">
           <!-- Soft-deleted message: a "This message was deleted" tombstone in
                place of the original content (WhatsApp-style). -->
           <span v-if="m.deleted_at" class="italic opacity-70"

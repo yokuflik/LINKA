@@ -86,6 +86,14 @@ const MessageList = {
         && m.deleted_at == null;
     }
 
+    // Per-image "has it finished loading?" flags, keyed by media_url, so the
+    // spinner overlay can sit above the white placeholder until <img> @load.
+    const imageLoaded = Vue.reactive({});
+    function markImageLoaded(url, event) {
+      if (url) imageLoaded[url] = true;
+      if (event && event.target) event.target.classList.remove('opacity-0');
+    }
+
     // Long-press = right-click on touch devices (WhatsApp/Telegram/iMessage
     // convention). Hold ~450ms without moving more than a few px, then open
     // the same context menu at the touch point. A move/scroll or an early
@@ -130,6 +138,7 @@ const MessageList = {
     return {
       messagesEl, onScroll, isBareMedia, rows,
       onTouchStart, onTouchMove, onTouchEnd,
+      imageLoaded, markImageLoaded,
     };
   },
   expose: ['messagesEl'],
@@ -195,11 +204,15 @@ const MessageList = {
                decodes; the image fades in on load, filling the box
                (object-cover). Two shapes only, by design. -->
           <div v-if="m.media_url && m.type === 2" class="mb-1">
-            <div class="rounded-lg overflow-hidden bg-white border border-black"
+            <div class="relative rounded-lg overflow-hidden bg-white border border-black"
                  :class="imageOrientation(m.media_url) === 'portrait' ? 'w-48 aspect-[3/4]' : 'w-64 aspect-[4/3]'">
+              <!-- Loading spinner over the white placeholder until @load -->
+              <div v-if="!imageLoaded[m.media_url]" class="absolute inset-0 flex items-center justify-center">
+                <span class="w-6 h-6 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin"></span>
+              </div>
               <img :src="m.media_url" :alt="m.media_name || 'image'" loading="lazy"
                    class="w-full h-full object-cover opacity-0 transition-opacity duration-200"
-                   @load="$event.target.classList.remove('opacity-0')" />
+                   @load="markImageLoaded(m.media_url, $event)" />
             </div>
           </div>
           <!-- Video: same fixed two-shape reserved box as images, so

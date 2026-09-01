@@ -8,12 +8,9 @@
 # The API + WebSocket and the static PoC are served from the SAME origin, so
 # the browser makes same-origin calls and CORS never comes into play.
 #
-# Object storage (MinIO) is NOT proxied here: without a dedicated hostname a
-# path prefix would break S3 SigV4 (the signed path must reach MinIO
-# unchanged). Until you add a domain, MinIO stays on the internal network and
-# the app talks to it directly (S3_ENDPOINT_URL=http://minio:9000). Browser
-# media upload/download starts working once S3 gets its own hostname — see
-# deploy/README.md.
+# Object storage is real AWS S3 (ADR 0008), not proxied here. The browser
+# uploads/downloads directly to the bucket via presigned URLs; the bucket's
+# own CORS config must allow this SITE origin (see deploy/README.md).
 
 {
 	email {$ACME_EMAIL}

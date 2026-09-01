@@ -65,6 +65,7 @@ Per Core Behavior Rule 7, review these before proposing any systemic change, and
 | `docs/adr/0005-time-partition-management.md` | Weekly `messages` / daily `message_receipt_log` partitions, managed by a standalone Python script (not `pg_partman`); DEFAULT kept as safety net; online DEFAULT migration | Accepted |
 | `docs/adr/0006-partition-maintenance-cron.md` | Partition-maintenance scheduling: committed `deploy/partition-maintenance.crontab` + `scripts/partition_maintenance.sh` wrapper, run on exactly one host (no in-app scheduler) | Accepted |
 | `docs/adr/0007-single-host-docker-compose-deploy.md` | Demo deploy: one 1 GB host, `Dockerfile` (multi-stage) + `docker-compose.prod.yml` (app + Caddy + db + redis + minio), single Uvicorn process, git-ignored `.env` | Accepted |
+| `docs/adr/0008-real-s3-object-storage-prod.md` | Demo deploy uses real AWS S3 (no MinIO container); two buckets (private media / public avatars), `S3_ENDPOINT_URL` empty, bucket CORS + IAM user required. Supersedes ADR 0007 §4 | Accepted |
 
 ---
 

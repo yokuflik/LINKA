@@ -257,6 +257,11 @@ function useWsRouter(ctx) {
         m.media_url = msg.media_url ?? null;
         m.is_edited = !!msg.is_edited;
         m.edited_at = msg.edited_at || m.edited_at;
+        // Restore hands back a fresh presigned media_url that was never probed,
+        // so imageOrientation() would default to 'landscape' and a portrait
+        // photo would render in the wide box. Re-probe the new URL.
+        if (m.type === 2 && m.media_url) ctx.probeMediaOrientation(m.media_url, 'image');
+        else if (m.type === 3 && m.media_url) ctx.probeMediaOrientation(m.media_url, 'video');
       }
       ctx.updateChatPreviewIfLast(msg.chat_id, msg.message_id, msg.content || '');
       return;

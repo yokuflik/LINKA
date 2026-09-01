@@ -1,5 +1,6 @@
 fastapi==0.115.13
 uvicorn==0.34.3
+websockets==13.1
 pydantic==2.11.7
 sqlalchemy==2.0.41
 asyncpg==0.31.0

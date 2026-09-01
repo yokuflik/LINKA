@@ -8,7 +8,14 @@
 function useCore(ctx) {
   const { ref, computed } = Vue;
 
-  const apiBase = ref(localStorage.getItem('linka_api_base') || 'http://localhost:8000');
+  // Default to the origin the PoC itself was served from, so a fresh device
+  // just works when Caddy serves both the PoC and the API from one host.
+  // Falls back to localhost:8000 only when opened as a file:// (no origin).
+  // Override for local dev with localStorage.setItem('linka_api_base', ...).
+  const _servedOrigin = (location.protocol === 'http:' || location.protocol === 'https:')
+    ? location.origin
+    : 'http://localhost:8000';
+  const apiBase = ref(localStorage.getItem('linka_api_base') || _servedOrigin);
   const wsBase = computed(() => apiBase.value.replace(/^http/, 'ws'));
 
   function log(...args) { console.log('%c[Linka]', 'color:#0e7c90', ...args); }

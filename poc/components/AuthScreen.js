@@ -32,11 +32,20 @@ const AuthScreen = {
     return {
       resendIn: 0,        // seconds left before "resend code" is allowed again
       _resendTimer: null,
+      countryOpen: false,  // custom country dropdown expanded?
+      countryFilter: '',
     };
   },
   computed: {
     isRegister() { return this.authMode === 'register'; },
     canSubmitPhone() { return this.phoneIsValid || this.phoneIsWhitelisted; },
+    filteredCountries() {
+      const q = this.countryFilter.trim().toLowerCase();
+      if (!q) return this.phoneCountries;
+      return this.phoneCountries.filter(
+        (c) => c.name.toLowerCase().includes(q) || c.dial.includes(q.replace(/^\+/, ''))
+      );
+    },
   },
   watch: {
     // Start the 60s cooldown whenever we land on the code-entry step.
@@ -45,7 +54,11 @@ const AuthScreen = {
       else this.clearResendTimer();
     },
   },
-  beforeUnmount() { this.clearResendTimer(); },
+  mounted() { document.addEventListener('click', this.onDocClick, true); },
+  beforeUnmount() {
+    this.clearResendTimer();
+    document.removeEventListener('click', this.onDocClick, true);
+  },
   methods: {
     startResendCooldown() {
       this.clearResendTimer();
@@ -67,9 +80,17 @@ const AuthScreen = {
     setProfileField(key, value) {
       this.$emit('update:profileDraft', { ...this.profileDraft, [key]: value });
     },
-    onCountryChange(iso2) {
-      const c = this.phoneCountries.find((x) => x.iso2 === iso2);
-      if (c) this.$emit('update:phoneCountry', c);
+    toggleCountry() {
+      this.countryOpen = !this.countryOpen;
+      this.countryFilter = '';
+      if (this.countryOpen) this.$nextTick(() => this.$refs.countrySearch && this.$refs.countrySearch.focus());
+    },
+    pickCountry(c) {
+      this.$emit('update:phoneCountry', c);
+      this.countryOpen = false;
+    },
+    onDocClick(e) {
+      if (this.countryOpen && this.$el && !this.$el.contains(e.target)) this.countryOpen = false;
     },
     onAvatarChange(event) {
       const file = event.target.files && event.target.files[0];
@@ -103,18 +124,36 @@ const AuthScreen = {
           </template>
 
           <label class="block text-xs font-medium text-slate-500 mb-1">Phone number</label>
-          <div class="flex w-full mb-1 border border-slate-300 rounded-lg overflow-hidden focus-within:ring-1 focus-within:ring-teal-600 focus-within:border-teal-600">
-            <select :value="phoneCountry.iso2" @change="onCountryChange($event.target.value)"
-                    :title="phoneCountry.name"
-                    class="shrink-0 w-[4.5rem] px-1 py-2 bg-slate-50 border-r border-slate-300 text-sm outline-none">
-              <option v-for="c in phoneCountries" :key="c.iso2" :value="c.iso2" :title="c.name">
-                {{ c.flag }} +{{ c.dial }}
-              </option>
-            </select>
-            <input :value="phoneRawInput" @input="$emit('update:phoneRawInput', $event.target.value)"
-                   inputmode="tel" placeholder="Phone number"
-                   class="flex-1 min-w-0 px-3 py-2 outline-none"
-                   @keyup.enter="canSubmitPhone && $emit('request-otp')" />
+          <div class="relative mb-1">
+            <div class="flex w-full border border-slate-300 rounded-lg overflow-hidden focus-within:ring-1 focus-within:ring-teal-600 focus-within:border-teal-600">
+              <button type="button" @click="toggleCountry" :title="phoneCountry.name"
+                      class="shrink-0 flex items-center gap-1 px-2 py-2 bg-slate-50 border-r border-slate-300 text-sm">
+                <span>{{ phoneCountry.flag }}</span>
+                <span class="text-slate-500">+{{ phoneCountry.dial }}</span>
+                <span class="text-slate-400 text-[10px]">▾</span>
+              </button>
+              <input :value="phoneRawInput" @input="$emit('update:phoneRawInput', $event.target.value)"
+                     inputmode="tel" placeholder="Phone number"
+                     class="flex-1 min-w-0 px-3 py-2 outline-none"
+                     @keyup.enter="canSubmitPhone && $emit('request-otp')" />
+            </div>
+
+            <div v-if="countryOpen"
+                 class="absolute z-20 mt-1 w-full max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg">
+              <div class="sticky top-0 bg-white p-2 border-b border-slate-100">
+                <input ref="countrySearch" v-model="countryFilter" placeholder="Search country…"
+                       class="w-full px-2 py-1 text-sm border border-slate-200 rounded" />
+              </div>
+              <button v-for="c in filteredCountries" :key="c.iso2" type="button"
+                      @click="pickCountry(c)"
+                      class="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-slate-50"
+                      :class="c.iso2 === phoneCountry.iso2 ? 'bg-teal-50' : ''">
+                <span>{{ c.flag }}</span>
+                <span class="flex-1 truncate">{{ c.name }}</span>
+                <span class="text-slate-400">+{{ c.dial }}</span>
+              </button>
+              <p v-if="!filteredCountries.length" class="px-3 py-2 text-sm text-slate-400">No match</p>
+            </div>
           </div>
           <p class="mb-3 text-xs h-4"
              :class="phoneRawInput && !canSubmitPhone ? 'text-red-600' : 'text-slate-400'">

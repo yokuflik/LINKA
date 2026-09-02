@@ -100,6 +100,15 @@ S3_AVATARS_PUBLIC_BASE_URL = os.environ.get(
 # download is longer so an open chat keeps working without re-signing every
 # item on every scroll.
 UPLOAD_URL_EXPIRY_SECONDS = int(os.environ.get("UPLOAD_URL_EXPIRY_SECONDS", "900"))
+
+# Content-addressed media dedup (ADR 0010). When true, the client-supplied
+# sha256 is pinned into the presigned PUT as x-amz-checksum-sha256, so storage
+# itself rejects a body whose bytes don't match the claimed hash. Disable only
+# against a storage backend that doesn't support SHA-256 checksums - integrity
+# then falls back to the size check done via HEAD at send time.
+S3_ENFORCE_UPLOAD_CHECKSUM = os.environ.get(
+    "S3_ENFORCE_UPLOAD_CHECKSUM", "true"
+).lower() in ("1", "true", "yes")
 DOWNLOAD_URL_EXPIRY_SECONDS = int(os.environ.get("DOWNLOAD_URL_EXPIRY_SECONDS", "3600"))
 
 # Per-kind upload size ceilings, in bytes. These are pinned into the

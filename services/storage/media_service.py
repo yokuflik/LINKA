@@ -17,6 +17,9 @@ from dataclasses import dataclass
 
 from botocore.exceptions import ClientError
 
+import base64
+import re
+
 from config import (
     ALLOWED_UPLOAD_MIME,
     DOWNLOAD_URL_EXPIRY_SECONDS,
@@ -25,11 +28,13 @@ from config import (
     S3_AVATARS_PUBLIC_BASE_URL,
     S3_BUCKET_AVATARS,
     S3_BUCKET_MEDIA,
+    S3_ENFORCE_UPLOAD_CHECKSUM,
     UPLOAD_BUCKET_BY_KIND,
     UPLOAD_URL_EXPIRY_SECONDS,
 )
 from services.storage.client import (
     async_session,
+    build_media_blob_key,
     build_object_key,
     client_kwargs,
     signing_client,
@@ -61,6 +66,84 @@ class UploadTicket:
     upload_url: str
     required_headers: dict
     expires_in: int
+
+
+@dataclass(frozen=True)
+class MediaUploadTicket:
+    """
+    Result of a content-addressed media upload request (ADR 0010).
+
+    When ``already_uploaded`` is True the bytes are already in storage:
+    ``upload_url`` / ``required_headers`` are empty and the client sends the
+    message straight away with ``storage_key``. Otherwise it PUTs to
+    ``upload_url`` with ``required_headers`` first.
+    """
+
+    storage_key: str
+    bucket: str
+    already_uploaded: bool
+    upload_url: str
+    required_headers: dict
+    expires_in: int
+
+
+_SHA256_HEX_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+
+
+def validate_sha256_hex(value: str) -> str:
+    v = (value or "").strip().lower()
+    if not _SHA256_HEX_RE.match(v):
+        raise MediaValidationError("sha256 must be 64 lowercase hex characters")
+    return v
+
+
+def build_media_upload_ticket(
+    kind: str, mime: str, size_bytes: int, sha256_hex: str, *, already_uploaded: bool
+) -> MediaUploadTicket:
+    """
+    Content-addressed variant of create_upload_ticket. The object key is
+    derived from the content hash (deterministic). When ``already_uploaded``
+    the caller has confirmed the blob is in storage - no presigned PUT is
+    minted. Otherwise the PUT pins Content-Type, Content-Length and (unless
+    disabled) x-amz-checksum-sha256 into the signature.
+    """
+    _validate_upload_request(kind, mime, size_bytes)
+    bucket = UPLOAD_BUCKET_BY_KIND[kind]
+    key = build_media_blob_key(kind, sha256_hex, mime)
+
+    if already_uploaded:
+        return MediaUploadTicket(
+            storage_key=key,
+            bucket=bucket,
+            already_uploaded=True,
+            upload_url="",
+            required_headers={},
+            expires_in=0,
+        )
+
+    params = {
+        "Bucket": bucket,
+        "Key": key,
+        "ContentType": mime,
+        "ContentLength": size_bytes,
+    }
+    headers = {"Content-Type": mime, "Content-Length": str(size_bytes)}
+    if S3_ENFORCE_UPLOAD_CHECKSUM:
+        checksum_b64 = base64.b64encode(bytes.fromhex(sha256_hex)).decode()
+        params["ChecksumSHA256"] = checksum_b64
+        headers["x-amz-checksum-sha256"] = checksum_b64
+
+    url = signing_client().generate_presigned_url(
+        "put_object", Params=params, ExpiresIn=UPLOAD_URL_EXPIRY_SECONDS
+    )
+    return MediaUploadTicket(
+        storage_key=key,
+        bucket=bucket,
+        already_uploaded=False,
+        upload_url=url,
+        required_headers=headers,
+        expires_in=UPLOAD_URL_EXPIRY_SECONDS,
+    )
 
 
 @dataclass(frozen=True)

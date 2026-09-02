@@ -27,6 +27,7 @@ from scripts.manage_partitions import ensure_partitions
 # doesn't import the model modules themselves.
 from database.models import (  # noqa: F401
     chat,
+    media_blob,
     message,
     message_receipt_log,
     participant,
@@ -90,6 +91,21 @@ async def main(drop: bool) -> None:
                 "  settings JSONB NOT NULL DEFAULT '{}'::jsonb,"
                 "  updated_at TIMESTAMPTZ DEFAULT now()"
                 ")",
+                # Content-addressed media blob index (ADR 0010). Spelled out
+                # so an already-initialised dev DB picks it up without --drop.
+                "CREATE TABLE IF NOT EXISTS media_blob ("
+                "  sha256 TEXT PRIMARY KEY,"
+                "  storage_key TEXT NOT NULL,"
+                "  bucket TEXT NOT NULL,"
+                "  kind TEXT NOT NULL,"
+                "  mime TEXT NOT NULL,"
+                "  size BIGINT NOT NULL,"
+                "  ref_count BIGINT NOT NULL DEFAULT 0,"
+                "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+                "  uploaded_at TIMESTAMPTZ"
+                ")",
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_media_blob_storage_key "
+                "ON media_blob (storage_key)",
             ):
                 await conn.execute(text(ddl))
             # Real dated partitions on top of the DEFAULT safety net (ADR 0005).

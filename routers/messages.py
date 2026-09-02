@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import get_db
+from database.crud.crud_media_blob import get_blob_by_hash, reserve_blob
 from database.crud.crud_participant import is_participant
 from routers.dependencies import get_current_user_id
 from routers.schemas import (
@@ -68,9 +69,29 @@ async def create_media_upload_ticket(
             f"User {user_id} is not a participant of chat {chat_id}"
         )
 
-    ticket = media_service.create_upload_ticket(body.kind, body.mime_type, body.size_bytes)
+    # Content-addressed dedup (ADR 0010): if this exact file was already
+    # uploaded and confirmed, hand the client the existing key and skip the
+    # upload entirely. Otherwise reserve a blob row and mint a presigned PUT.
+    existing = await get_blob_by_hash(session, body.sha256)
+    already_uploaded = existing is not None and existing.uploaded_at is not None
+
+    ticket = media_service.build_media_upload_ticket(
+        body.kind, body.mime_type, body.size_bytes, body.sha256,
+        already_uploaded=already_uploaded,
+    )
+    if not already_uploaded:
+        await reserve_blob(
+            session,
+            sha256=body.sha256,
+            storage_key=ticket.storage_key,
+            bucket=ticket.bucket,
+            kind=body.kind,
+            mime=body.mime_type,
+            size=body.size_bytes,
+        )
     return MediaUploadTicketOut(
         storage_key=ticket.storage_key,
+        already_uploaded=ticket.already_uploaded,
         upload_url=ticket.upload_url,
         required_headers=ticket.required_headers,
         expires_in=ticket.expires_in,

@@ -56,7 +56,7 @@ async def process_outgoing(
     if not await is_participant(session, chat_id, sender_id):
         raise NotAParticipantError(f"User {sender_id} is not a participant of chat {chat_id}")
 
-    attachment = await _validate_media(type, media)
+    attachment = await _validate_media(session, type, media)
 
     idem_key = _idempotency_key(chat_id, client_message_id)
 

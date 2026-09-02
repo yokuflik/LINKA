@@ -65,6 +65,7 @@ Per Core Behavior Rule 7, review these before proposing any systemic change, and
 | `docs/adr/0006-partition-maintenance-cron.md` | Partition-maintenance scheduling: committed `deploy/partition-maintenance.crontab` + `scripts/partition_maintenance.sh` wrapper, run on exactly one host (no in-app scheduler) | Accepted |
 | `docs/adr/0007-single-host-docker-compose-deploy.md` | Demo deploy: one 1 GB host, `Dockerfile` (multi-stage) + `docker-compose.prod.yml` (app + Caddy + db + redis + minio), single Uvicorn process, git-ignored `.env` | Accepted |
 | `docs/adr/0009-firebase-phone-auth.md` | Real phone verification via Firebase Phone Auth (client-side SMS + reCAPTCHA); server verifies the ID token manually against Google JWKS (`POST /auth/firebase/verify`, no `firebase-admin`). Open OTP stub closed; `DEV_AUTH_WHITELIST` (`1`–`5`) skips verification. Frontend country-code picker + loose E.164 validator | Accepted |
+| `docs/adr/0010-content-addressed-media-dedup.md` | Upload-once media: client sends `sha256`, backend keys objects by hash in a new `media_blob` table; a known hash skips the upload entirely. `x-amz-checksum-sha256` pinned into the presigned PUT. `ref_count` tracked, no GC yet | Accepted |
 
 ---
 

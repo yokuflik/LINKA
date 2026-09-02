@@ -98,6 +98,20 @@ _MIME_EXT = {
 }
 
 
+def build_media_blob_key(kind: str, sha256_hex: str, mime: str) -> str:
+    """
+    Deterministic object key for a content-addressed media blob (ADR 0010).
+
+    Shape: ``{h2}/{kind}/{sha256}{ext}`` where ``h2`` is the first two hex
+    chars of the content hash (write-spreading, same rationale as
+    ``build_object_key``). Deterministic on purpose: two racing uploads of
+    byte-identical content target the same key, so the second write is a
+    harmless no-op overwrite rather than a duplicate object.
+    """
+    ext = _MIME_EXT.get(mime, "")
+    return f"{sha256_hex[:2]}/{kind}/{sha256_hex}{ext}"
+
+
 def build_object_key(kind: str, mime: str) -> str:
     """
     Generate a fresh, unguessable object key for an upload.

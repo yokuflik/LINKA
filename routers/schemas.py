@@ -133,6 +133,17 @@ class MediaUploadTicketIn(BaseModel):
     kind: str
     mime_type: str
     size_bytes: int
+    # sha256 of the raw file bytes (64 lowercase hex), computed client-side.
+    # Drives content-addressed dedup - see ADR 0010.
+    sha256: str
+
+    @field_validator("sha256")
+    @classmethod
+    def _sha256_hex(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if len(v) != 64 or any(c not in "0123456789abcdef" for c in v):
+            raise ValueError("sha256 must be 64 lowercase hex characters")
+        return v
 
     @model_validator(mode="after")
     def _validate(self):
@@ -158,9 +169,13 @@ class MediaUploadTicketIn(BaseModel):
 
 class MediaUploadTicketOut(BaseModel):
     storage_key: str
-    upload_url: str
-    required_headers: dict
-    expires_in: int
+    # True => the bytes are already in storage (a previous upload of the same
+    # file); the client skips the PUT and sends the message straight away.
+    # upload_url / required_headers are then empty. See ADR 0010.
+    already_uploaded: bool = False
+    upload_url: str = ""
+    required_headers: dict = {}
+    expires_in: int = 0
 
 
 class ChatOut(BaseModel):

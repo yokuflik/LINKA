@@ -62,6 +62,36 @@ const MessageInput = {
       const file = event.target.files && event.target.files[0];
       if (file) this.$emit('pick-media', file);
     },
+    // Long-press the camera button = record a video (WhatsApp convention);
+    // a plain tap still takes a photo. Opens a camera-capture input scoped
+    // to video/* and reuses the same pick-media pipeline.
+    onCameraPressStart() {
+      clearTimeout(this._cameraPressTimer);
+      this._cameraPressFired = false;
+      this._cameraPressTimer = setTimeout(() => {
+        this._cameraPressFired = true;
+        if (navigator.vibrate) navigator.vibrate(10);
+        this.openVideoCamera();
+      }, 450);
+    },
+    onCameraPressEnd(event) {
+      clearTimeout(this._cameraPressTimer);
+      if (this._cameraPressFired && event && event.cancelable) event.preventDefault();
+    },
+    onCameraClick() {
+      // Suppressed when the long-press already opened the video camera.
+      if (this._cameraPressFired) { this._cameraPressFired = false; return; }
+      this.openCamera();
+    },
+    openVideoCamera() {
+      this.closeAttachMenu();
+      this.$refs.videoCameraInput.value = '';
+      this.$refs.videoCameraInput.click();
+    },
+    onCameraVideoChosen(event) {
+      const file = event.target.files && event.target.files[0];
+      if (file) this.$emit('pick-media', file);
+    },
     openDocumentPicker() {
       this.closeAttachMenu();
       this.$refs.documentFileInput.value = '';
@@ -147,9 +177,14 @@ const MessageInput = {
         </template>
         <!-- Camera: plain black line-art icon (matches the mic), opens the
              device camera and sends the photo through the image pipeline. -->
-        <button type="button" @click="openCamera" v-if="!isRecording"
+        <button type="button" v-if="!isRecording"
+                @click="onCameraClick"
+                @touchstart="onCameraPressStart" @touchend="onCameraPressEnd"
+                @touchcancel="onCameraPressEnd"
+                @mousedown="onCameraPressStart" @mouseup="onCameraPressEnd"
+                @mouseleave="onCameraPressEnd"
                 class="shrink-0 w-9 h-9 flex items-center justify-center text-slate-700 hover:text-slate-900"
-                title="Take a photo">
+                title="Tap for photo, hold for video">
           <svg viewBox="0 0 24 24" class="w-6 h-6" fill="none"
                stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
             <path d="M4 8h3l1.5-2h7L18 8h2a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" />
@@ -182,6 +217,10 @@ const MessageInput = {
         <input ref="cameraInput" type="file"
                accept="image/*" capture="environment"
                @change="onCameraPhotoChosen"
+               style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px" />
+        <input ref="videoCameraInput" type="file"
+               accept="video/*" capture="environment"
+               @change="onCameraVideoChosen"
                style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px" />
       </div>
     </div>

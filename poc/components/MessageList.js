@@ -148,7 +148,7 @@ const MessageList = {
         <!-- Sticky day separator (WhatsApp-style). data-row is absent so
              onScroll's paging count ignores it. -->
         <div v-if="row.type === 'separator'" class="day-separator flex justify-center">
-          <span class="inline-block px-3 py-1 rounded-full text-[11px] font-medium bg-slate-200/95 text-slate-600 shadow-sm whitespace-nowrap">{{ row.label }}</span>
+          <span class="inline-block w-40 text-center px-3 py-1 rounded-full text-[11px] font-medium bg-slate-200 text-slate-600 shadow-sm whitespace-nowrap overflow-hidden text-ellipsis">{{ row.label }}</span>
         </div>
       <template v-else>
       <template v-for="m in [row.m]" :key="m.id || m.client_message_id">

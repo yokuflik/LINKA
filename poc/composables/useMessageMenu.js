@@ -116,6 +116,17 @@ function useMessageMenu(ctx) {
     if (ctx.isPinnedToBottom()) nextTick(ctx.scrollMessagesToBottom);
   }
 
+  // Seed a new media_url with the orientation already learned for a previous
+  // URL of the same underlying file (used on message_restored, where the
+  // presigned URL changes but the image does not). Lets the first paint use
+  // the correct reserved box instead of the 'landscape' default.
+  function carryOverImageOrientation(fromUrl, toUrl) {
+    const known = imageOrientationByUrl.value[fromUrl];
+    if (known && !imageOrientationByUrl.value[toUrl]) {
+      imageOrientationByUrl.value = { ...imageOrientationByUrl.value, [toUrl]: known };
+    }
+  }
+
   function probeMediaOrientation(url, kind) {
     if (!url || probedMediaUrls.has(url)) return;
     probedMediaUrls.add(url);
@@ -146,5 +157,6 @@ function useMessageMenu(ctx) {
     messageReceiptsError, messageDetailsSnippet, loadMessageReceipts,
     openMessageDetails, closeMessageDetails,
     imageOrientation, probeMediaOrientation, probeLoadedImageOrientations,
+    carryOverImageOrientation,
   };
 }

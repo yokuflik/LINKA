@@ -18,6 +18,17 @@ function useMediaUpload(ctx) {
   const MEDIA_MESSAGE_TYPE = { image: 2, video: 3, audio: 4, file: 5 };
   const mediaUploadBusy = ref(false);
 
+  // sha256 of a Blob/File as lowercase hex - the content-addressed dedup key
+  // the upload-ticket endpoint expects (ADR 0010). Lets the server skip the
+  // upload entirely for a file someone already sent.
+  async function sha256Hex(blob) {
+    const buf = await blob.arrayBuffer();
+    const digest = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
   // `forceKind` ('file') is passed when the pick came from the Documents menu
   // entry rather than Photos & Videos, so a picked image is still sent as a
   // downloadable document, not an inline photo.
@@ -61,16 +72,21 @@ function useMediaUpload(ctx) {
     }
     mediaUploadBusy.value = true;
     try {
+      const sha256 = await sha256Hex(file);
       const ticket = await ctx.apiFetch(`/chats/${ctx.activeChatId.value}/messages/upload-ticket`, {
         method: 'POST',
-        body: JSON.stringify({ kind, mime_type: mimeType, size_bytes: file.size }),
+        body: JSON.stringify({ kind, mime_type: mimeType, size_bytes: file.size, sha256 }),
       });
-      const putResp = await fetch(ticket.upload_url, {
-        method: 'PUT',
-        headers: ticket.required_headers || { 'Content-Type': mimeType },
-        body: file,
-      });
-      if (!putResp.ok) throw new Error('upload failed (' + putResp.status + ')');
+      // already_uploaded => the bytes are on the server from a prior send;
+      // skip the PUT entirely (the whole point of ADR 0010).
+      if (!ticket.already_uploaded) {
+        const putResp = await fetch(ticket.upload_url, {
+          method: 'PUT',
+          headers: ticket.required_headers || { 'Content-Type': mimeType },
+          body: file,
+        });
+        if (!putResp.ok) throw new Error('upload failed (' + putResp.status + ')');
+      }
 
       const payload = {
         type: 'send_message',
@@ -202,16 +218,19 @@ function useMediaUpload(ctx) {
     const name = 'voice-' + Date.now() + '.' + ext;
     mediaUploadBusy.value = true;
     try {
+      const sha256 = await sha256Hex(blob);
       const ticket = await ctx.apiFetch(`/chats/${ctx.activeChatId.value}/messages/upload-ticket`, {
         method: 'POST',
-        body: JSON.stringify({ kind: 'audio', mime_type: type, size_bytes: blob.size }),
+        body: JSON.stringify({ kind: 'audio', mime_type: type, size_bytes: blob.size, sha256 }),
       });
-      const putResp = await fetch(ticket.upload_url, {
-        method: 'PUT',
-        headers: ticket.required_headers || { 'Content-Type': type },
-        body: blob,
-      });
-      if (!putResp.ok) throw new Error('upload failed (' + putResp.status + ')');
+      if (!ticket.already_uploaded) {
+        const putResp = await fetch(ticket.upload_url, {
+          method: 'PUT',
+          headers: ticket.required_headers || { 'Content-Type': type },
+          body: blob,
+        });
+        if (!putResp.ok) throw new Error('upload failed (' + putResp.status + ')');
+      }
       const payload = {
         type: 'send_message',
         chat_id: ctx.activeChatId.value,

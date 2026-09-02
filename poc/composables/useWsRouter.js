@@ -238,6 +238,10 @@ function useWsRouter(ctx) {
       if (m) {
         m.deleted_at = new Date().toISOString();
         m.content = null;
+        // Remember the pre-delete media_url so a later restore can carry its
+        // already-probed orientation over to the fresh presigned URL (same
+        // file) and avoid a landscape->portrait flash on first paint.
+        if (m.media_url) m._deletedMediaUrl = m.media_url;
         m.media_url = null;
       }
       // Sidebar preview: if this was the chat's last message, show a
@@ -252,6 +256,7 @@ function useWsRouter(ctx) {
       // (the row was never physically removed server-side).
       const m = ctx.messages.value.find((x) => x.id === msg.message_id);
       if (m) {
+        const oldMediaUrl = m._deletedMediaUrl || null;
         m.deleted_at = null;
         m.content = msg.content ?? null;
         m.media_url = msg.media_url ?? null;
@@ -259,7 +264,14 @@ function useWsRouter(ctx) {
         m.edited_at = msg.edited_at || m.edited_at;
         // Restore hands back a fresh presigned media_url that was never probed,
         // so imageOrientation() would default to 'landscape' and a portrait
-        // photo would render in the wide box. Re-probe the new URL.
+        // photo would flash in the wide box before the re-probe corrects it.
+        // Seed the new URL with the orientation we already learned for the old
+        // one (same file, new signature) so the first paint is right, then
+        // re-probe to confirm.
+        if (m.media_url && oldMediaUrl && oldMediaUrl !== m.media_url) {
+          ctx.carryOverImageOrientation(oldMediaUrl, m.media_url);
+        }
+        delete m._deletedMediaUrl;
         if (m.type === 2 && m.media_url) ctx.probeMediaOrientation(m.media_url, 'image');
         else if (m.type === 3 && m.media_url) ctx.probeMediaOrientation(m.media_url, 'video');
       }

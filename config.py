@@ -46,6 +46,18 @@ OTP_REQUEST_RATE_LIMIT_MAX = int(os.environ.get("OTP_REQUEST_RATE_LIMIT_MAX", "2
 OTP_REQUEST_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("OTP_REQUEST_RATE_LIMIT_WINDOW_SECONDS", "600"))
 OTP_VERIFY_MAX_ATTEMPTS = int(os.environ.get("OTP_VERIFY_MAX_ATTEMPTS", "5"))
 
+# --- Firebase Phone Auth (ADR 0009) ---
+# Real phone verification runs client-side (Firebase JS SDK + reCAPTCHA); the
+# server only verifies the resulting ID token against Google's public JWKS.
+# FIREBASE_PROJECT_ID doubles as the expected token `aud` / `iss` suffix.
+FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "")
+FIREBASE_AUTH_ENABLED = bool(FIREBASE_PROJECT_ID)
+# Exact phone-number strings that skip all verification (dev/PoC only). These
+# are not real numbers - the client routes them through the legacy OTP stub.
+DEV_AUTH_WHITELIST = set(
+    x.strip() for x in os.environ.get("DEV_AUTH_WHITELIST", "1,2,3,4,5").split(",") if x.strip()
+)
+
 # --- Message content size cap ---
 # Applies to both new messages and edits. Without this, a single message is
 # bounded only by Postgres's TEXT column (~1GB) and whatever the ASGI

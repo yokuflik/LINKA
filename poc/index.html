@@ -54,6 +54,14 @@
 
 <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
+<!-- Firebase Phone Auth (ADR 0009). Compat build, no bundler. If these fail to
+     load (offline / file://), real phone verification is disabled but the 1..5
+     dev-whitelist login still works. -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="firebase-init.js"></script>
+<script src="data/country-codes.js"></script>
 <!-- Structural split into child components (see CLAUDE.md) - plain
      Vue.defineComponent objects loaded as sibling scripts, since this PoC
      has no build step and can't use .vue SFCs. All business logic/state
@@ -77,6 +85,7 @@
 
 <!-- Composables: global use*(ctx) factories the root setup() stitches into ctx -->
 <script src="composables/core.js"></script>
+<script src="composables/usePhoneInput.js"></script>
 <script src="composables/useAuth.js"></script>
 <script src="composables/useWebsocket.js"></script>
 <script src="composables/usePresence.js"></script>
@@ -164,6 +173,7 @@ const app = createApp({
     const ctx = {};
 
     Object.assign(ctx, useCore(ctx));
+    Object.assign(ctx, usePhoneInput(ctx));
     Object.assign(ctx, useAuth(ctx));
     Object.assign(ctx, useWebsocket(ctx));
     Object.assign(ctx, usePresence(ctx));
@@ -227,8 +237,11 @@ const app = createApp({
 
   template: `
     <AuthScreen v-if="!isAuthed"
-      v-model:authMode="authMode" v-model:phoneNumber="phoneNumber" v-model:otpCode="otpCode"
+      v-model:authMode="authMode" v-model:otpCode="otpCode"
       v-model:profileDraft="profileDraft"
+      v-model:phoneRawInput="phoneRawInput" v-model:phoneCountry="phoneCountry"
+      :phoneCountries="phoneCountries" :phoneIsValid="phoneIsValid"
+      :phoneIsWhitelisted="phoneIsWhitelisted" :phoneE164="phoneE164"
       :avatarPreviewUrl="avatarPreviewUrl" :avatarError="avatarError"
       :authStage="authStage" :authError="authError" :authBusy="authBusy"
       @pick-avatar="pickAvatar" @clear-avatar="clearAvatar"

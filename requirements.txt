@@ -6,6 +6,7 @@ sqlalchemy==2.0.41
 asyncpg==0.31.0
 redis==8.1.0
 pyjwt==2.10.1
+cryptography==45.0.4
 pytest==8.4.1
 pytest-asyncio==1.4.0
 httpx==0.28.1

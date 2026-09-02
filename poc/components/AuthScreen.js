@@ -8,25 +8,42 @@ const AuthScreen = {
   props: {
     authMode: { type: String, required: true },     // 'login' | 'register'
     authStage: { type: String, required: true },     // 'phone' | 'otp'
-    phoneNumber: { type: String, required: true },
     otpCode: { type: String, required: true },
     profileDraft: { type: Object, required: true },   // { display_name, about_text }
+    // Phone input (usePhoneInput / ADR 0009)
+    phoneRawInput: { type: String, default: '' },
+    phoneCountry: { type: Object, required: true },   // { iso2, name, dial, flag }
+    phoneCountries: { type: Array, default: () => [] },
+    phoneIsValid: { type: Boolean, default: false },
+    phoneIsWhitelisted: { type: Boolean, default: false },
+    phoneE164: { type: String, default: '' },
     avatarPreviewUrl: { default: null },              // object URL for the picked file
     avatarError: { type: String, default: '' },
     authError: { type: String, required: true },
     authBusy: { type: Boolean, required: true },
   },
   emits: [
-    'update:authMode', 'update:phoneNumber', 'update:otpCode', 'update:profileDraft',
+    'update:authMode', 'update:otpCode', 'update:profileDraft',
+    'update:phoneRawInput', 'update:phoneCountry',
     'pick-avatar', 'clear-avatar',
     'request-otp', 'verify-otp', 'back-to-phone',
   ],
   computed: {
     isRegister() { return this.authMode === 'register'; },
+    canSubmitPhone() { return this.phoneIsValid || this.phoneIsWhitelisted; },
+    phoneHint() {
+      if (this.phoneIsWhitelisted) return 'Dev test number — verification skipped.';
+      if (this.phoneE164 && this.phoneE164.length > 1) return this.phoneE164;
+      return '';
+    },
   },
   methods: {
     setProfileField(key, value) {
       this.$emit('update:profileDraft', { ...this.profileDraft, [key]: value });
+    },
+    onCountryChange(iso2) {
+      const c = this.phoneCountries.find((x) => x.iso2 === iso2);
+      if (c) this.$emit('update:phoneCountry', c);
     },
     onAvatarChange(event) {
       const file = event.target.files && event.target.files[0];
@@ -60,10 +77,26 @@ const AuthScreen = {
           </template>
 
           <label class="block text-xs font-medium text-slate-500 mb-1">Phone number</label>
-          <input :value="phoneNumber" @input="$emit('update:phoneNumber', $event.target.value)"
-                 placeholder="+972---------"
-                 class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg"
-                 @keyup.enter="$emit('request-otp')" />
+          <div class="flex gap-2 mb-1">
+            <select :value="phoneCountry.iso2" @change="onCountryChange($event.target.value)"
+                    class="px-2 py-2 border border-slate-300 rounded-lg bg-white max-w-[9rem]">
+              <option v-for="c in phoneCountries" :key="c.iso2" :value="c.iso2">
+                {{ c.flag }} {{ c.name }} (+{{ c.dial }})
+              </option>
+            </select>
+            <div class="flex-1 flex items-center border border-slate-300 rounded-lg px-3">
+              <span class="text-slate-400 mr-1">+{{ phoneCountry.dial }}</span>
+              <input :value="phoneRawInput" @input="$emit('update:phoneRawInput', $event.target.value)"
+                     inputmode="tel" placeholder="Phone number"
+                     class="flex-1 py-2 outline-none"
+                     @keyup.enter="canSubmitPhone && $emit('request-otp')" />
+            </div>
+          </div>
+          <p class="mb-3 text-xs h-4"
+             :class="phoneRawInput && !canSubmitPhone ? 'text-red-600' : 'text-slate-400'">
+            <template v-if="phoneRawInput && !canSubmitPhone">Enter a valid phone number</template>
+            <template v-else>{{ phoneHint }}</template>
+          </p>
 
           <template v-if="isRegister">
             <label class="block text-xs font-medium text-slate-500 mb-1">Display name</label>
@@ -79,14 +112,20 @@ const AuthScreen = {
                       class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm"></textarea>
           </template>
 
-          <button @click="$emit('request-otp')" :disabled="authBusy || !phoneNumber"
+          <button @click="$emit('request-otp')" :disabled="authBusy || !canSubmitPhone"
                   class="w-full py-2 bg-teal-700 text-white rounded-lg font-medium disabled:opacity-50">
             {{ authBusy ? 'Sending…' : 'Send code' }}
           </button>
+          <div id="recaptcha-container"></div>
         </template>
 
         <template v-else>
-          <p class="text-xs text-slate-500 mb-3">No SMS provider is wired up yet — check the <span class="font-mono">server</span> console/log for the code.</p>
+          <p v-if="phoneIsWhitelisted" class="text-xs text-slate-500 mb-3">
+            Dev test number — verification is skipped, enter any code.
+          </p>
+          <p v-else class="text-xs text-slate-500 mb-3">
+            We sent a 6-digit code by SMS to <span class="font-mono">{{ phoneE164 }}</span>.
+          </p>
           <label class="block text-xs font-medium text-slate-500 mb-1">OTP code</label>
           <input :value="otpCode" @input="$emit('update:otpCode', $event.target.value)"
                  placeholder="000000"

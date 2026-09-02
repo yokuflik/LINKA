@@ -17,8 +17,14 @@ function useAuth(ctx) {
 
   const authMode = ref('login'); // 'login' | 'register'
   const authStage = ref('phone'); // 'phone' | 'otp'
+  // Resolved phone value (E.164, or the raw "1".."5" dev token). Kept as a ref
+  // so lifecycle code that still destructures `phoneNumber` from ctx keeps
+  // working; synced from usePhoneInput's `resolvedPhone` at request time.
   const phoneNumber = ref('');
   const otpCode = ref('');
+  // Firebase confirmationResult between requestOtp() and verifyOtp() for the
+  // real-SMS path (ADR 0009). null on the dev-whitelist path.
+  let firebaseConfirmation = null;
   const profileDraft = ref({ display_name: '', about_text: '' });
   const authError = ref('');
   const authBusy = ref(false);
@@ -81,19 +87,36 @@ function useAuth(ctx) {
   // ---------------------------------------------------------------
   // Auth actions
   // ---------------------------------------------------------------
+  // Invisible reCAPTCHA verifier, created lazily and reused across attempts.
+  function firebaseRecaptcha() {
+    if (!window._linkaRecaptcha) {
+      window._linkaRecaptcha = new firebase.auth.RecaptchaVerifier('recaptcha-container', { size: 'invisible' });
+    }
+    return window._linkaRecaptcha;
+  }
+
   async function requestOtp() {
     authError.value = '';
     authBusy.value = true;
+    phoneNumber.value = ctx.resolvedPhone.value;
     try {
-      await apiFetch('/auth/otp/request', {
-        method: 'POST',
-        body: JSON.stringify({
-          phone_number: phoneNumber.value,
-          intent: authMode.value === 'register' ? 'register' : 'login',
-        }),
-      });
+      if (ctx.phoneIsWhitelisted.value) {
+        // Dev-whitelist number (1..5): legacy OTP stub, code is anything.
+        await apiFetch('/auth/otp/request', {
+          method: 'POST',
+          body: JSON.stringify({
+            phone_number: phoneNumber.value,
+            intent: authMode.value === 'register' ? 'register' : 'login',
+          }),
+        });
+        log('OTP (dev stub) requested for', phoneNumber.value, '- any code works');
+      } else {
+        // Real number: Firebase sends the SMS entirely client-side.
+        if (!window.firebaseAuth) throw new Error('Phone verification is unavailable (Firebase not loaded)');
+        firebaseConfirmation = await window.firebaseAuth.signInWithPhoneNumber(phoneNumber.value, firebaseRecaptcha());
+        log('Firebase SMS sent to', phoneNumber.value);
+      }
       authStage.value = 'otp';
-      log('OTP requested for', phoneNumber.value, '- no SMS provider is wired up, check the SERVER console/log for the code');
     } catch (err) {
       authError.value = err.message || 'Failed to request code';
     } finally {
@@ -105,49 +128,68 @@ function useAuth(ctx) {
     authError.value = '';
     authBusy.value = true;
     try {
-      const body = await apiFetch('/auth/otp/verify', {
-        method: 'POST',
-        body: JSON.stringify({ phone_number: phoneNumber.value, code: otpCode.value }),
-      });
-      accessToken.value = body.access_token;
-      refreshToken.value = body.refresh_token;
-      currentUser.value = body.user;
-      localStorage.setItem('linka_access_token', accessToken.value);
-      localStorage.setItem('linka_refresh_token', refreshToken.value);
-      log('logged in as', currentUser.value);
-
-      // On register, push the profile fields the user filled in on the
-      // sign-up form. Best-effort - a failure here shouldn't block login.
-      if (authMode.value === 'register') {
-        const patch = {};
-        const name = (profileDraft.value.display_name || '').trim();
-        const about = (profileDraft.value.about_text || '').trim();
-        if (name) patch.display_name = name;
-        if (about) patch.about_text = about;
-        if (Object.keys(patch).length) {
-          try {
-            currentUser.value = await apiFetch('/users/me', {
-              method: 'PATCH',
-              body: JSON.stringify(patch),
-            });
-          } catch (err) {
-            logError('failed to save profile on register:', err.message);
-          }
-        }
-        try {
-          await uploadPickedAvatar();
-        } catch (err) {
-          logError('failed to upload avatar on register:', err.message);
-        }
+      let body;
+      if (ctx.phoneIsWhitelisted.value) {
+        body = await apiFetch('/auth/otp/verify', {
+          method: 'POST',
+          body: JSON.stringify({ phone_number: phoneNumber.value, code: otpCode.value }),
+        });
+      } else {
+        // Confirm the SMS code with Firebase, then trade its ID token for our pair.
+        if (!firebaseConfirmation) throw new Error('Request a code first');
+        const cred = await firebaseConfirmation.confirm(otpCode.value);
+        const idToken = await cred.user.getIdToken();
+        body = await apiFetch('/auth/firebase/verify', {
+          method: 'POST',
+          body: JSON.stringify({ id_token: idToken }),
+        });
+        try { await window.firebaseAuth.signOut(); } catch (e) { /* our JWT is the truth */ }
+        firebaseConfirmation = null;
       }
-
-      ctx.connectWebSocket();
-      await ctx.loadChats();
+      await finishLogin(body);
     } catch (err) {
       authError.value = err.message || 'Invalid code';
     } finally {
       authBusy.value = false;
     }
+  }
+
+  // Shared post-verify tail for both the dev-stub and Firebase paths.
+  async function finishLogin(body) {
+    accessToken.value = body.access_token;
+    refreshToken.value = body.refresh_token;
+    currentUser.value = body.user;
+    localStorage.setItem('linka_access_token', accessToken.value);
+    localStorage.setItem('linka_refresh_token', refreshToken.value);
+    log('logged in as', currentUser.value);
+
+    // On register, push the profile fields the user filled in on the
+    // sign-up form. Best-effort - a failure here shouldn't block login.
+    if (authMode.value === 'register') {
+      const patch = {};
+      const name = (profileDraft.value.display_name || '').trim();
+      const about = (profileDraft.value.about_text || '').trim();
+      if (name) patch.display_name = name;
+      if (about) patch.about_text = about;
+      if (Object.keys(patch).length) {
+        try {
+          currentUser.value = await apiFetch('/users/me', {
+            method: 'PATCH',
+            body: JSON.stringify(patch),
+          });
+        } catch (err) {
+          logError('failed to save profile on register:', err.message);
+        }
+      }
+      try {
+        await uploadPickedAvatar();
+      } catch (err) {
+        logError('failed to upload avatar on register:', err.message);
+      }
+    }
+
+    ctx.connectWebSocket();
+    await ctx.loadChats();
   }
 
   function logout() {
@@ -171,6 +213,8 @@ function useAuth(ctx) {
     clearAvatar();
     phoneNumber.value = '';
     otpCode.value = '';
+    firebaseConfirmation = null;
+    if (ctx.resetPhoneInput) ctx.resetPhoneInput();
     ctx.clearAllMessageCache();
     localStorage.removeItem('linka_access_token');
     localStorage.removeItem('linka_refresh_token');

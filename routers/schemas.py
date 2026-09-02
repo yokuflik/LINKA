@@ -32,6 +32,11 @@ class OTPVerifyIn(BaseModel):
     code: str
 
 
+class FirebaseVerifyIn(BaseModel):
+    # Firebase Phone Auth ID token, issued client-side after the SMS code check.
+    id_token: str
+
+
 class RefreshTokenIn(BaseModel):
     refresh_token: str
 

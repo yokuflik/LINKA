@@ -107,8 +107,8 @@ const AuthScreen = {
             <select :value="phoneCountry.iso2" @change="onCountryChange($event.target.value)"
                     :title="phoneCountry.name"
                     class="shrink-0 w-[4.5rem] px-1 py-2 bg-slate-50 border-r border-slate-300 text-sm outline-none">
-              <option v-for="c in phoneCountries" :key="c.iso2" :value="c.iso2">
-                {{ c.flag }} {{ c.name }} (+{{ c.dial }})
+              <option v-for="c in phoneCountries" :key="c.iso2" :value="c.iso2" :title="c.name">
+                {{ c.flag }} +{{ c.dial }}
               </option>
             </select>
             <input :value="phoneRawInput" @input="$emit('update:phoneRawInput', $event.target.value)"

@@ -31,11 +31,6 @@ const AuthScreen = {
   computed: {
     isRegister() { return this.authMode === 'register'; },
     canSubmitPhone() { return this.phoneIsValid || this.phoneIsWhitelisted; },
-    phoneHint() {
-      if (this.phoneIsWhitelisted) return 'Dev test number — verification skipped.';
-      if (this.phoneE164 && this.phoneE164.length > 1) return this.phoneE164;
-      return '';
-    },
   },
   methods: {
     setProfileField(key, value) {
@@ -77,25 +72,24 @@ const AuthScreen = {
           </template>
 
           <label class="block text-xs font-medium text-slate-500 mb-1">Phone number</label>
-          <div class="flex gap-2 mb-1">
+          <div class="flex w-full mb-1 border border-slate-300 rounded-lg overflow-hidden focus-within:ring-1 focus-within:ring-teal-600 focus-within:border-teal-600">
             <select :value="phoneCountry.iso2" @change="onCountryChange($event.target.value)"
-                    class="px-2 py-2 border border-slate-300 rounded-lg bg-white max-w-[9rem]">
+                    :title="phoneCountry.name"
+                    class="shrink-0 w-[4.5rem] px-1 py-2 bg-slate-50 border-r border-slate-300 text-sm outline-none">
               <option v-for="c in phoneCountries" :key="c.iso2" :value="c.iso2">
                 {{ c.flag }} {{ c.name }} (+{{ c.dial }})
               </option>
             </select>
-            <div class="flex-1 flex items-center border border-slate-300 rounded-lg px-3">
-              <span class="text-slate-400 mr-1">+{{ phoneCountry.dial }}</span>
-              <input :value="phoneRawInput" @input="$emit('update:phoneRawInput', $event.target.value)"
-                     inputmode="tel" placeholder="Phone number"
-                     class="flex-1 py-2 outline-none"
-                     @keyup.enter="canSubmitPhone && $emit('request-otp')" />
-            </div>
+            <span class="flex items-center pl-3 text-slate-400 select-none">+{{ phoneCountry.dial }}</span>
+            <input :value="phoneRawInput" @input="$emit('update:phoneRawInput', $event.target.value)"
+                   inputmode="tel" placeholder="Phone number"
+                   class="flex-1 min-w-0 px-2 py-2 outline-none"
+                   @keyup.enter="canSubmitPhone && $emit('request-otp')" />
           </div>
           <p class="mb-3 text-xs h-4"
              :class="phoneRawInput && !canSubmitPhone ? 'text-red-600' : 'text-slate-400'">
             <template v-if="phoneRawInput && !canSubmitPhone">Enter a valid phone number</template>
-            <template v-else>{{ phoneHint }}</template>
+            <template v-else-if="phoneIsWhitelisted">Dev test number — verification skipped.</template>
           </p>
 
           <template v-if="isRegister">

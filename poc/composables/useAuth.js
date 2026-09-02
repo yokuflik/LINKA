@@ -87,11 +87,13 @@ function useAuth(ctx) {
   // ---------------------------------------------------------------
   // Auth actions
   // ---------------------------------------------------------------
-  // Invisible reCAPTCHA verifier, created lazily and reused across attempts.
+  // Fresh invisible reCAPTCHA verifier per request - Firebase consumes the
+  // token on each signInWithPhoneNumber, so a resend needs a new one.
   function firebaseRecaptcha() {
-    if (!window._linkaRecaptcha) {
-      window._linkaRecaptcha = new firebase.auth.RecaptchaVerifier('recaptcha-container', { size: 'invisible' });
+    if (window._linkaRecaptcha) {
+      try { window._linkaRecaptcha.clear(); } catch (e) { /* already gone */ }
     }
+    window._linkaRecaptcha = new firebase.auth.RecaptchaVerifier('recaptcha-container', { size: 'invisible' });
     return window._linkaRecaptcha;
   }
 

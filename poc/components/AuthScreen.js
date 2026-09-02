@@ -28,11 +28,42 @@ const AuthScreen = {
     'pick-avatar', 'clear-avatar',
     'request-otp', 'verify-otp', 'back-to-phone',
   ],
+  data() {
+    return {
+      resendIn: 0,        // seconds left before "resend code" is allowed again
+      _resendTimer: null,
+    };
+  },
   computed: {
     isRegister() { return this.authMode === 'register'; },
     canSubmitPhone() { return this.phoneIsValid || this.phoneIsWhitelisted; },
   },
+  watch: {
+    // Start the 60s cooldown whenever we land on the code-entry step.
+    authStage(stage) {
+      if (stage === 'otp') this.startResendCooldown();
+      else this.clearResendTimer();
+    },
+  },
+  beforeUnmount() { this.clearResendTimer(); },
   methods: {
+    startResendCooldown() {
+      this.clearResendTimer();
+      this.resendIn = 60;
+      this._resendTimer = setInterval(() => {
+        this.resendIn -= 1;
+        if (this.resendIn <= 0) this.clearResendTimer();
+      }, 1000);
+    },
+    clearResendTimer() {
+      if (this._resendTimer) clearInterval(this._resendTimer);
+      this._resendTimer = null;
+    },
+    resendCode() {
+      if (this.resendIn > 0 || this.authBusy) return;
+      this.$emit('request-otp');
+      this.startResendCooldown();
+    },
     setProfileField(key, value) {
       this.$emit('update:profileDraft', { ...this.profileDraft, [key]: value });
     },
@@ -80,10 +111,9 @@ const AuthScreen = {
                 {{ c.flag }} {{ c.name }} (+{{ c.dial }})
               </option>
             </select>
-            <span class="flex items-center pl-3 text-slate-400 select-none">+{{ phoneCountry.dial }}</span>
             <input :value="phoneRawInput" @input="$emit('update:phoneRawInput', $event.target.value)"
                    inputmode="tel" placeholder="Phone number"
-                   class="flex-1 min-w-0 px-2 py-2 outline-none"
+                   class="flex-1 min-w-0 px-3 py-2 outline-none"
                    @keyup.enter="canSubmitPhone && $emit('request-otp')" />
           </div>
           <p class="mb-3 text-xs h-4"
@@ -129,7 +159,12 @@ const AuthScreen = {
                   class="w-full py-2 bg-teal-700 text-white rounded-lg font-medium disabled:opacity-50">
             {{ authBusy ? 'Verifying…' : (isRegister ? 'Verify & create account' : 'Verify & log in') }}
           </button>
-          <button @click="$emit('back-to-phone')" class="w-full mt-2 py-1 text-sm text-slate-500">← back</button>
+          <button v-if="!phoneIsWhitelisted" type="button"
+                  @click="resendCode" :disabled="resendIn > 0 || authBusy"
+                  class="w-full mt-2 py-1 text-sm text-teal-700 disabled:text-slate-400">
+            {{ resendIn > 0 ? 'Resend code in ' + resendIn + 's' : "Didn't get a code? Resend" }}
+          </button>
+          <button @click="$emit('back-to-phone')" class="w-full mt-1 py-1 text-sm text-slate-500">← back</button>
         </template>
 
         <p v-if="authError" class="mt-3 text-sm text-red-600">{{ authError }}</p>

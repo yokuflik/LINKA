@@ -17,7 +17,7 @@ Real-time messaging platform (WhatsApp/Telegram-style), designed for tens-of-bil
 7. **Architecture Decision Records (ADR):** Whenever we make a significant architectural, database schema, or infrastructure decision, you MUST proactively generate a new ADR file in `docs/adr/` BEFORE writing the code. Always review existing ADRs before proposing systemic changes.
 9. **Token & Bottleneck Alerts:** If asked to read/analyze/edit a file over ~300 lines, or you spot a token-wasting workflow bottleneck, STOP. Alert the user about the specific file/bottleneck, explain the cost, suggest a split strategy, and wait for a decision.
 10. **Ask before backend changes** (user's standing request). Flag security-relevant or destructive changes clearly instead of silently reverting them.
-
+11. When generating or modifying mock data, do not attempt to update, patch, or edit existing data structures. Instead, completely discard the old mock data and generate a fresh, complete set of mock data from scratch based on the current requirements. Do not output diffs or partial updates for mock data—always output the full new mock data block
 ---
 
 # CONTEXT ROUTING RULE (mandatory)
@@ -44,11 +44,12 @@ This file is a **router only**. It does NOT contain domain detail.
 
 | File | Contents |
 |---|---|
-| `.claude_docs/backend_services_and_api.md` | `services/` + `services/messaging/` layout & facade contract, `services/settings/` (per-user settings), `routers/`, auth / OTP caveat, group membership & roles, system messages (incl. `role_changed` JSON pattern), leaving/removing members, profile-edit propagation, backend known-gaps, working conventions. |
+| `.claude_docs/backend_services_and_api.md` | `services/` + `services/messaging/` + `services/chats/` layout & facade contract, `services/settings/` (per-user settings), `routers/`, auth / OTP caveat, group membership & roles, system messages (incl. `role_changed` JSON pattern), leaving/removing members, profile-edit propagation, backend known-gaps, working conventions. |
 | `.claude_docs/realtime_and_redis.md` | All Redis usage. Async send path (`services/fanout/`, streams, workers, sharding), routing layer (`chat_instances`, `instance_inbox`, heartbeats), `connection_manager` inbox task, presence (subscribe-on-demand, 1:1 only), typing/recording indicator, receipt-log async writes. |
 | `.claude_docs/database_schema.md` | Models & CRUD, no-migrations rule, partitioning, Snowflake-id-as-string rule, watermark receipt model, detailed `message_receipt_log`, chat-list denormalization, unread count, reply-to, edit/delete/restore, scripts, DB-test-wipes-dev-DB warning. |
 | `.claude_docs/storage_and_media.md` | Object storage design principle, MinIO/config, `services/storage/` (`client.py`, `media_service.py`, `errors.py`), media messages (kinds/caps/MIME whitelist incl. the 3-place `file=set()` sentinel), `Message` media columns, presigned-URL flow, user & group avatars. |
 | `.claude_docs/deployment.md` | Single-host demo deploy: `Dockerfile`, `docker-compose.prod.yml`, `deploy/` (Caddyfile, postgres.prod.conf, env example, prod cron), first-boot/update steps, memory budget, demo compromises (open OTP stub, in-box MinIO). Runbook: `deploy/README.md`. |
+| `.claude_docs/security_and_rate_limiting.md` | Transport hardening + rate limiting (Phase 1 / ADR 0012, all 8 steps done). Layering (Caddy per-IP vs app per-user in Redis), the rate-limiter engine (fixed + sliding window, `client_ip` helper, `RateLimited`), every limit's key/window/enforcement point (auth/OTP, WS frame + per-action, WS connection cap `ws:conns:` zset evict-oldest, REST history/upload-ticket/detail/list), WS close codes, config knobs, deferred items. |
 | `.claude_docs/frontend.md` | PoC structure (`poc/index.html` + `components/*.js` + `composables/*.js`), running it, syntax-check-after-edit rule, `$emit` chaining rule, `useWsRouter.js` live-event handling, optimistic send flow. |
 
 # INDEX — `docs/adr/` (Architecture Decision Records)
@@ -66,6 +67,8 @@ Per Core Behavior Rule 7, review these before proposing any systemic change, and
 | `docs/adr/0007-single-host-docker-compose-deploy.md` | Demo deploy: one 1 GB host, `Dockerfile` (multi-stage) + `docker-compose.prod.yml` (app + Caddy + db + redis + minio), single Uvicorn process, git-ignored `.env` | Accepted |
 | `docs/adr/0009-firebase-phone-auth.md` | Real phone verification via Firebase Phone Auth (client-side SMS + reCAPTCHA); server verifies the ID token manually against Google JWKS (`POST /auth/firebase/verify`, no `firebase-admin`). Open OTP stub closed; `DEV_AUTH_WHITELIST` (`1`–`5`) skips verification. Frontend country-code picker + loose E.164 validator | Accepted |
 | `docs/adr/0010-content-addressed-media-dedup.md` | Upload-once media: client sends `sha256`, backend keys objects by hash in a new `media_blob` table; a known hash skips the upload entirely. `x-amz-checksum-sha256` pinned into the presigned PUT. `ref_count` tracked, no GC yet | Accepted |
+| `docs/adr/0012-transport-hardening-and-rate-limiting.md` | Phase 1 comms security: Caddy owns TLS + security headers + coarse per-IP ceilings, app owns per-user/identity limits in Redis (never in-process). Sliding-window limiter, `client_ip` proxy-trust helper, WS 5-connection cap (evict oldest), HSTS/CSP/TrustedHost, CORS fix, `/ws` `Origin` check. Content encryption + semantic search deferred. Plan: `COMMS_SECURITY_PLAN.md` | Accepted |
+| `docs/adr/0013-chat-service-domain-split.md` | Split `chat_service.py` (534 lines) into a `services/chats/` package (errors/common/notifications/creation/listing/preferences/group_details/membership) with `chat_service.py` kept as a thin re-export facade; mirrors the `message_service` → `services/messaging/` pattern. Pure code move, monkeypatch surface preserved | Accepted |
 
 ---
 

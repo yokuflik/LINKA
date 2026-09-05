@@ -1,0 +1,287 @@
+// Chat domain — OPENING / CLOSING A CHAT + THE MESSAGE PANE.
+//
+// The heavy part of the old useChats: selectChat's cache-hit and network-fetch
+// paths, buffered-live-message merge, scroll / pin-to-bottom helpers, keyset
+// "load older" pagination, draft private chats, the focus/reconnect refresh
+// hooks, and the write-through message-cache watch.
+//
+// Merge order: after useChatStore / useChatMembers / useChatList (calls
+// resolvePrivateChatTitle, resolveChatMemberPhones through ctx.*).
+//
+// Needs from ctx (call-time): apiFetch, log, logError, currentUser, chats,
+// activeChatId, draftChat, messages, messagesError, messagesConnectionError,
+// messagesEl, hasMoreMessages, loadingOlderMessages, MESSAGE_PAGE_SIZE,
+// LOAD_OLDER_THRESHOLD, userById,
+// resolvePrivateChatTitle, resolveChatMemberPhones,
+// loadChatMessages, saveChatMessages (useMessageCache),
+// markStalePendingAsFailed (useOutbox),
+// clearUnreadCount, unsubscribeFromPresence, subscribeToPresenceForChat,
+// subscribeToPresence, sendReceipt, takeBufferedMessages,
+// replyingToMessage, editingMessage, cancelEdit, closeMessageContextMenu,
+// probeLoadedImageOrientations.
+//
+// Global `useChatOpen(ctx)` factory.
+function useChatOpen(ctx) {
+  const { nextTick, watch } = Vue;
+
+  // messagesEl refs the MessageList component instance, which exposes its own
+  // scrollable element as `messagesEl`.
+  function messagesScrollEl() {
+    return ctx.messagesEl.value && ctx.messagesEl.value.messagesEl;
+  }
+
+  // True when the pane is scrolled to (or very near) the bottom.
+  function isPinnedToBottom() {
+    const el = messagesScrollEl();
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
+
+  // Scroll to the bottom now, and keep re-pinning as late-sizing media
+  // (images/videos) finishes loading.
+  function scrollMessagesToBottom() {
+    const el = messagesScrollEl();
+    if (!el) return;
+    const jump = () => { el.scrollTop = el.scrollHeight; };
+    jump();
+    requestAnimationFrame(jump);
+    const media = el.querySelectorAll('img, video');
+    media.forEach((node) => {
+      const done = node.tagName === 'IMG' ? node.complete : node.readyState >= 1; // HAVE_METADATA
+      if (done) return;
+      const onSettled = () => {
+        node.removeEventListener('load', onSettled);
+        node.removeEventListener('loadedmetadata', onSettled);
+        node.removeEventListener('error', onSettled);
+        if (isPinnedToBottom()) jump();
+      };
+      node.addEventListener('load', onSettled);
+      node.addEventListener('loadedmetadata', onSettled);
+      node.addEventListener('error', onSettled);
+    });
+  }
+
+  // Fetches the next older page (keyset: before_id = oldest loaded id) and
+  // prepends it, preserving the scroll position so the view doesn't jump.
+  async function loadOlderMessages() {
+    if (ctx.loadingOlderMessages.value || !ctx.hasMoreMessages.value) return;
+    if (!ctx.messages.value.length || !ctx.activeChatId.value) return;
+    const chatId = ctx.activeChatId.value;
+    const oldestId = ctx.messages.value[0].id;
+    const el = messagesScrollEl();
+    const prevScrollHeight = el ? el.scrollHeight : 0;
+    ctx.loadingOlderMessages.value = true;
+    try {
+      const page = await ctx.apiFetch(`/chats/${chatId}/messages?limit=${ctx.MESSAGE_PAGE_SIZE}&before_id=${oldestId}`);
+      if (ctx.activeChatId.value !== chatId) return; // user switched chats mid-flight
+      ctx.hasMoreMessages.value = page.length === ctx.MESSAGE_PAGE_SIZE;
+      if (page.length) {
+        ctx.messages.value = page.slice().reverse().concat(ctx.messages.value);
+        await nextTick();
+        if (el) el.scrollTop = el.scrollHeight - prevScrollHeight;
+      }
+    } catch (err) {
+      ctx.logError('failed to load older messages:', err.message);
+    } finally {
+      ctx.loadingOlderMessages.value = false;
+    }
+  }
+
+  // MessageList reports how many message rows are scrolled above the viewport.
+  function onMessagesScroll(rowsAboveViewport) {
+    if (rowsAboveViewport <= ctx.LOAD_OLDER_THRESHOLD) loadOlderMessages();
+  }
+
+  // Open an uncommitted private chat. No server call - just enough state for
+  // the pane, header and presence to render. Promoted to a real chat by the
+  // first send (see useMessageSend), discarded by opening any real chat.
+  function openDraftChat(otherUser) {
+    ctx.unsubscribeFromPresence();
+    ctx.activeChatId.value = null;
+    ctx.messages.value = [];
+    ctx.messagesError.value = '';
+    ctx.messagesConnectionError.value = false;
+    ctx.hasMoreMessages.value = false;
+    ctx.replyingToMessage.value = null;
+    if (ctx.editingMessage.value) ctx.cancelEdit();
+    ctx.closeMessageContextMenu();
+    ctx.userById.value[otherUser.id] = otherUser;
+    ctx.draftChat.value = { otherUserId: otherUser.id, phone: otherUser.phone_number, user: otherUser };
+    // Presence by user id: the subscribe_presence gate is the target's
+    // privacy.online setting, not a shared chat - so "everyone" resolves
+    // even with no chat row yet ("contacts" won't, by design).
+    ctx.subscribeToPresence(otherUser.id);
+  }
+
+  function discardDraftChat() {
+    if (!ctx.draftChat.value) return;
+    ctx.unsubscribeFromPresence();
+    ctx.draftChat.value = null;
+  }
+
+  // Mobile: the sidebar and the chat pane share the screen one at a time.
+  // "Back" from the chat header drops the active chat so the list shows again.
+  function closeActiveChat() {
+    discardDraftChat();
+    ctx.unsubscribeFromPresence();
+    ctx.activeChatId.value = null;
+    ctx.messages.value = [];
+    ctx.replyingToMessage.value = null;
+    if (ctx.editingMessage.value) ctx.cancelEdit();
+    ctx.closeMessageContextMenu();
+  }
+
+  async function selectChat(chatId) {
+    discardDraftChat();
+    ctx.activeChatId.value = chatId;
+    ctx.messages.value = [];
+    ctx.messagesError.value = '';
+    ctx.messagesConnectionError.value = false;
+    ctx.hasMoreMessages.value = false;
+    ctx.loadingOlderMessages.value = false;
+    ctx.clearUnreadCount(chatId);
+    ctx.replyingToMessage.value = null;
+    if (ctx.editingMessage.value) ctx.cancelEdit();
+    ctx.closeMessageContextMenu();
+    const item = ctx.chats.value.find((c) => c.chat.id === chatId);
+    if (item && !item.chat.is_group) ctx.resolvePrivateChatTitle(chatId, { force: true });
+    ctx.resolveChatMemberPhones(chatId);
+
+    // Subscribe-on-demand presence: only ever one active subscription, scoped
+    // to whichever private chat is open right now.
+    ctx.unsubscribeFromPresence();
+    if (item && !item.chat.is_group) ctx.subscribeToPresenceForChat(chatId);
+
+    // Fold in any live messages that arrived for this chat while it wasn't
+    // open (useWsRouter buffered them). Dedupe by id, keep chronological
+    // order. Snowflake ids are fixed-width numeric strings, so a lexical
+    // compare is a time compare.
+    function mergeBuffered() {
+      const buffered = ctx.takeBufferedMessages ? ctx.takeBufferedMessages(chatId) : [];
+      if (!buffered.length) return;
+      const seen = new Set(ctx.messages.value.map((m) => m.id).filter((id) => id != null));
+      for (const m of buffered) {
+        if (m.id != null && !seen.has(m.id)) { ctx.messages.value.push(m); seen.add(m.id); }
+      }
+      ctx.messages.value.sort((a, b) => {
+        if (a.id == null) return 1;
+        if (b.id == null) return -1;
+        return String(a.id).localeCompare(String(b.id));
+      });
+    }
+
+    // Lazy cache: if we've visited this chat before, render its stored
+    // newest page and skip the network entirely. Live WS events keep the
+    // cache fresh while connected; "load older" still fetches from the API.
+    const cached = ctx.loadChatMessages(chatId);
+    if (cached && cached.length) {
+      if (ctx.activeChatId.value !== chatId) return;
+      ctx.messages.value = cached.slice();
+      // A cached bubble still marked pending is a message that was queued in
+      // the outbox when the tab closed and never sent - show it as failed
+      // (⚠️, retryable) rather than a clock that never resolves.
+      if (ctx.markStalePendingAsFailed) ctx.markStalePendingAsFailed();
+      mergeBuffered();
+      ctx.hasMoreMessages.value = cached.length >= ctx.MESSAGE_PAGE_SIZE;
+      const item2 = ctx.chats.value.find((c) => c.chat.id === chatId);
+      const newestId = ctx.messages.value[ctx.messages.value.length - 1].id;
+      if (item2) {
+        const last = cached.find((m) => m.id === item2.chat.last_message_id);
+        if (last && last.deleted_at) item2.chat.last_message_preview = '🚫 Message deleted';
+      }
+      ctx.probeLoadedImageOrientations();
+      await nextTick();
+      scrollMessagesToBottom();
+      ctx.sendReceipt('mark_delivered', chatId, newestId);
+      ctx.sendReceipt('mark_read', chatId, newestId);
+      return;
+    }
+
+    try {
+      const history = await ctx.apiFetch(`/chats/${chatId}/messages?limit=${ctx.MESSAGE_PAGE_SIZE}`);
+      if (ctx.activeChatId.value !== chatId) return;
+      // Live messages pushed onto messages.value while this fetch was in
+      // flight (activeChatId is set before the await, so new_message for this
+      // chat renders live) would be wiped by the history assignment - keep
+      // them to fold back in.
+      const liveDuringFetch = ctx.messages.value.filter((m) => m.id != null);
+      // The API returns newest-first (keyset pagination); the UI wants oldest-first.
+      ctx.messages.value = history.slice().reverse();
+      ctx.hasMoreMessages.value = history.length === ctx.MESSAGE_PAGE_SIZE;
+      // Fold in live messages that landed during / before this fetch - the
+      // server's send-worker read-after-write lag means the GET can miss the
+      // most recent ones even though we already received them over the socket.
+      const seenIds = new Set(ctx.messages.value.map((m) => m.id));
+      for (const m of liveDuringFetch) {
+        if (!seenIds.has(m.id)) { ctx.messages.value.push(m); seenIds.add(m.id); }
+      }
+      mergeBuffered();
+      ctx.saveChatMessages(chatId, ctx.messages.value);
+      // GET /chats can't tell us the last message was soft-deleted (its
+      // last_message_preview column keeps the old text). The history page
+      // does carry deleted_at, so reconcile the sidebar preview here.
+      if (item && history.length) {
+        const last = history.find((m) => m.id === item.chat.last_message_id);
+        if (last && last.deleted_at) item.chat.last_message_preview = '🚫 Message deleted';
+      }
+      ctx.probeLoadedImageOrientations();
+      await nextTick();
+      scrollMessagesToBottom();
+
+      // Opening a chat catches up on both receipts in one go, including
+      // anything sent while this chat wasn't the active one. Use the merged
+      // newest id, not history[0], so buffered live messages count too.
+      if (ctx.messages.value.length) {
+        const newestId = ctx.messages.value[ctx.messages.value.length - 1].id;
+        if (newestId != null) {
+          ctx.sendReceipt('mark_delivered', chatId, newestId);
+          ctx.sendReceipt('mark_read', chatId, newestId);
+        }
+      }
+    } catch (err) {
+      if (ctx.activeChatId.value !== chatId) return;
+      // Server down / offline and nothing cached: show the "waiting for
+      // connection" state in the pane instead of leaking a raw fetch error
+      // into the composer's attach-error banner. A reconnect + tab focus
+      // re-runs selectChat via the WS router, so this is self-healing.
+      ctx.messagesConnectionError.value = true;
+      ctx.logError('failed to load chat history for', chatId, err.message);
+    }
+  }
+
+  // Called from useWebsocket's ws.onopen: if the open chat never loaded its
+  // history (server was down / offline when it was selected), re-run selectChat
+  // now that the socket is back so it fills itself in without a manual re-tap.
+  function reloadActiveChatIfUnloaded() {
+    if (ctx.activeChatId.value && ctx.messagesConnectionError.value && !ctx.messages.value.length) {
+      selectChat(ctx.activeChatId.value);
+    }
+  }
+
+  // A profile edit (name / photo) has no server push - the other clients only
+  // learn about it by re-pulling. Refresh the open chat's cached users when the
+  // tab regains focus, so switching back to it shows the current photo/name.
+  function refreshActiveChatUsers() {
+    if (document.visibilityState !== 'visible' || !ctx.activeChatId.value) return;
+    const item = ctx.chats.value.find((c) => c.chat.id === ctx.activeChatId.value);
+    if (!item) return;
+    if (item.chat.is_group) ctx.resolveChatMemberPhones(ctx.activeChatId.value);
+    else ctx.resolvePrivateChatTitle(ctx.activeChatId.value, { force: true });
+  }
+  document.addEventListener('visibilitychange', refreshActiveChatUsers);
+
+  // Write-through: any change to the open chat's message list (live event,
+  // edit, delete, optimistic send) refreshes its cached newest page.
+  watch(ctx.messages, (list) => {
+    if (ctx.activeChatId.value && list && list.length) {
+      ctx.saveChatMessages(ctx.activeChatId.value, list);
+    }
+  }, { deep: true });
+
+  return {
+    messagesScrollEl, isPinnedToBottom, scrollMessagesToBottom,
+    loadOlderMessages, onMessagesScroll,
+    openDraftChat, discardDraftChat, closeActiveChat,
+    selectChat, reloadActiveChatIfUnloaded, refreshActiveChatUsers,
+  };
+}

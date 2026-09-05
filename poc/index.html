@@ -92,6 +92,13 @@
 <script src="composables/useTyping.js"></script>
 <script src="composables/useChatMeta.js"></script>
 <script src="composables/useMessageCache.js"></script>
+<script src="composables/useOutbox.js"></script>
+<!-- useChats is a facade over these four; load order = merge order -->
+<script src="composables/useChatStore.js"></script>
+<script src="composables/useChatMembers.js"></script>
+<script src="composables/useChatList.js"></script>
+<script src="composables/useChatOpen.js"></script>
+<script src="composables/useChatMenu.js"></script>
 <script src="composables/useChats.js"></script>
 <script src="composables/useMembers.js"></script>
 <script src="composables/useNewChat.js"></script>
@@ -180,6 +187,7 @@ const app = createApp({
     Object.assign(ctx, useTyping(ctx));
     Object.assign(ctx, useChatMeta(ctx));
     Object.assign(ctx, useMessageCache(ctx));
+    Object.assign(ctx, useOutbox(ctx));
     Object.assign(ctx, useChats(ctx));
     Object.assign(ctx, useMembers(ctx));
     Object.assign(ctx, useNewChat(ctx));
@@ -296,11 +304,15 @@ const app = createApp({
               :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass"
               :senderAvatarUrl="senderAvatarUrl"
               :quotedPreviewFor="quotedPreviewFor" :imageOrientation="imageOrientation"
+              :connectionError="messagesConnectionError"
               @message-contextmenu="openMessageContextMenu" @load-older="onMessagesScroll"
-              @voice-played="onVoicePlayed" />
+              @voice-played="onVoicePlayed" @retry-message="retryFailedMessage" />
 
             <div v-if="draftChat" class="px-4 py-1.5 text-center text-xs text-slate-400 bg-slate-50 border-t border-slate-100">
               This chat isn't created yet — send a message to start it.
+            </div>
+            <div v-if="showOutboxBanner" class="px-4 py-1.5 text-center text-xs text-amber-700 bg-amber-50 border-t border-amber-100">
+              {{ outboxBannerText }}
             </div>
             <MessageInput v-model:messageInput="messageInput" @send-message="sendMessage" @typing="notifyTyping"
               :attachError="messagesError" @clear-attach-error="messagesError = ''"

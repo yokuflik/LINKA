@@ -84,6 +84,9 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).warning("routing unregister failed at shutdown")
     await dispose_engine()
     await close_redis()
+    from utils import id_client
+
+    await id_client.close()  # no-op unless ID_SERVICE_ADDR is set (ADR 0011)
 
 
 app = FastAPI(lifespan=lifespan)

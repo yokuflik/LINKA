@@ -9,7 +9,8 @@ production design.
 |---|---|
 | `../Dockerfile` | multi-stage image for the FastAPI app |
 | `../.dockerignore` | keeps the build context small |
-| `../docker-compose.prod.yml` | full stack: `app` + `caddy` + `db` + `redis` + `minio` |
+| `../docker-compose.prod.yml` | full stack: `app` + `caddy` + `db` + `redis` + `minio` + `id_service` |
+| `../id_service/` | Rust Snowflake ID gRPC service (ADR 0011); `id_service/Dockerfile` builds it |
 | `env.production.example` | copy to `../.env`, fill every `<CHANGE ME>` |
 | `Caddyfile` | reverse proxy: API + WS + static PoC + MinIO |
 | `postgres.prod.conf` | Postgres tuned for a 1 GB box |
@@ -86,10 +87,15 @@ container, plus a nightly `pg_dump` to `/opt/linka/backups`.
 
 ```bash
 cd /opt/linka && git pull
-docker compose -f docker-compose.prod.yml build app
+docker compose -f docker-compose.prod.yml build app id_service   # id_service only when its Dockerfile/src changed
 docker compose -f docker-compose.prod.yml run --rm app python -m scripts.init_db  # picks up new tables/columns/partitions
 docker compose -f docker-compose.prod.yml up -d
 ```
+
+The Rust `id_service` build is slow on a 1 GB box (fetches + compiles the crate
+tree, ~15-20 min, swap-heavy). Prefer `docker build -f id_service/Dockerfile
+-t linka-id-service:latest .` on a bigger machine + `docker save | ssh … docker
+load`, then `up -d` on the host.
 
 ## Memory budget (≈, idle)
 
@@ -99,6 +105,7 @@ docker compose -f docker-compose.prod.yml up -d
 | app | 320m | ~170m |
 | minio | 256m | ~120m |
 | redis | 160m | ~40m |
+| id_service | 32m | ~5m |
 | caddy | 64m | ~20m |
 
 Ceilings sum above 1 GB on purpose — they are limits, not reservations; swap

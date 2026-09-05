@@ -28,6 +28,16 @@ REDIS_MAX_CONNECTIONS = int(os.environ.get("REDIS_MAX_CONNECTIONS", "500"))
 # guaranteed collision into a low-probability one instead of the worst case.
 SNOWFLAKE_MACHINE_ID = int(os.environ.get("SNOWFLAKE_MACHINE_ID", str(random.randint(0, 1023))))
 
+# --- Rust ID service (ADR 0011) ---
+# gRPC address of the standalone Rust Snowflake service, e.g. "id_service:50051".
+# Empty (the default) => keep minting ids in-process with SNOWFLAKE_MACHINE_ID.
+# When set, utils.id_client.next_id() calls the service (unary, one id per RPC -
+# never batch, the id timestamp is Postgres' created_at partition-routing key).
+ID_SERVICE_ADDR = os.environ.get("ID_SERVICE_ADDR", "")
+# Per-call deadline; on timeout/unavailable id_client falls back to the local
+# generator so id minting never hard-stops.
+ID_SERVICE_TIMEOUT_SECONDS = float(os.environ.get("ID_SERVICE_TIMEOUT_SECONDS", "0.5"))
+
 # --- Server instance identity ---
 # Used to tag presence entries with which instance a connection is on.
 # Falls back to a random id per process start when not set (e.g. by the

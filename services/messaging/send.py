@@ -15,7 +15,7 @@ from services.messaging.errors import MessageAlreadySentError, NotAParticipantEr
 from services.messaging.media_validation import _validate_media
 from services.storage import media_service
 from services.redis_client import redis_client
-from utils.snowflake import next_id
+from utils.id_client import next_id
 
 # How long a client_message_id is remembered for idempotency - long enough to
 # cover any realistic client retry window (a flaky connection retrying a send).
@@ -76,7 +76,7 @@ async def process_outgoing(
         # The original attempt's process crashed before writing the result back;
         # fall through and actually send it so the client isn't left hanging forever.
 
-    message_id = next_id()
+    message_id = await next_id()
     message = await create_message(
         session,
         message_id=message_id,
@@ -120,7 +120,7 @@ async def send_system_message(session: AsyncSession, chat_id: int, content: str)
     """No sender, no idempotency/permission check - triggered internally by chat_service."""
     message = await create_message(
         session,
-        message_id=next_id(),
+        message_id=await next_id(),
         chat_id=chat_id,
         sender_id=None,
         type=SYSTEM_MESSAGE_TYPE,

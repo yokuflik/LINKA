@@ -43,6 +43,8 @@ services:
       # for local dev, so one .env works for both `exec` scripts and the app.
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379/0
+      # Rust Snowflake ID service (ADR 0011). Empty -> in-process generator.
+      ID_SERVICE_ADDR: id_service:50051
     depends_on:
       db:
         condition: service_healthy
@@ -50,12 +52,32 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      id_service:
+        condition: service_healthy
     mem_limit: 320m
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
       interval: 30s
       timeout: 5s
       start_period: 20s
+      retries: 3
+
+  id_service:
+    build:
+      context: .
+      dockerfile: id_service/Dockerfile
+    image: linka-id-service:latest
+    <<: *restart
+    environment:
+      # 10-bit node id, unique per running replica (only one here). Must differ
+      # from the app's SNOWFLAKE_MACHINE_ID fallback to stay collision-free.
+      NODE_ID: "2"
+    mem_limit: 32m
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=localhost:50051"]
+      interval: 15s
+      timeout: 5s
+      start_period: 5s
       retries: 3
 
   db:

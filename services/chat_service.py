@@ -23,7 +23,7 @@ from database.models.user import User
 from config import MAX_INITIAL_GROUP_MEMBERS
 from services import avatar_service, message_service, realtime_service
 from services.storage.media_service import public_avatar_url
-from utils.snowflake import next_id
+from utils.id_client import next_id
 
 ROLE_MEMBER = 1
 ROLE_ADMIN = 2
@@ -106,7 +106,7 @@ async def get_or_create_private_chat(session: AsyncSession, user_a_id: int, user
         if chat is not None:
             return chat
 
-    candidate_chat = await create_chat(session, chat_id=next_id(), is_group=False)
+    candidate_chat = await create_chat(session, chat_id=await next_id(), is_group=False)
     # Captured now, before create_pair(): on a lost race it rolls back,
     # which expires every object in this session - candidate_chat included.
     # Accessing candidate_chat.id afterwards would then trigger an implicit
@@ -156,7 +156,7 @@ async def create_group_chat(
     if len(initial_member_ids) > MAX_INITIAL_GROUP_MEMBERS:
         raise TooManyMembersError(f"Cannot create a group with more than {MAX_INITIAL_GROUP_MEMBERS} initial members")
 
-    chat = await create_chat(session, chat_id=next_id(), is_group=True, title=title, about_text=about_text)
+    chat = await create_chat(session, chat_id=await next_id(), is_group=True, title=title, about_text=about_text)
     # Captured now: an add_participant_to_chat() failure below rolls back
     # (same reason as get_or_create_private_chat's candidate_chat_id above),
     # which expires every object in this session - chat included. Accessing

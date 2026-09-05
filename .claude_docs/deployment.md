@@ -3,6 +3,28 @@
 Authoritative runbook: `deploy/README.md`. Decision record: ADR 0007
 (single-host `docker compose`), building on ADR 0005/0006 (partitions).
 
+## `id_service/` — Rust Snowflake ID service (ADR 0011)
+
+Standalone Rust + `tonic` gRPC service that mints Snowflake IDs, replacing the
+in-process `utils/snowflake.py` generator under load. Same bit layout (epoch
+2024-01-01Z, 41-bit ms / 10-bit node / 12-bit sequence), so `id_to_datetime*`
+decoders are unchanged. Lock-free `AtomicU64` CAS loop. Contract:
+`proto/snowflake.proto` — `SnowflakeService.NextId() → { string id }`.
+**Unary only, no batch RPC** (batching would stale the id timestamp that Postgres
+uses as the `created_at` partition-routing key). `NODE_ID` env (0..=1023,
+required, process exits if missing/invalid) — unique per replica. Serves
+`grpc.health.v1.Health` (SnowflakeService = SERVING) on the same port `50051`.
+`id_service/Dockerfile` = multi-stage rust-slim → debian-slim. Python side:
+`utils/id_client.py` (`async next_id()`), enabled by setting app env
+`ID_SERVICE_ADDR` (e.g. `id_service:50051`; empty → in-process generator).
+`ID_SERVICE_TIMEOUT_SECONDS` (default 0.5) bounds each call; failure → local
+fallback. Wired at the async call sites (auth/chat/message ids); `receipt_log` +
+`storage/client` stay on the local sync generator by design. `scripts/gen_proto.sh`
+regenerates the checked-in `utils/snowflake_pb2*.py` stubs.
+`docker-compose.prod.yml` runs it as service `id_service` (`id_service/Dockerfile`,
+`NODE_ID=2`, `mem_limit: 32m`, `grpc_health_probe` healthcheck) and sets
+`ID_SERVICE_ADDR=id_service:50051` + `depends_on` on the `app`.
+
 ## Topology
 
 One free-tier EC2 box (Ubuntu, 1 vCPU, 1 GB RAM + 2 GB swap). Everything is
@@ -17,10 +39,12 @@ app (uvicorn, --workers 1)            — one process = one full set of lifespan
 db (postgres:15-alpine, deploy/postgres.prod.conf, vol pgdata)
 redis (7-alpine, --maxmemory 128mb volatile-lru --appendonly yes, vol redisdata)
 minio (vol minio_data)
+id_service (rust snowflake gRPC, :50051 internal, NODE_ID=2, no volume)
 ```
 
 Not HA, not horizontally scalable — intended. `SNOWFLAKE_MACHINE_ID` and
-`SERVER_ID` are pinned in `.env` (one instance).
+`SERVER_ID` are pinned in `.env` (one instance); `id_service` `NODE_ID` must
+differ from `SNOWFLAKE_MACHINE_ID`.
 
 ## Image
 

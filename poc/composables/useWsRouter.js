@@ -23,6 +23,17 @@ function useWsRouter(ctx) {
   // reset to 0 the moment that chat is opened (see selectChat / clearUnreadCount).
   const unreadCountByChatId = ref({});
 
+  // Live messages that arrived for a chat that wasn't open at the time.
+  // selectChat() drains the matching entry and merges it with the history
+  // fetch (dedupe by message_id) so opening a chat mid-burst doesn't lose the
+  // messages that landed before you switched to it. chat_id -> [msg,...].
+  const pendingChatMessages = new Map();
+  function takeBufferedMessages(chatId) {
+    const buf = pendingChatMessages.get(chatId) || [];
+    pendingChatMessages.delete(chatId);
+    return buf;
+  }
+
   function bumpUnreadCount(chatId) {
     unreadCountByChatId.value = {
       ...unreadCountByChatId.value,
@@ -45,7 +56,14 @@ function useWsRouter(ctx) {
 
     // Acks/errors for actions *you* took use "type"; events fanned out from
     // the server (yours or anyone else's) use "event".
-    if (msg.type === 'error') { logError('server error:', msg.code, '-', msg.message); return; }
+    if (msg.type === 'error') {
+      logError('server error:', msg.code, '-', msg.message);
+      // A send_message that was rejected (rate_limited / internal_error /
+      // permanent): let the outbox requeue-with-backoff or fail the bubble,
+      // instead of leaving it stuck on 🕓 forever.
+      if (msg.client_message_id && ctx.onSendError) ctx.onSendError(msg.code, msg.client_message_id);
+      return;
+    }
     if (msg.type === 'ack') { log('ack:', msg.for, msg); return; }
     if (msg.type === 'heartbeat_ack') { return; }
 
@@ -55,6 +73,7 @@ function useWsRouter(ctx) {
     if (msg.event === 'message_failed') {
       const m = ctx.messages.value.find((x) => x.client_message_id === msg.client_message_id);
       if (m) { m.pending = false; m.send_failed = true; }
+      if (ctx.removeFromOutbox) ctx.removeFromOutbox(msg.client_message_id);
       logError('message failed to send:', msg.reason);
       return;
     }
@@ -64,6 +83,7 @@ function useWsRouter(ctx) {
     if (msg.event === 'message_already_sent') {
       const m = ctx.messages.value.find((x) => x.client_message_id === msg.client_message_id);
       if (m) { m.id = msg.message_id; m.pending = false; m.send_failed = false; }
+      if (ctx.removeFromOutbox) ctx.removeFromOutbox(msg.client_message_id);
       return;
     }
 
@@ -107,6 +127,7 @@ function useWsRouter(ctx) {
         optimistic.media_duration_seconds = msg.media_duration_seconds;
         optimistic.pending = false;
         optimistic.send_failed = false;
+        if (ctx.removeFromOutbox && msg.client_message_id) ctx.removeFromOutbox(msg.client_message_id);
       } else if (msg.chat_id === ctx.activeChatId.value) {
         // Decide before pushing: was the user already at the bottom?
         const wasPinned = ctx.isPinnedToBottom();
@@ -124,6 +145,23 @@ function useWsRouter(ctx) {
         if (msg.sender_id === currentUser.value.id || wasPinned) {
           nextTick(ctx.scrollMessagesToBottom);
         }
+      } else if (msg.message_id != null) {
+        // Not our own echo, and this chat isn't open. Buffer it so that if the
+        // user opens this chat mid-burst, selectChat can merge these into the
+        // history fetch instead of losing the messages that arrived before the
+        // switch (the server's read-after-write lag means the GET may not see
+        // them yet either).
+        const buf = pendingChatMessages.get(msg.chat_id) || [];
+        buf.push({
+          id: msg.message_id, chat_id: msg.chat_id, sender_id: msg.sender_id,
+          type: msg.type, content: msg.content, created_at: msg.created_at, is_edited: false, edited_at: null,
+          status: msg.status, reply_to_message_id: msg.reply_to_message_id,
+          media_url: msg.media_url, media_mime: msg.media_mime, media_size: msg.media_size,
+          media_name: msg.media_name, media_duration_seconds: msg.media_duration_seconds,
+        });
+        // Cap so a chat that's never opened can't grow this without bound.
+        if (buf.length > 200) buf.shift();
+        pendingChatMessages.set(msg.chat_id, buf);
       }
       // System messages ("X joined the group", or a private "role_changed"
       // notice - see shouldShowSystemMessage) must never become the sidebar
@@ -359,6 +397,7 @@ function useWsRouter(ctx) {
 
   return {
     unreadCountByChatId, bumpUnreadCount, clearUnreadCount,
+    takeBufferedMessages,
     handleWsMessage,
   };
 }

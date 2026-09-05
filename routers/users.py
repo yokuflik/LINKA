@@ -12,7 +12,8 @@ from routers.schemas import (
     UserSettingsOut,
     UserSettingsUpdateIn,
 )
-from services import avatar_service, user_service
+from config import LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+from services import avatar_service, rate_limit_service, user_service
 from services.settings import service as settings_service
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -20,6 +21,9 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 @router.get("/me", response_model=UserOut)
 async def get_my_profile(user_id: int = Depends(get_current_user_id), session: AsyncSession = Depends(get_db)):
+    await rate_limit_service.enforce_sliding_window(
+        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+    )
     user = await user_service.get_profile(session, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -34,6 +38,9 @@ async def get_profile_by_phone(
 ):
     """Looks up a user by phone number - e.g. to start a private chat by phone
     instead of needing to already know their numeric id."""
+    await rate_limit_service.enforce_sliding_window(
+        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+    )
     user = await user_service.get_profile_by_phone(session, phone_number)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No user with that phone number")

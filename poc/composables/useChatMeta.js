@@ -41,16 +41,29 @@ function useChatMeta(ctx) {
   // Re-pulls just the status field for whatever's currently loaded in the open
   // conversation, after a delivery/read receipt event. Only touches messages
   // the server's page still knows about; older history is left alone.
-  async function refreshMessageStatuses(chatId) {
-    try {
-      const page = await ctx.apiFetch(`/chats/${chatId}/messages?limit=50`);
-      const statusById = new Map(page.map((m) => [m.id, m.status]));
-      for (const m of ctx.messages.value) {
-        if (statusById.has(m.id)) m.status = statusById.get(m.id);
-      }
-    } catch (err) {
-      ctx.logError('failed to refresh message statuses for', chatId, err);
-    }
+  //
+  // Coalesced + generation-guarded: a burst of receipt events (e.g. the other
+  // side reading 16 messages in a row) would otherwise fire 16 concurrent
+  // GETs whose responses can land out of order, an early one clobbering the
+  // final state. We debounce to one trailing fetch, and stamp each fetch with
+  // a generation so a slow older response is discarded.
+  let _statusRefreshTimer = null;
+  let _statusRefreshGen = 0;
+  function refreshMessageStatuses(chatId) {
+    if (_statusRefreshTimer) clearTimeout(_statusRefreshTimer);
+    _statusRefreshTimer = setTimeout(() => {
+      _statusRefreshTimer = null;
+      const gen = ++_statusRefreshGen;
+      ctx.apiFetch(`/chats/${chatId}/messages?limit=50`)
+        .then((page) => {
+          if (gen !== _statusRefreshGen || chatId !== ctx.activeChatId.value) return;
+          const statusById = new Map(page.map((m) => [m.id, m.status]));
+          for (const m of ctx.messages.value) {
+            if (statusById.has(m.id)) m.status = statusById.get(m.id);
+          }
+        })
+        .catch((err) => ctx.logError('failed to refresh message statuses for', chatId, err));
+    }, 250);
   }
 
   // Mirrors the server-side rule in crud_message: editing or deleting a

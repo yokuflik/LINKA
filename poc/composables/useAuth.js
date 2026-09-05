@@ -218,6 +218,7 @@ function useAuth(ctx) {
     firebaseConfirmation = null;
     if (ctx.resetPhoneInput) ctx.resetPhoneInput();
     ctx.clearAllMessageCache();
+    if (ctx.clearOutbox) ctx.clearOutbox();
     localStorage.removeItem('linka_access_token');
     localStorage.removeItem('linka_refresh_token');
     log('logged out');

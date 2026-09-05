@@ -111,7 +111,9 @@ async def get_user_chats(
     return result.scalars().all()
 
 
-async def get_all_chat_ids_for_user(session: AsyncSession, user_id: int) -> Sequence[int]:
+async def get_all_chat_ids_for_user(
+    session: AsyncSession, user_id: int, limit: int | None = None
+) -> Sequence[int]:
     """
     Every chat_id this user is a participant of, unpaginated - deliberately
     separate from get_user_chats(), which is capped at MAX_PAGE_SIZE for the
@@ -119,10 +121,17 @@ async def get_all_chat_ids_for_user(session: AsyncSession, user_id: int) -> Sequ
     version: subscribing to only a user's first 100 chats would silently
     stop delivering real-time events on their 101st chat and up.
 
+    `limit` is a defensive ceiling only (the WS connect path passes
+    WS_MAX_CHAT_IDS_ON_CONNECT) - not pagination. A user legitimately in more
+    chats than that is pathological and loses live events past the cap;
+    normal users are nowhere near it.
+
     Time Complexity: O(log N + K) where K is this user's chat count -
     bounded per-user, never a function of table size.
     """
     stmt = select(Participant.chat_id).where(Participant.user_id == user_id)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     result = await session.execute(stmt)
     return result.scalars().all()
 

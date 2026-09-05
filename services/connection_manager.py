@@ -10,6 +10,10 @@ from services.fanout import routing
 
 logger = logging.getLogger(__name__)
 
+# WS close code for a connection dropped by the concurrent-connection cap
+# (mirrors HTTP 409 Conflict). See routers/websocket.py for the full code map.
+_CLOSE_CONNECTION_LIMIT = 4409
+
 
 class ConnectionManager:
     """
@@ -156,10 +160,37 @@ class ConnectionManager:
         )
 
     async def _dispatch_inbox_event(self, event: dict) -> None:
+        # Not chat-scoped: a directive aimed at one local connection.
+        if event.get("event") == "force_disconnect":
+            await self._handle_force_disconnect(event.get("connection_id"))
+            return
+
         chat_id_raw = event.get("chat_id")
         if chat_id_raw is None:
             return
         await self._broadcast_to_chat(int(chat_id_raw), event)
+
+    async def _handle_force_disconnect(self, connection_id: str | None) -> None:
+        """
+        The concurrent-connection cap (services/ws_connection_registry) evicted
+        this connection. Close it silently - business answer 4 (2026-09-06): no
+        UI banner, no error frame, just the close. The client's normal
+        reconnect logic may re-open and become the newest connection, which is
+        acceptable. The close breaks the endpoint's receive loop, whose
+        `finally` runs the usual disconnect + presence cleanup; we also call
+        disconnect() here so the local routing tables are consistent
+        immediately (both are idempotent).
+        """
+        if connection_id is None:
+            return
+        websocket = self._sockets_by_connection.get(connection_id)
+        if websocket is None:
+            return
+        try:
+            await websocket.close(code=_CLOSE_CONNECTION_LIMIT)
+        except Exception:
+            pass
+        await self.disconnect(connection_id)
 
     async def _broadcast_to_chat(self, chat_id: int, event: dict) -> None:
         # Snapshotted, not iterated live: a concurrent disconnect from a

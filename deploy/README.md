@@ -47,7 +47,40 @@ cp deploy/env.production.example .env
 # edit .env: SITE_ADDRESS, S3_ADDRESS, POSTGRES_PASSWORD,
 # JWT_SECRET_KEY (openssl rand -hex 32), S3_ACCESS_KEY / S3_SECRET_KEY,
 # CORS_ALLOW_ORIGINS, S3_ENDPOINT_URL / S3_AVATARS_PUBLIC_BASE_URL
+#
+# Security (ADR 0012) - set the host-based ones to SITE_ADDRESS's hostname:
+#   CORS_ALLOW_ORIGINS   also gates the WebSocket handshake Origin; never "*"
+#   ALLOWED_HOSTS        Host-header allowlist (comma-separated, "*" disables)
+#   TRUSTED_PROXY_IPS    default (docker bridge + loopback) is fine here
+#   API_IP_BACKSTOP_MAX / API_IP_BACKSTOP_WINDOW_SECONDS   coarse per-IP REST
+#                         ceiling, default 1000 / 180 s - the retune knob
 ```
+
+### Rate-limit retune knobs (ADR 0012 / COMMS_SECURITY_PLAN)
+
+Every limit is an env var with a generous default — ship as-is, then tighten
+from real metrics (429 rate in the app log, Redis `rlsw:*` / `ratelimit:*` key
+counts). Full table + bucket keys: `.claude_docs/security_and_rate_limiting.md`.
+All are commented out in `env.production.example`; uncomment to override.
+
+| Surface | Knob(s) | Default |
+|---|---|---|
+| Global per-IP REST backstop | `API_IP_BACKSTOP_MAX` / `_WINDOW_SECONDS` | 1000 / 180 s |
+| OTP request (per phone) | `OTP_REQUEST_RATE_LIMIT_MAX` / `_WINDOW_SECONDS` | 5 / 1800 s |
+| OTP request / verify (per IP) | `OTP_REQUEST_IP_RATE_LIMIT_*`, `OTP_VERIFY_IP_RATE_LIMIT_*` | 15 / h, 30 / h |
+| `/auth/refresh` | `REFRESH_IP_RATE_LIMIT_*`, `REFRESH_JTI_RATE_LIMIT_*` | 60 / h IP, 10 / h token |
+| New accounts (per IP) | `ACCOUNT_CREATE_IP_RATE_LIMIT_*` | 5 / day |
+| WS concurrent conns / user | `WS_CONN_MAX_CONNECTIONS`, `WS_CONN_MAX_AGE_SECONDS` | 5, 26 h |
+| WS handshake churn | `WS_UPGRADE_IP_RATE_LIMIT_*`, `WS_UPGRADE_USER_RATE_LIMIT_*` | 20 / 10 s, 10 / 10 s |
+| WS inbound frame rate | `WS_FRAME_RATE_MAX` / `_WINDOW_SECONDS`, `WS_FRAME_FLOOD_STRIKES` | 30 / 10 s, 60 |
+| WS `send_message` | `WS_SEND_MESSAGE_RATE_*`, `WS_SEND_MESSAGE_BURST_*` | 3 / 1 s, 40 / 60 s |
+| WS per-action buckets | `WS_RECEIPTS_*`, `WS_SUBSCRIBE_PRESENCE_*`, `WS_TYPING_*`, `WS_EDIT_*` | 60/10 s, 20/10 s, 10/10 s, 20/60 s |
+| REST message history | `MSG_HISTORY_RATE_*`, `MSG_HISTORY_MAX_LIMIT` | 30 / 60 s, 100 rows |
+| REST upload ticket | `UPLOAD_TICKET_RATE_*`, `UPLOAD_TICKET_IP_RATE_LIMIT_*` | 5 / 60 s user, 20 / 60 s IP |
+| REST detail / list reads | `DETAIL_READ_RATE_*`, `LIST_READ_RATE_*` | 60 / 60 s, 120 / 60 s |
+
+WS close codes: `4401` auth · `4403` bad Origin · `4409` connection-limit
+eviction (silent) · `4429` handshake churn or sustained frame flood.
 
 ## Build & boot
 

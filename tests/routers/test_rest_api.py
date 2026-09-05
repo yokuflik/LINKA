@@ -77,6 +77,49 @@ async def test_otp_request_is_rate_limited(client, redis_db, monkeypatch):
     assert resp.status_code == 429
 
 
+async def test_otp_request_is_rate_limited_per_ip(client, redis_db, monkeypatch):
+    # The per-IP ceiling bites regardless of which number is targeted - one
+    # host must not be able to spray OTPs across many numbers.
+    from routers import auth as auth_router
+
+    monkeypatch.setattr(auth_router, "OTP_REQUEST_IP_RATE_LIMIT_MAX", 3)
+
+    for i in range(3):
+        resp = await client.post("/auth/otp/request", json={"phone_number": f"+9725001999{i:02d}"})
+        assert resp.status_code == 204
+
+    resp = await client.post("/auth/otp/request", json={"phone_number": "+972500199999"})
+    assert resp.status_code == 429
+
+
+async def test_new_account_creation_is_rate_limited_per_ip(client, db_session: AsyncSession, redis_db, monkeypatch):
+    monkeypatch.setattr(auth_service, "ACCOUNT_CREATE_IP_RATE_LIMIT_MAX", 2)
+
+    for i in range(2):
+        await _login(client, redis_db, f"+9725001888{i:02d}")
+
+    # Third brand-new number from the same IP: verify succeeds up to account
+    # creation, which is refused.
+    phone = "+972500188888"
+    await client.post("/auth/otp/request", json={"phone_number": phone})
+    code = await redis_db.get(auth_service._otp_key(phone))
+    resp = await client.post("/auth/otp/verify", json={"phone_number": phone, "code": code})
+    assert resp.status_code == 429
+
+
+async def test_returning_user_login_is_not_blocked_by_account_creation_cap(
+    client, db_session: AsyncSession, redis_db, monkeypatch
+):
+    monkeypatch.setattr(auth_service, "ACCOUNT_CREATE_IP_RATE_LIMIT_MAX", 1)
+    phone = "+972500177777"
+    await _login(client, redis_db, phone)  # consumes the single account-creation slot
+
+    # Same number logging back in must still work - it's not a new account.
+    _, access_token, _ = await _login(client, redis_db, phone)
+    resp = await client.get("/users/me", headers=_auth_header(access_token))
+    assert resp.status_code == 200
+
+
 async def test_refresh_returns_a_new_working_access_token(client, db_session: AsyncSession, redis_db):
     _, _, refresh_token = await _login(client, redis_db, "+972500100004")
 
@@ -325,6 +368,67 @@ async def test_message_history_returns_messages_sent_over_the_service_layer(clie
     messages = resp.json()
     assert len(messages) == 1
     assert messages[0]["content"] == "hello from the service layer"
+
+
+async def test_message_history_limit_is_clamped_server_side(client, db_session: AsyncSession, redis_db):
+    from routers import messages as messages_router
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(messages_router, "MSG_HISTORY_MAX_LIMIT", 5)
+    try:
+        user, token, _ = await _login(client, redis_db, "+972500100061")
+        resp = await client.post("/chats/groups", json={"title": "G"}, headers=_auth_header(token))
+        chat_id = resp.json()["id"]
+        for _ in range(8):
+            await message_service.process_outgoing(
+                db_session, sender_id=int(user["id"]), chat_id=int(chat_id),
+                client_message_id=str(uuid.uuid4()), content="x",
+            )
+        resp = await client.get(f"/chats/{chat_id}/messages?limit=100000", headers=_auth_header(token))
+        assert resp.status_code == 200
+        assert len(resp.json()) == 5
+    finally:
+        monkeypatch.undo()
+
+
+async def test_message_history_is_rate_limited_per_user(client, db_session: AsyncSession, redis_db):
+    from routers import messages as messages_router
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(messages_router, "MSG_HISTORY_RATE_MAX", 3)
+    try:
+        _, token, _ = await _login(client, redis_db, "+972500100062")
+        resp = await client.post("/chats/groups", json={"title": "G"}, headers=_auth_header(token))
+        chat_id = resp.json()["id"]
+        for _ in range(3):
+            resp = await client.get(f"/chats/{chat_id}/messages", headers=_auth_header(token))
+            assert resp.status_code == 200
+        resp = await client.get(f"/chats/{chat_id}/messages", headers=_auth_header(token))
+        assert resp.status_code == 429
+    finally:
+        monkeypatch.undo()
+
+
+async def test_upload_ticket_is_rate_limited_per_ip(client, db_session: AsyncSession, redis_db):
+    from routers import messages as messages_router
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(messages_router, "UPLOAD_TICKET_IP_RATE_LIMIT_MAX", 2)
+    try:
+        _, token, _ = await _login(client, redis_db, "+972500100063")
+        resp = await client.post("/chats/groups", json={"title": "G"}, headers=_auth_header(token))
+        chat_id = resp.json()["id"]
+        body = {"kind": "image", "mime_type": "image/png", "size_bytes": 1024, "sha256": "a" * 64}
+        seen_429 = False
+        for _ in range(4):
+            resp = await client.post(
+                f"/chats/{chat_id}/messages/upload-ticket", json=body, headers=_auth_header(token)
+            )
+            if resp.status_code == 429:
+                seen_429 = True
+        assert seen_429
+    finally:
+        monkeypatch.undo()
 
 
 async def test_non_participant_cannot_read_message_history(client, db_session: AsyncSession, redis_db):

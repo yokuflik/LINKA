@@ -9,7 +9,7 @@ from database.connection import session_scope
 from database.crud.crud_message import get_chat_messages
 from database.crud.crud_user import create_user
 from routers.websocket import _dispatch, websocket_endpoint
-from services import auth_service, chat_service, presence_service
+from services import auth_service, chat_service, presence_service, ws_connection_registry
 from services.connection_manager import connection_manager
 from services.fanout import worker as send_worker
 from services.settings import service as settings_service
@@ -27,10 +27,16 @@ async def _send_and_drain(user_id, chat_id, ws, *, content="hi"):
         payload={"type": "send_message", "chat_id": chat_id, "client_message_id": str(uuid.uuid4()), "content": content},
         websocket=ws,
     )
-    async with session_scope() as session:
-        await send_worker.drain_once(session, claim_stale=False)
-        messages = await get_chat_messages(session, chat_id=chat_id, limit=50)
-    return str(messages[0].id)
+    # The XADD from _dispatch and this drain race under load; a couple of
+    # retries makes the helper deterministic without a real worker running.
+    for _ in range(20):
+        async with session_scope() as session:
+            await send_worker.drain_once(session, claim_stale=False)
+            messages = await get_chat_messages(session, chat_id=chat_id, limit=50)
+        if messages:
+            return str(messages[0].id)
+        await asyncio.sleep(0.05)
+    raise AssertionError("send_message was never persisted by the send worker")
 
 _DISCONNECT = object()
 
@@ -42,11 +48,14 @@ class FakeWebSocket:
     inspect state in between, then signal disconnect.
     """
 
-    def __init__(self):
+    def __init__(self, headers=None):
         self._incoming: asyncio.Queue = asyncio.Queue()
         self.sent = []
         self.accepted = False
         self.closed_code = None
+        # Real Starlette WebSocket exposes a case-insensitive headers mapping;
+        # the endpoint reads "origin" off it for the CSWSH check.
+        self.headers = headers or {}
 
     async def accept(self):
         self.accepted = True
@@ -121,14 +130,20 @@ async def test_dispatch_send_message_success(db_session: AsyncSession, redis_db)
 async def test_dispatch_send_message_missing_field_returns_bad_request(db_session: AsyncSession, redis_db):
     ws = FakeWebSocket()
 
+    cmid = str(uuid.uuid4())
     await _dispatch(
         user_id=1,
         connection_id="c1",
-        payload={"type": "send_message", "client_message_id": str(uuid.uuid4())},  # no chat_id
+        payload={"type": "send_message", "client_message_id": cmid},  # no chat_id
         websocket=ws,
     )
 
-    assert ws.sent[0] == {"type": "error", "code": "bad_request", "message": "Invalid request: 'chat_id'"}
+    # The error frame echoes client_message_id so the client can fail the
+    # optimistic bubble that triggered it.
+    assert ws.sent[0] == {
+        "type": "error", "code": "bad_request",
+        "message": "Invalid request: 'chat_id'", "client_message_id": cmid,
+    }
 
 
 async def test_dispatch_send_message_by_a_non_participant_returns_forbidden(db_session: AsyncSession, redis_db):
@@ -148,7 +163,7 @@ async def test_dispatch_send_message_by_a_non_participant_returns_forbidden(db_s
 
 
 async def test_dispatch_send_message_is_rate_limited(db_session: AsyncSession, redis_db, monkeypatch):
-    monkeypatch.setattr("routers.websocket.SEND_MESSAGE_RATE_LIMIT_MAX", 2)
+    monkeypatch.setattr("routers.websocket.WS_SEND_MESSAGE_RATE_MAX", 2)
 
     chat_id = await _make_group(db_session, 1, [2])
     ws = FakeWebSocket()
@@ -168,6 +183,59 @@ async def test_dispatch_send_message_is_rate_limited(db_session: AsyncSession, r
     )
 
     assert ws.sent == [{"type": "error", "code": "rate_limited", "client_message_id": ws.sent[0]["client_message_id"]}]
+
+
+async def test_dispatch_send_message_burst_ceiling(db_session: AsyncSession, redis_db, monkeypatch):
+    # Primary 3/s is generous; the 40/60s ceiling is what catches sustained spam.
+    monkeypatch.setattr("routers.websocket.WS_SEND_MESSAGE_RATE_MAX", 1000)
+    monkeypatch.setattr("routers.websocket.WS_SEND_MESSAGE_BURST_MAX", 3)
+    chat_id = await _make_group(db_session, 1, [2])
+    ws = FakeWebSocket()
+
+    for _ in range(3):
+        await _dispatch(user_id=1, connection_id="c1",
+                        payload={"type": "send_message", "chat_id": chat_id, "client_message_id": str(uuid.uuid4()), "content": "hi"},
+                        websocket=ws)
+    ws.sent.clear()
+    await _dispatch(user_id=1, connection_id="c1",
+                    payload={"type": "send_message", "chat_id": chat_id, "client_message_id": str(uuid.uuid4()), "content": "hi"},
+                    websocket=ws)
+    assert ws.sent[0]["code"] == "rate_limited"
+
+    async with session_scope() as session:
+        await send_worker.drain_once(session, claim_stale=False)
+
+
+async def test_dispatch_per_action_limit_shares_a_bucket(db_session: AsyncSession, redis_db, monkeypatch):
+    # mark_delivered / mark_read / mark_played share one bucket - alternating
+    # between them must not dodge the limit.
+    monkeypatch.setattr("routers.websocket.WS_RECEIPTS_RATE_MAX", 2)
+    chat_id = await _make_group(db_session, 1, [2])
+    ws = FakeWebSocket()
+    mid = await _send_and_drain(1, chat_id, ws)
+    ws.sent.clear()
+
+    await _dispatch(user_id=2, connection_id="c2", payload={"type": "mark_delivered", "chat_id": chat_id, "message_id": mid}, websocket=ws)
+    await _dispatch(user_id=2, connection_id="c2", payload={"type": "mark_read", "chat_id": chat_id, "message_id": mid}, websocket=ws)
+    ws.sent.clear()
+    await _dispatch(user_id=2, connection_id="c2", payload={"type": "mark_played", "chat_id": chat_id, "message_id": mid}, websocket=ws)
+
+    assert ws.sent == [{"type": "error", "code": "rate_limited", "for": "mark_played"}]
+
+
+async def test_dispatch_per_action_limit_is_per_user(db_session: AsyncSession, redis_db, monkeypatch):
+    monkeypatch.setattr("routers.websocket.WS_TYPING_RATE_MAX", 1)
+    chat_id = await _make_group(db_session, 1, [2, 3])
+    ws = FakeWebSocket()
+
+    await _dispatch(user_id=1, connection_id="c1", payload={"type": "typing", "chat_id": chat_id}, websocket=ws)
+    await _dispatch(user_id=1, connection_id="c1", payload={"type": "typing", "chat_id": chat_id}, websocket=ws)
+    assert ws.sent[-1] == {"type": "error", "code": "rate_limited", "for": "typing"}
+
+    # A different user is unaffected.
+    ws.sent.clear()
+    await _dispatch(user_id=2, connection_id="c2", payload={"type": "typing", "chat_id": chat_id}, websocket=ws)
+    assert ws.sent == []
 
 
 async def test_dispatch_edit_message_permission_denied(db_session: AsyncSession, redis_db):
@@ -302,6 +370,18 @@ async def test_endpoint_rejects_an_invalid_token(redis_db):
     assert ws.closed_code == 4401
 
 
+async def test_endpoint_rejects_a_disallowed_origin(redis_db, monkeypatch):
+    # CORS_ALLOW_ORIGINS defaults to ["*"] in dev, so pin a real allowlist.
+    monkeypatch.setattr("routers.websocket.CORS_ALLOW_ORIGINS", ["https://linka.example.com"])
+    monkeypatch.setattr("routers.websocket._ORIGIN_WILDCARD", False)
+    ws = FakeWebSocket(headers={"origin": "https://evil.example.com"})
+
+    await websocket_endpoint(ws, token="whatever")  # token never checked - Origin fails first
+
+    assert ws.accepted is False
+    assert ws.closed_code == 4403
+
+
 async def test_endpoint_full_session_lifecycle(session_factory, redis_db):
     async with session_factory() as setup:
         chat_id = await _make_group(setup, 1, [2])
@@ -330,12 +410,121 @@ async def test_endpoint_full_session_lifecycle(session_factory, redis_db):
     assert await presence_service.is_online(1) is False
 
     # No send worker runs in the test process - drain the queue by hand, then
-    # confirm the message landed.
-    async with session_factory() as verify_session:
-        await send_worker.drain_once(verify_session, claim_stale=False)
-    async with session_factory() as verify_session:
-        messages = await get_chat_messages(verify_session, chat_id=chat_id, limit=50)
+    # confirm the message landed. A couple of retries absorbs the XADD/drain race.
+    for _ in range(20):
+        async with session_factory() as verify_session:
+            await send_worker.drain_once(verify_session, claim_stale=False)
+        async with session_factory() as verify_session:
+            messages = await get_chat_messages(verify_session, chat_id=chat_id, limit=50)
+        if any(m.content == "hello" for m in messages):
+            break
+        await asyncio.sleep(0.05)
     assert any(m.content == "hello" for m in messages)
+
+
+async def test_endpoint_frame_flood_drops_frames_then_closes(session_factory, redis_db, monkeypatch):
+    monkeypatch.setattr("routers.websocket.WS_FRAME_RATE_MAX", 2)
+    monkeypatch.setattr("routers.websocket.WS_FRAME_FLOOD_STRIKES", 3)
+    async with session_factory() as setup:
+        await _make_group(setup, 1, [2])
+    token = auth_service._create_access_token(user_id=1)
+
+    ws = FakeWebSocket()
+    task = asyncio.create_task(websocket_endpoint(ws, token=token))
+    await asyncio.sleep(0.2)
+
+    # 2 heartbeats pass, then frames are dropped with a rate_limited error
+    # (connection stays open), then the 3rd consecutive over-limit frame closes.
+    for _ in range(6):
+        await ws.push({"type": "heartbeat"})
+    try:
+        await asyncio.wait_for(task, timeout=2.0)
+    finally:
+        if not task.done():
+            task.cancel()
+
+    assert {"type": "error", "code": "rate_limited"} in ws.sent
+    assert ws.closed_code == 4429
+    # The dropped frames were never dispatched - only 2 acks.
+    assert sum(1 for m in ws.sent if m == {"type": "heartbeat_ack"}) == 2
+
+
+async def test_endpoint_handshake_churn_closes_4429(session_factory, redis_db, monkeypatch):
+    monkeypatch.setattr("routers.websocket.WS_UPGRADE_USER_RATE_LIMIT_MAX", 2)
+    async with session_factory() as setup:
+        await _make_group(setup, 1, [2])
+    token = auth_service._create_access_token(user_id=1)
+
+    tasks = []
+    for _ in range(2):
+        ws = FakeWebSocket()
+        tasks.append((ws, asyncio.create_task(websocket_endpoint(ws, token=token))))
+    await asyncio.sleep(0.2)
+
+    # Third rapid upgrade for the same user is refused before accept().
+    ws3 = FakeWebSocket()
+    await websocket_endpoint(ws3, token=token)
+    assert ws3.accepted is False
+    assert ws3.closed_code == 4429
+
+    for ws, task in tasks:
+        await ws.push_disconnect()
+        await asyncio.wait_for(task, timeout=2.0)
+
+
+async def test_endpoint_connection_cap_evicts_the_oldest(session_factory, redis_db, monkeypatch):
+    monkeypatch.setattr("services.ws_connection_registry.WS_CONN_MAX_CONNECTIONS", 3)
+    async with session_factory() as setup:
+        await _make_group(setup, 1, [2])
+    token = auth_service._create_access_token(user_id=1)
+
+    conns = []
+    for _ in range(3):
+        ws = FakeWebSocket()
+        conns.append((ws, asyncio.create_task(websocket_endpoint(ws, token=token))))
+        await asyncio.sleep(0.1)
+
+    assert len(connection_manager.get_local_user_ids()) == 1
+    assert len([c for c in connection_manager._user_by_connection.values() if c == 1]) == 3
+
+    # 4th connection: the oldest of the first three is force-closed 4409.
+    ws4 = FakeWebSocket()
+    conns.append((ws4, asyncio.create_task(websocket_endpoint(ws4, token=token))))
+    await asyncio.sleep(0.3)
+
+    oldest_ws = conns[0][0]
+    assert oldest_ws.closed_code == 4409
+    # No error frame - eviction is silent (business answer 4).
+    assert all(m.get("type") != "disconnected" for m in oldest_ws.sent)
+
+    # Exactly 3 live connections remain in the registry.
+    assert await redis_db.zcard("ws:conns:1") == 3
+
+    for ws, task in conns:
+        if not task.done():
+            await ws.push_disconnect()
+    for _ws, task in conns:
+        if not task.done():
+            task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError, WebSocketDisconnect):
+            pass
+
+
+async def test_endpoint_unregisters_from_the_cap_on_disconnect(session_factory, redis_db):
+    async with session_factory() as setup:
+        await _make_group(setup, 1, [2])
+    token = auth_service._create_access_token(user_id=1)
+
+    ws = FakeWebSocket()
+    task = asyncio.create_task(websocket_endpoint(ws, token=token))
+    await asyncio.sleep(0.2)
+    assert await redis_db.zcard("ws:conns:1") == 1
+
+    await ws.push_disconnect()
+    await asyncio.wait_for(task, timeout=2.0)
+    assert await redis_db.zcard("ws:conns:1") == 0
 
 
 async def test_endpoint_subscribes_to_every_chat_the_user_is_in(session_factory, redis_db):

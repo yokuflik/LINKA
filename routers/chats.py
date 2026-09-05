@@ -21,7 +21,8 @@ from routers.schemas import (
     ParticipantOut,
     UpdateGroupDetailsIn,
 )
-from services import avatar_service, chat_service
+from config import LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+from services import avatar_service, chat_service, rate_limit_service
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 
@@ -34,6 +35,9 @@ async def list_my_chats(
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
 ):
+    await rate_limit_service.enforce_sliding_window(
+        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+    )
     before = (before_last_message_at, before_chat_id) if before_last_message_at and before_chat_id else None
     participants = await chat_service.get_chat_list(session, user_id, before=before, limit=limit)
     return [

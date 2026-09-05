@@ -47,8 +47,16 @@ function useMessageSend(ctx) {
   async function sendMessage() {
     const content = ctx.messageInput.value.trim();
     if (!content) return;
-    if (!ctx.wsIsOpen()) {
-      ctx.logError('cannot send - WebSocket is not connected (status:', ctx.wsStatus.value, ')');
+
+    // A draft (uncommitted) chat needs a POST /chats/private before we can
+    // send - that needs the network, so a draft can't be queued offline.
+    if (!ctx.wsIsOpen() && !ctx.activeChatId.value && ctx.draftChat.value) {
+      ctx.logError('cannot start a new chat while offline');
+      return;
+    }
+    // Editing also goes straight over the wire (no optimistic-queue support).
+    if (!ctx.wsIsOpen() && ctx.editingMessage.value) {
+      ctx.logError('cannot edit while offline');
       return;
     }
 
@@ -111,8 +119,11 @@ function useMessageSend(ctx) {
       });
     }
 
-    ctx.log('WS →', payload);
-    ctx.sendRaw(payload);
+    // Every text send goes through the outbox: a single paced drain loop
+    // keeps a rapid burst under the server's send limiter (3/1s) and retries
+    // on rate_limited. Offline, it just parks until reconnect. The optimistic
+    // bubble above stays pending:true (🕓) until its new_message echo lands.
+    ctx.enqueueOutgoing(payload);
     ctx.messageInput.value = '';
     replyingToMessage.value = null;
     // Jump to the bottom right away so the composer stays pinned to the

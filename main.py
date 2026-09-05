@@ -1,11 +1,11 @@
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from database.connection import check_database_connection, dispose_engine
 from routers.auth import router as auth_router
@@ -13,8 +13,16 @@ from routers.chats import router as chats_router
 from routers.messages import router as messages_router
 from routers.users import router as users_router
 from routers.websocket import router as websocket_router
-from config import ROUTING_HEARTBEAT_INTERVAL_SECONDS, SERVER_ID
-from services import auth_service, chat_service, message_service
+from config import (
+    ALLOWED_HOSTS,
+    API_IP_BACKSTOP_MAX,
+    API_IP_BACKSTOP_WINDOW_SECONDS,
+    CORS_ALLOW_ORIGINS,
+    ROUTING_HEARTBEAT_INTERVAL_SECONDS,
+    SERVER_ID,
+)
+from services import auth_service, chat_service, message_service, rate_limit_service
+from services.rate_limit_service import RateLimited
 from services.fanout import fanout_worker, routing
 from services.fanout import worker as send_worker
 from services.receipts import worker as receipt_worker
@@ -91,17 +99,45 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Wide open by default (dev/PoC only): a browser blocks every cross-origin
-# fetch()/WebSocket without this, and a locally-opened HTML file (file://)
-# or anything not served from this exact host:port counts as cross-origin.
-# Lock this down to real origins before this is ever public.
+# Reject requests whose Host header isn't in ALLOWED_HOSTS (DNS-rebinding /
+# Host-header injection). "*" disables the check for local dev.
+if ALLOWED_HOSTS != ["*"]:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+
+# CORS. Prod is same-origin (Caddy serves the PoC + API together) so this is
+# normally the single site origin. "*" is dev-only: the "*" + credentials
+# combination is invalid per the CORS spec and silently unsafe, so whenever
+# origins is "*" we force credentials off (a file:// PoC doesn't send cookies
+# anyway - it holds the JWT in JS).
+_cors_wildcard = CORS_ALLOW_ORIGINS == ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ALLOW_ORIGINS", "*").split(","),
-    allow_credentials=True,
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_credentials=not _cors_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Coarse per-IP REST backstop (ADR 0012). Not the primary control - the
+# per-user / per-identity limits in the routers are. This just stops one IP
+# from hammering the box. Skips /healthz (infra probes) and /ws (WebSocket
+# upgrade has its own handshake-churn limit in step 5).
+@app.middleware("http")
+async def _per_ip_backstop(request: Request, call_next):
+    path = request.url.path
+    if path != "/healthz" and not path.startswith("/ws"):
+        ip = rate_limit_service.client_ip(request)
+        allowed = await rate_limit_service.check_and_increment(
+            ip, "api_ip_backstop", API_IP_BACKSTOP_MAX, API_IP_BACKSTOP_WINDOW_SECONDS
+        )
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "rate limited", "action": "api_ip_backstop"},
+                headers={"Retry-After": str(API_IP_BACKSTOP_WINDOW_SECONDS)},
+            )
+    return await call_next(request)
 
 app.include_router(auth_router)
 app.include_router(users_router)
@@ -125,6 +161,15 @@ async def _handle_otp_rate_limited(request: Request, exc: Exception):
     return JSONResponse(status_code=429, content={"detail": str(exc)})
 
 
+@app.exception_handler(RateLimited)
+async def _handle_rate_limited(request: Request, exc: RateLimited):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "rate limited", "action": exc.action},
+        headers={"Retry-After": str(exc.retry_after)},
+    )
+
+
 @app.exception_handler(auth_service.InvalidOTPError)
 async def _handle_invalid_otp(request: Request, exc: Exception):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -138,6 +183,11 @@ async def _handle_phone_already_registered(request: Request, exc: Exception):
 @app.exception_handler(auth_service.PhoneNotRegisteredError)
 async def _handle_phone_not_registered(request: Request, exc: Exception):
     return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(auth_service.AccountCreationRateLimitedError)
+async def _handle_account_creation_rate_limited(request: Request, exc: Exception):
+    return JSONResponse(status_code=429, content={"detail": str(exc)})
 
 
 @app.exception_handler(auth_service.InvalidRefreshTokenError)

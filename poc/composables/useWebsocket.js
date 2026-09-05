@@ -44,11 +44,18 @@ function useWebsocket(ctx) {
       }, 30000);
       markAllChatsDelivered();
 
+      // Resume the outbox drain loop (parked while the socket was down).
+      if (ctx.kickDrain) ctx.kickDrain();
+
       // A fresh connection means the server-side presence subscription from
       // before (if any) is gone with the old connection - reset the local
       // bookkeeping and re-subscribe for the open chat, otherwise the
       // "already subscribed, no-op" guard would skip the new socket.
       ctx.resubscribePresenceForActiveChat();
+
+      // If the open chat failed to load its history while we were offline
+      // (empty pane + "Waiting for connection…"), retry that fetch now.
+      if (ctx.reloadActiveChatIfUnloaded) ctx.reloadActiveChatIfUnloaded();
     };
 
     ws.onmessage = (evt) => {
@@ -74,6 +81,14 @@ function useWebsocket(ctx) {
       }
     };
   }
+
+  // The browser regained connectivity - don't wait out the 3s reconnect timer.
+  window.addEventListener('online', () => {
+    if (!ctx.accessToken.value || wsIsOpen()) return;
+    if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+    log('back online - reconnecting now');
+    connectWebSocket();
+  });
 
   function disconnectWebSocket() {
     if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }

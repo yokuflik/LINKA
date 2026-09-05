@@ -19,8 +19,12 @@ const MessageList = {
     // the fixed reserved box below so the bubble has its final height before
     // the image decodes.
     imageOrientation: { type: Function, required: true },
+    // True when the history fetch failed (server down / offline) and there's
+    // nothing cached - show a "waiting for connection" state instead of the
+    // misleading "No messages here" empty state.
+    connectionError: { type: Boolean, default: false },
   },
-  emits: ['message-contextmenu', 'load-older', 'voice-played'],
+  emits: ['message-contextmenu', 'load-older', 'voice-played', 'retry-message'],
   // Exposes the scrollable element so the root's scrollMessagesToBottom()
   // (which needs messagesEl.value.scrollTop/scrollHeight) keeps working
   // unchanged across the component boundary.
@@ -260,7 +264,8 @@ const MessageList = {
         <div class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
              :class="m.sender_id === currentUser.id ? 'justify-end' : ''">
           <span>{{ new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
-          <span v-if="m.send_failed" class="text-sm font-bold leading-none text-red-500" title="Send failed">⚠️</span>
+          <span v-if="m.send_failed" @click="$emit('retry-message', m)" role="button"
+                class="text-sm font-bold leading-none text-red-500 cursor-pointer" title="Not sent — tap to retry">⚠️</span>
           <span v-else-if="m.pending" class="text-sm leading-none text-slate-400" title="Sending…">🕓</span>
           <span v-else-if="m.sender_id === currentUser.id" class="text-sm font-bold leading-none" :class="statusTickClass(m.status)">{{ statusTickSymbol(m.status) }}</span>
         </div>
@@ -269,7 +274,11 @@ const MessageList = {
       </template>
       </template>
       </template>
-      <p v-if="!messages.length" class="h-full flex items-center justify-center text-sm text-slate-400">No messages here</p>
+      <div v-if="!messages.length && connectionError" class="h-full flex flex-col items-center justify-center gap-3 text-sm text-slate-400">
+        <span class="w-7 h-7 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin"></span>
+        <span>Waiting for connection…</span>
+      </div>
+      <p v-else-if="!messages.length" class="h-full flex items-center justify-center text-sm text-slate-400">No messages here</p>
     </div>
   `,
 };

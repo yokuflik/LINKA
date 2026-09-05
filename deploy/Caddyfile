@@ -1,4 +1,4 @@
-# Linka reverse proxy (ADR 0007).
+# Linka reverse proxy (ADR 0007 + ADR 0012 transport hardening).
 #
 # SITE_ADDRESS drives everything:
 #   - a hostname (linka.example.com)  -> automatic HTTPS via Let's Encrypt
@@ -12,9 +12,8 @@
 # path prefix would break S3 SigV4 (the signed path must reach MinIO
 # unchanged). Until you add a domain, MinIO stays on the internal network and
 # the app talks to it directly (S3_ENDPOINT_URL=http://minio:9000). Browser
-# media upload/download starts working once S3 gets its own hostname — see
+# media upload/download starts working once S3 gets its own hostname -- see
 # deploy/README.md.
-
 {
 	email {$ACME_EMAIL}
 }
@@ -22,9 +21,29 @@
 {$SITE_ADDRESS} {
 	encode zstd gzip
 
+	# --- Security headers (ADR 0012) ---
+	# HSTS: short max-age only, NO includeSubDomains / preload while we're on a
+	# shared sslip.io parent (business answer 3, 2026-09-06). Revisit on a real
+	# domain: max-age=31536000; includeSubDomains; preload.
+	header {
+		Strict-Transport-Security "max-age=86400"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# Minimal CSP for the single-file PoC: it inlines its own script/style
+		# and loads the Vue + Firebase SDKs plus avatars/media over https.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https: wss:; font-src 'self' https: data:; frame-src https:; base-uri 'self'; form-action 'self'"
+		-Server
+	}
+
 	# Backend API + WebSocket. Everything else is the static PoC.
 	@api path /auth* /users* /chats* /ws /healthz /docs* /redoc* /openapi.json
 	handle @api {
+		# Uploads go straight to S3 via a presigned PUT, so the API itself
+		# never legitimately receives a large body.
+		request_body {
+			max_size 2MB
+		}
 		reverse_proxy app:8000
 	}
 

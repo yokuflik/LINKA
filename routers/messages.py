@@ -1,9 +1,20 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import (
+    DETAIL_READ_RATE_MAX,
+    DETAIL_READ_RATE_WINDOW_SECONDS,
+    MSG_HISTORY_MAX_LIMIT,
+    MSG_HISTORY_RATE_MAX,
+    MSG_HISTORY_RATE_WINDOW_SECONDS,
+    UPLOAD_TICKET_IP_RATE_LIMIT_MAX,
+    UPLOAD_TICKET_IP_RATE_LIMIT_WINDOW_SECONDS,
+    UPLOAD_TICKET_RATE_MAX,
+    UPLOAD_TICKET_RATE_WINDOW_SECONDS,
+)
 from database.connection import get_db
 from database.crud.crud_media_blob import get_blob_by_hash, reserve_blob
 from database.crud.crud_participant import is_participant
@@ -14,7 +25,8 @@ from routers.schemas import (
     MessageOut,
     MessageReceiptsOut,
 )
-from services import message_service
+from services import message_service, rate_limit_service
+from services.rate_limit_service import RateLimited
 from services.storage import media_service
 
 router = APIRouter(prefix="/chats/{chat_id}/messages", tags=["messages"])
@@ -28,6 +40,11 @@ async def get_message_history(
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
 ):
+    await rate_limit_service.enforce_sliding_window(
+        user_id, "msg_history", MSG_HISTORY_RATE_MAX, MSG_HISTORY_RATE_WINDOW_SECONDS
+    )
+    # Clamp pagination size server-side so a client can't ask for the whole chat.
+    limit = max(1, min(limit, MSG_HISTORY_MAX_LIMIT))
     return await message_service.get_message_history(session, user_id=user_id, chat_id=chat_id, before_id=before_id, limit=limit)
 
 
@@ -43,6 +60,9 @@ async def get_message_receipts(
     message, and (in a group at or below RECEIPT_NAMED_LIST_MAX_MEMBERS
     members) who has. Any participant may view it for any message.
     """
+    await rate_limit_service.enforce_sliding_window(
+        user_id, "detail_read", DETAIL_READ_RATE_MAX, DETAIL_READ_RATE_WINDOW_SECONDS
+    )
     try:
         return await message_service.get_message_receipts(
             session, user_id=user_id, chat_id=chat_id, message_id=message_id
@@ -55,6 +75,7 @@ async def get_message_receipts(
 async def create_media_upload_ticket(
     chat_id: int,
     body: MediaUploadTicketIn,
+    request: Request,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
 ):
@@ -64,6 +85,16 @@ async def create_media_upload_ticket(
     WebSocket carrying the returned storage_key. Restricted to participants
     so a stranger can't mint upload URLs against a chat.
     """
+    await rate_limit_service.enforce_sliding_window(
+        user_id, "upload_ticket", UPLOAD_TICKET_RATE_MAX, UPLOAD_TICKET_RATE_WINDOW_SECONDS
+    )
+    ip = rate_limit_service.client_ip(request)
+    if not await rate_limit_service.check_and_increment(
+        ip, "upload_ticket_ip", max_per_window=UPLOAD_TICKET_IP_RATE_LIMIT_MAX,
+        window_seconds=UPLOAD_TICKET_IP_RATE_LIMIT_WINDOW_SECONDS,
+    ):
+        raise RateLimited("upload_ticket_ip", retry_after=UPLOAD_TICKET_IP_RATE_LIMIT_WINDOW_SECONDS)
+
     if not await is_participant(session, chat_id, user_id):
         raise message_service.NotAParticipantError(
             f"User {user_id} is not a participant of chat {chat_id}"

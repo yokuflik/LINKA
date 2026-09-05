@@ -10,7 +10,11 @@ from config import (
     JWT_SECRET_KEY,
     JWT_ALGORITHM,
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    ACCOUNT_CREATE_IP_RATE_LIMIT_MAX,
+    ACCOUNT_CREATE_IP_RATE_LIMIT_WINDOW_SECONDS,
     REFRESH_TOKEN_EXPIRE_DAYS,
+    REFRESH_JTI_RATE_LIMIT_MAX,
+    REFRESH_JTI_RATE_LIMIT_WINDOW_SECONDS,
     DEV_AUTH_WHITELIST,
     OTP_REQUEST_RATE_LIMIT_MAX,
     OTP_REQUEST_RATE_LIMIT_WINDOW_SECONDS,
@@ -46,6 +50,10 @@ class PhoneAlreadyRegisteredError(Exception):
 
 
 class PhoneNotRegisteredError(Exception):
+    pass
+
+
+class AccountCreationRateLimitedError(Exception):
     pass
 
 
@@ -96,7 +104,9 @@ async def _deliver_otp(phone_number: str, code: str) -> None:
     print(f"[STUB] Would SMS OTP {code} to {phone_number}")
 
 
-async def verify_otp_and_login(session: AsyncSession, phone_number: str, code: str) -> tuple[User, str, str]:
+async def verify_otp_and_login(
+    session: AsyncSession, phone_number: str, code: str, client_ip: str | None = None
+) -> tuple[User, str, str]:
     """
     Verifies the code, creates the user on first login, and issues a fresh
     access/refresh token pair. Returns (user, access_token, refresh_token).
@@ -109,7 +119,7 @@ async def verify_otp_and_login(session: AsyncSession, phone_number: str, code: s
     """
     # Dev whitelist (ADR 0009): non-real test numbers log straight in.
     if phone_number in DEV_AUTH_WHITELIST:
-        return await _find_or_create_and_issue(session, phone_number)
+        return await _find_or_create_and_issue(session, phone_number, client_ip)
 
     attempts_allowed = await rate_limit_service.check_and_increment(
         phone_number, "otp_verify", max_per_window=OTP_VERIFY_MAX_ATTEMPTS, window_seconds=_OTP_TTL_SECONDS
@@ -124,10 +134,12 @@ async def verify_otp_and_login(session: AsyncSession, phone_number: str, code: s
     # One-time: consume the code so it can't be replayed
     await redis_client.delete(_otp_key(phone_number))
 
-    return await _find_or_create_and_issue(session, phone_number)
+    return await _find_or_create_and_issue(session, phone_number, client_ip)
 
 
-async def verify_firebase_and_login(session: AsyncSession, id_token: str) -> tuple[User, str, str]:
+async def verify_firebase_and_login(
+    session: AsyncSession, id_token: str, client_ip: str | None = None
+) -> tuple[User, str, str]:
     """
     Trades a verified Firebase Phone Auth ID token for our own access/refresh
     pair (ADR 0009). The SMS + code check already happened client-side; here we
@@ -153,13 +165,29 @@ async def verify_firebase_and_login(session: AsyncSession, id_token: str) -> tup
     if not attempts_allowed:
         raise InvalidOTPError("Too many attempts - try again shortly")
 
-    return await _find_or_create_and_issue(session, phone_number)
+    return await _find_or_create_and_issue(session, phone_number, client_ip)
 
 
-async def _find_or_create_and_issue(session: AsyncSession, phone_number: str) -> tuple[User, str, str]:
-    """Shared login tail: find-or-create the user, mint an access/refresh pair."""
+async def _find_or_create_and_issue(
+    session: AsyncSession, phone_number: str, client_ip: str | None = None
+) -> tuple[User, str, str]:
+    """Shared login tail: find-or-create the user, mint an access/refresh pair.
+
+    Creating a brand-new account is gated per client IP (5/day, strict) so a
+    single host can't mass-register - an existing number logging back in is
+    never blocked by this.
+    """
     user = await get_user_by_phone(session, phone_number)
     if user is None:
+        if client_ip:
+            allowed = await rate_limit_service.check_and_increment(
+                client_ip,
+                "acct_create",
+                max_per_window=ACCOUNT_CREATE_IP_RATE_LIMIT_MAX,
+                window_seconds=ACCOUNT_CREATE_IP_RATE_LIMIT_WINDOW_SECONDS,
+            )
+            if not allowed:
+                raise AccountCreationRateLimitedError("Too many new accounts from this network - try again later")
         user = await create_user(session, user_id=await next_id(), phone_number=phone_number)
         if user is None:
             # Two concurrent first-time logins for the same phone (e.g. a
@@ -231,6 +259,18 @@ async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
 
     user_id = int(payload["sub"])
     jti = payload["jti"]
+
+    # Per-token throttle: even a valid (not-yet-rotated) refresh token can only
+    # be exchanged a bounded number of times per hour, so a leaked token can't
+    # be spun into an unlimited stream of access tokens before it's noticed.
+    jti_allowed = await rate_limit_service.check_and_increment(
+        jti,
+        "refresh_jti",
+        max_per_window=REFRESH_JTI_RATE_LIMIT_MAX,
+        window_seconds=REFRESH_JTI_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if not jti_allowed:
+        raise InvalidRefreshTokenError("This refresh token is being used too frequently")
 
     jti_key = f"{_REFRESH_JTI_KEY_PREFIX}{user_id}"
 

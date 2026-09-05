@@ -55,6 +55,10 @@ services:
       id_service:
         condition: service_healthy
     mem_limit: 320m
+    # Locked to one core for the demo box (business answer 2, 2026-09-06).
+    # Bump when real load needs it; the app is multi-worker-safe (all rate
+    # limits live in Redis, ADR 0012).
+    cpus: 1.0
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz').status==200 else 1)"]
       interval: 30s

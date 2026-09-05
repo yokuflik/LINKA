@@ -4,11 +4,41 @@ import uuid
 import jwt
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
-from config import SEND_MESSAGE_RATE_LIMIT_MAX, SEND_MESSAGE_RATE_LIMIT_WINDOW_SECONDS, SERVER_ID
+from config import (
+    CORS_ALLOW_ORIGINS,
+    SERVER_ID,
+    WS_EDIT_RATE_MAX,
+    WS_EDIT_RATE_WINDOW_SECONDS,
+    WS_FRAME_FLOOD_STRIKES,
+    WS_FRAME_RATE_MAX,
+    WS_FRAME_RATE_WINDOW_SECONDS,
+    WS_MAX_CHAT_IDS_ON_CONNECT,
+    WS_RECEIPTS_RATE_MAX,
+    WS_RECEIPTS_RATE_WINDOW_SECONDS,
+    WS_SEND_MESSAGE_BURST_MAX,
+    WS_SEND_MESSAGE_BURST_WINDOW_SECONDS,
+    WS_SEND_MESSAGE_RATE_MAX,
+    WS_SEND_MESSAGE_RATE_WINDOW_SECONDS,
+    WS_SUBSCRIBE_PRESENCE_RATE_MAX,
+    WS_SUBSCRIBE_PRESENCE_RATE_WINDOW_SECONDS,
+    WS_TYPING_RATE_MAX,
+    WS_TYPING_RATE_WINDOW_SECONDS,
+    WS_UPGRADE_IP_RATE_LIMIT_MAX,
+    WS_UPGRADE_IP_RATE_LIMIT_WINDOW_SECONDS,
+    WS_UPGRADE_USER_RATE_LIMIT_MAX,
+    WS_UPGRADE_USER_RATE_LIMIT_WINDOW_SECONDS,
+)
 from database.connection import session_scope
 from database.crud.crud_participant import get_all_chat_ids_for_user, get_chat_participants, is_participant
 from database.crud.crud_private_chat_pair import get_pair_chat_id
-from services import auth_service, message_service, presence_service, rate_limit_service, realtime_service
+from services import (
+    auth_service,
+    message_service,
+    presence_service,
+    rate_limit_service,
+    realtime_service,
+    ws_connection_registry,
+)
 from services.settings import service as settings_service
 from services.connection_manager import connection_manager
 from services.fanout import send_queue
@@ -20,8 +50,26 @@ router = APIRouter()
 
 # WebSocket close codes in the 4000-4999 range are reserved for application
 # use (per RFC 6455) - 4401 mirrors HTTP 401 so a client can tell
-# "bad/expired token" apart from a generic close.
+# "bad/expired token" apart from a generic close. 4403 = disallowed Origin.
 _CLOSE_UNAUTHORIZED = 4401
+_CLOSE_FORBIDDEN_ORIGIN = 4403
+# 4429 = handshake-churn limit (too many upgrades from this IP / user in a
+# short window). 4409 (an older connection evicted by the concurrent-connection
+# cap) is emitted by connection_manager._handle_force_disconnect.
+_CLOSE_HANDSHAKE_CHURN = 4429
+
+# "*" (dev) allows any Origin, including none (native clients / file://).
+_ORIGIN_WILDCARD = CORS_ALLOW_ORIGINS == ["*"]
+
+
+def _origin_allowed(origin: str | None) -> bool:
+    if _ORIGIN_WILDCARD:
+        return True
+    if origin is None:
+        # A browser always sends Origin on a WS handshake; its absence means a
+        # non-browser client, which same-origin prod doesn't expect.
+        return False
+    return origin in CORS_ALLOW_ORIGINS
 
 
 @router.websocket("/ws")
@@ -30,34 +78,92 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Query(...)):
     Auth happens via a `token` query param (WebSocket clients can't send
     custom headers as cleanly as HTTP ones) and is checked *before*
     websocket.accept(), so a bad/expired token never gets a live connection.
+    The Origin is checked the same way (CSWSH protection) - closed 4403.
     """
+    if not _origin_allowed(websocket.headers.get("origin")):
+        await websocket.close(code=_CLOSE_FORBIDDEN_ORIGIN)
+        return
+
     try:
         user_id = auth_service.verify_access_token(token)
     except jwt.PyJWTError:
         await websocket.close(code=_CLOSE_UNAUTHORIZED)
         return
 
+    # Handshake churn: throttle *successful* upgrades per IP and per user
+    # before doing any work (the per-connect DB query, the Redis registration).
+    # A connect/disconnect storm otherwise thrashes Postgres and Redis.
+    ip = rate_limit_service.client_ip(websocket)
+    ip_ok = await rate_limit_service.check_sliding_window(
+        ip, "ws_upgrade_ip", WS_UPGRADE_IP_RATE_LIMIT_MAX, WS_UPGRADE_IP_RATE_LIMIT_WINDOW_SECONDS
+    )
+    user_ok = await rate_limit_service.check_sliding_window(
+        user_id, "ws_upgrade_user", WS_UPGRADE_USER_RATE_LIMIT_MAX, WS_UPGRADE_USER_RATE_LIMIT_WINDOW_SECONDS
+    )
+    if not (ip_ok and user_ok):
+        await websocket.close(code=_CLOSE_HANDSHAKE_CHURN)
+        return
+
     await websocket.accept()
     connection_id = str(uuid.uuid4())
+
+    # Concurrent-connection cap (cross-process): record this connection and
+    # evict the oldest ones over WS_CONN_MAX_CONNECTIONS. Each evicted member
+    # is a connection on some process's inbox - tell that process to close it.
+    evicted = await ws_connection_registry.register(user_id, SERVER_ID, connection_id)
+    for member in evicted:
+        server_id, evicted_connection_id = ws_connection_registry.split_member(member)
+        await realtime_service.publish_to_instance(server_id, {
+            "event": "force_disconnect",
+            "connection_id": evicted_connection_id,
+            "reason": "connection_limit",
+        })
 
     # A DB session is opened per-operation below, never held for the whole
     # (potentially hours-long) connection lifetime - doing otherwise would
     # tie up one pooled connection per open WebSocket, which doesn't scale.
     async with session_scope() as session:
-        chat_ids = list(await get_all_chat_ids_for_user(session, user_id))
+        chat_ids = list(
+            await get_all_chat_ids_for_user(session, user_id, limit=WS_MAX_CHAT_IDS_ON_CONNECT)
+        )
 
     await connection_manager.connect(user_id, connection_id, websocket, chat_ids)
     await presence_service.mark_online(user_id, connection_id, SERVER_ID)
 
+    # Consecutive over-limit frames. Reset to 0 on any frame that passes the
+    # rate check; a sustained flood (WS_FRAME_FLOOD_STRIKES in a row) closes.
+    frame_flood_strikes = 0
+
     try:
         while True:
             payload = await websocket.receive_json()
+
+            frame_ok = await rate_limit_service.check_sliding_window(
+                connection_id, "ws_frame", WS_FRAME_RATE_MAX, WS_FRAME_RATE_WINDOW_SECONDS
+            )
+            if not frame_ok:
+                frame_flood_strikes += 1
+                if frame_flood_strikes >= WS_FRAME_FLOOD_STRIKES:
+                    await websocket.close(code=_CLOSE_HANDSHAKE_CHURN)
+                    break
+                # Drop the frame - don't dispatch, don't close. A laggy client
+                # that batches its sends is not an attacker. Echo
+                # client_message_id (if any) so the sender can requeue the
+                # dropped send rather than leave its bubble stuck on 🕓.
+                drop_err = {"type": "error", "code": "rate_limited"}
+                if isinstance(payload, dict) and payload.get("client_message_id") is not None:
+                    drop_err["client_message_id"] = payload["client_message_id"]
+                await websocket.send_json(drop_err)
+                continue
+
+            frame_flood_strikes = 0
             await _dispatch(user_id, connection_id, payload, websocket)
     except WebSocketDisconnect:
         pass
     finally:
         await connection_manager.disconnect(connection_id)
         await presence_service.mark_offline(user_id, connection_id)
+        await ws_connection_registry.unregister(user_id, SERVER_ID, connection_id)
 
 
 async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
@@ -75,33 +181,63 @@ async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: 
     message_type = payload.get("type")
     handler = _HANDLERS.get(message_type)
 
+    # Echoed back on every error frame so the client can reconcile the
+    # optimistic bubble that triggered it (e.g. mark a queued send failed
+    # instead of leaving it on 🕓). Harmless / absent for actions without one.
+    client_message_id = payload.get("client_message_id")
+
+    def _err(code: str, message: str | None = None) -> dict:
+        frame = {"type": "error", "code": code}
+        if message is not None:
+            frame["message"] = message
+        if client_message_id is not None:
+            frame["client_message_id"] = client_message_id
+        return frame
+
     try:
         if handler is None:
-            await websocket.send_json({"type": "error", "code": "unknown_type", "message": f"Unknown message type: {message_type!r}"})
+            await websocket.send_json(_err("unknown_type", f"Unknown message type: {message_type!r}"))
             return
+
+        # Per-action rate limit (per user, sliding). send_message has its own
+        # two-tier check inside its handler; everything else that's abusable
+        # shares a bucket here. Actions absent from the table (heartbeat,
+        # unsubscribe_presence) are unmetered by design - cheap and self-limiting.
+        # The max/window are read from module globals at call time (not baked
+        # into the table) so tests can monkeypatch a single knob.
+        bucket = _ACTION_LIMITS.get(message_type)
+        if bucket is not None:
+            action, max_attr, window_attr = bucket
+            if not await rate_limit_service.check_sliding_window(
+                user_id, action, globals()[max_attr], globals()[window_attr]
+            ):
+                frame = _err("rate_limited")
+                frame["for"] = message_type
+                await websocket.send_json(frame)
+                return
 
         await handler(user_id, connection_id, payload, websocket)
 
     except message_service.NotAParticipantError as e:
-        await websocket.send_json({"type": "error", "code": "forbidden", "message": str(e)})
+        await websocket.send_json(_err("forbidden", str(e)))
     except (message_service.MessageTooLongError, message_service.NotAVoiceMessageError) as e:
-        await websocket.send_json({"type": "error", "code": "bad_request", "message": str(e)})
+        await websocket.send_json(_err("bad_request", str(e)))
     except MediaNotFoundError as e:
-        await websocket.send_json({"type": "error", "code": "not_found", "message": str(e)})
+        await websocket.send_json(_err("not_found", str(e)))
     except MediaValidationError as e:
-        await websocket.send_json({"type": "error", "code": "bad_request", "message": str(e)})
+        await websocket.send_json(_err("bad_request", str(e)))
     except (KeyError, ValueError, TypeError) as e:
         # KeyError: a required field is missing. ValueError/TypeError: an id
         # field was present but not parseable as an int (e.g. garbage, or a
         # client-side bug reintroducing the float-precision issue below).
-        await websocket.send_json({"type": "error", "code": "bad_request", "message": f"Invalid request: {e}"})
+        await websocket.send_json(_err("bad_request", f"Invalid request: {e}"))
     except Exception:
         # Deliberately not str(e) here: an unexpected internal error's real
         # message (a DB error, a stack detail) is exactly the kind of thing
         # that shouldn't leak to the client - it's already fully captured
         # below via logger.exception() for whoever operates this service.
         logger.exception(f"Unhandled error dispatching {message_type!r} for user {user_id}")
-        await websocket.send_json({"type": "error", "code": "internal_error", "message": "Something went wrong"})
+        await websocket.send_json(_err("internal_error", "Something went wrong"))
 
 
 # --- Individual action handlers ------------------------------------------------
@@ -183,10 +319,16 @@ async def _handle_unsubscribe_presence(user_id: int, connection_id: str, payload
 
 
 async def _handle_send_message(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
-    allowed = await rate_limit_service.check_and_increment(
-        user_id, "send_message", max_per_window=SEND_MESSAGE_RATE_LIMIT_MAX, window_seconds=SEND_MESSAGE_RATE_LIMIT_WINDOW_SECONDS
+    # Two-tier sliding window: a 3/s primary (no boundary burst) plus a
+    # 40/60s ceiling for sustained spam. Both must pass. Replaces the old
+    # single 20/10s fixed window.
+    primary_ok = await rate_limit_service.check_sliding_window(
+        user_id, "send_message", WS_SEND_MESSAGE_RATE_MAX, WS_SEND_MESSAGE_RATE_WINDOW_SECONDS
     )
-    if not allowed:
+    burst_ok = await rate_limit_service.check_sliding_window(
+        user_id, "send_message_burst", WS_SEND_MESSAGE_BURST_MAX, WS_SEND_MESSAGE_BURST_WINDOW_SECONDS
+    )
+    if not (primary_ok and burst_ok):
         await websocket.send_json({"type": "error", "code": "rate_limited", "client_message_id": payload.get("client_message_id")})
         return
 
@@ -364,4 +506,23 @@ _HANDLERS = {
     "recording": _handle_recording,
     "subscribe_presence": _handle_subscribe_presence,
     "unsubscribe_presence": _handle_unsubscribe_presence,
+}
+
+# message type -> (redis action key, MAX global name, WINDOW global name),
+# checked in _dispatch (per user, sliding) before the handler runs. Types
+# sharing a key share a bucket (all mark_* together, edit/delete/restore
+# together, typing/recording together) so a flood of one can't dodge the limit
+# by alternating with a sibling. send_message is NOT here - its handler runs
+# its own two-tier check. heartbeat / unsubscribe_presence are intentionally
+# unmetered (cheap, self-limiting).
+_ACTION_LIMITS = {
+    "mark_delivered": ("ws_receipts", "WS_RECEIPTS_RATE_MAX", "WS_RECEIPTS_RATE_WINDOW_SECONDS"),
+    "mark_read": ("ws_receipts", "WS_RECEIPTS_RATE_MAX", "WS_RECEIPTS_RATE_WINDOW_SECONDS"),
+    "mark_played": ("ws_receipts", "WS_RECEIPTS_RATE_MAX", "WS_RECEIPTS_RATE_WINDOW_SECONDS"),
+    "edit_message": ("ws_edit", "WS_EDIT_RATE_MAX", "WS_EDIT_RATE_WINDOW_SECONDS"),
+    "delete_message": ("ws_edit", "WS_EDIT_RATE_MAX", "WS_EDIT_RATE_WINDOW_SECONDS"),
+    "restore_message": ("ws_edit", "WS_EDIT_RATE_MAX", "WS_EDIT_RATE_WINDOW_SECONDS"),
+    "typing": ("ws_typing", "WS_TYPING_RATE_MAX", "WS_TYPING_RATE_WINDOW_SECONDS"),
+    "recording": ("ws_typing", "WS_TYPING_RATE_MAX", "WS_TYPING_RATE_WINDOW_SECONDS"),
+    "subscribe_presence": ("ws_sub_presence", "WS_SUBSCRIBE_PRESENCE_RATE_MAX", "WS_SUBSCRIBE_PRESENCE_RATE_WINDOW_SECONDS"),
 }

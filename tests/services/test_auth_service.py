@@ -201,6 +201,60 @@ async def test_otp_verification_attempts_are_capped(db_session: AsyncSession, re
         await auth_service.verify_otp_and_login(db_session, phone, correct_code)
 
 
+async def test_account_creation_capped_per_ip(db_session: AsyncSession, redis_db, monkeypatch):
+    monkeypatch.setattr(auth_service, "ACCOUNT_CREATE_IP_RATE_LIMIT_MAX", 2)
+    ip = "203.0.113.7"
+
+    for n in (12, 13):
+        phone = f"+9725000004{n}"
+        await auth_service.request_otp(phone)
+        code = await _get_code(redis_db, phone)
+        await auth_service.verify_otp_and_login(db_session, phone, code, client_ip=ip)
+
+    phone = "+972500000499"
+    await auth_service.request_otp(phone)
+    code = await _get_code(redis_db, phone)
+    with pytest.raises(auth_service.AccountCreationRateLimitedError):
+        await auth_service.verify_otp_and_login(db_session, phone, code, client_ip=ip)
+
+
+async def test_account_creation_cap_ignores_existing_users(db_session: AsyncSession, redis_db, monkeypatch):
+    monkeypatch.setattr(auth_service, "ACCOUNT_CREATE_IP_RATE_LIMIT_MAX", 1)
+    ip = "203.0.113.8"
+    phone = "+972500000450"
+
+    await auth_service.request_otp(phone)
+    code = await _get_code(redis_db, phone)
+    user1, _, _ = await auth_service.verify_otp_and_login(db_session, phone, code, client_ip=ip)
+
+    # Same phone logs in again from the same (now exhausted) IP - allowed,
+    # it's not a new account.
+    await auth_service.request_otp(phone)
+    code = await _get_code(redis_db, phone)
+    user2, _, _ = await auth_service.verify_otp_and_login(db_session, phone, code, client_ip=ip)
+    assert user1.id == user2.id
+
+
+async def test_refresh_token_use_is_throttled_per_jti(redis_db, monkeypatch):
+    monkeypatch.setattr(auth_service, "REFRESH_JTI_RATE_LIMIT_MAX", 3)
+    token = await auth_service._issue_refresh_token(user_id=201)
+
+    # First refresh rotates it; each rotation mints a fresh jti, so drive the
+    # replay against one fixed (revoked) token: the jti counter is what trips,
+    # before the SREM revocation check.
+    new_access, _ = await auth_service.refresh_access_token(token)
+    assert auth_service.verify_access_token(new_access) == 201
+
+    # The old token is now revoked; further uses hit the revocation error until
+    # the per-jti counter fills, then the throttle error.
+    for _ in range(2):
+        with pytest.raises(auth_service.InvalidRefreshTokenError):
+            await auth_service.refresh_access_token(token)
+
+    with pytest.raises(auth_service.InvalidRefreshTokenError, match="too frequently"):
+        await auth_service.refresh_access_token(token)
+
+
 async def test_otp_verification_attempt_cap_is_per_phone_not_global(db_session: AsyncSession, redis_db, monkeypatch):
     monkeypatch.setattr(auth_service, "OTP_VERIFY_MAX_ATTEMPTS", 2)
     phone_a = "+972500000010"

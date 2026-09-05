@@ -79,6 +79,23 @@ which is `docker compose exec -T app python -m scripts.partition_maintenance …
 Same crontab also does a nightly `pg_dump` → `/opt/linka/backups` (7-day keep);
 the named volumes are otherwise the only copy of the data.
 
+## Caddy security block + transport hardening (ADR 0012 / step 3 — DONE)
+
+`deploy/Caddyfile` site block has a `header` directive: `Strict-Transport-Security
+"max-age=86400"` (short, **no** `includeSubDomains`/`preload` on shared
+sslip.io), `X-Content-Type-Options nosniff`, `X-Frame-Options DENY`,
+`Referrer-Policy strict-origin-when-cross-origin`, a CSP tuned for the PoC,
+`-Server`. `request_body { max_size 2MB }` sits inside `handle @api` (uploads
+bypass the API via presigned PUT). No `rate_limit` — stock `caddy:2-alpine` has
+no such plugin; the coarse per-IP REST backstop (1000 / 180 s) is a `main.py`
+HTTP middleware instead. App also gained `TrustedHostMiddleware`
+(`ALLOWED_HOSTS`), the CORS fix (`CORS_ALLOW_ORIGINS` list; `*` → credentials
+off), and a `/ws` `Origin` check (`4403`). `docker-compose.prod.yml` `app`
+service is pinned to `cpus: 1.0`. New env in `deploy/env.production.example`:
+`ALLOWED_HOSTS`, `TRUSTED_PROXY_IPS`, `API_IP_BACKSTOP_*`; `CORS_ALLOW_ORIGINS`
+now also gates the WS handshake. Full detail:
+`.claude_docs/security_and_rate_limiting.md`.
+
 ## Known demo compromises
 
 - **OTP is an open stub**: any 6-digit code verifies once one has been

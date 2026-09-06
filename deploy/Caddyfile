@@ -32,7 +32,13 @@
 		Referrer-Policy "strict-origin-when-cross-origin"
 		# Minimal CSP for the single-file PoC: it inlines its own script/style
 		# and loads the Vue + Firebase SDKs plus avatars/media over https.
-		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https: wss:; font-src 'self' https: data:; frame-src https:; base-uri 'self'; form-action 'self'"
+		# 'unsafe-eval' is required: the PoC ships the Vue *runtime compiler*
+		# build (vue.global.js) and every component uses an inline `template:`
+		# string, which Vue compiles at runtime via new Function(). Removing it
+		# blanks the whole app ("Evaluating a string as JavaScript violates ...
+		# CSP"). The real client app (with a build step + precompiled
+		# templates) would not need this.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' https: wss:; font-src 'self' https: data:; frame-src https:; base-uri 'self'; form-action 'self'"
 		-Server
 	}
 

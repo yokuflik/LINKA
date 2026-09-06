@@ -100,22 +100,35 @@ function useAudioWaveform(ctx) {
   }
 
   // Returns a Promise<number[] of PLAYBACK_BARS>. On any failure (CORS, decode,
-  // no Web Audio) resolves to a flat mid-height fallback so the UI still draws.
+  // no Web Audio, timeout) resolves to a flat mid-height fallback so the UI
+  // still draws - the waveform is decorative, playback works without it.
+  // Failures are cached (the rejected fetch stays in peaksCache) so a
+  // re-rendered bubble never refetches, and the fetch is bounded by
+  // WAVEFORM_FETCH_TIMEOUT_MS so a bucket with no CORS headers can't leave N
+  // requests hanging and stalling the chat while a chat's messages load.
+  const WAVEFORM_FETCH_TIMEOUT_MS = 4000;
+
   function peaksForUrl(url) {
     if (!url) return Promise.resolve(new Array(PLAYBACK_BARS).fill(0.3));
     if (peaksCache.has(url)) return peaksCache.get(url);
 
     const promise = (async () => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), WAVEFORM_FETCH_TIMEOUT_MS);
       try {
         const ac = audioContext();
         if (!ac) throw new Error('no AudioContext');
-        const resp = await fetch(url);
+        const resp = await fetch(url, { signal: controller.signal });
         const arrayBuf = await resp.arrayBuffer();
         const audioBuf = await ac.decodeAudioData(arrayBuf);
         return reducePeaks(audioBuf.getChannelData(0), PLAYBACK_BARS);
       } catch (err) {
-        if (ctx && ctx.logError) ctx.logError('waveform decode failed', err);
+        // Expected on a cross-origin media host without CORS headers - not an
+        // error worth a red console line, just a note.
+        if (ctx && ctx.log) ctx.log('waveform decode skipped:', err && err.message);
         return new Array(PLAYBACK_BARS).fill(0.3);
+      } finally {
+        clearTimeout(timer);
       }
     })();
 

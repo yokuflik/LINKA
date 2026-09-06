@@ -22,11 +22,12 @@
 	encode zstd gzip
 
 	# --- Security headers (ADR 0012) ---
-	# HSTS: short max-age only, NO includeSubDomains / preload while we're on a
-	# shared sslip.io parent (business answer 3, 2026-09-06). Revisit on a real
-	# domain: max-age=31536000; includeSubDomains; preload.
+	# HSTS: full 1-year policy now that Linka is on its own registered domain
+	# (linka-web.com, 2026-09-06) - no longer sharing a sslip.io parent, so
+	# includeSubDomains + preload are safe. Submit to hstspreload.org once
+	# this has been live and stable for a while.
 	header {
-		Strict-Transport-Security "max-age=86400"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"

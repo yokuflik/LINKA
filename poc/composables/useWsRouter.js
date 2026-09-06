@@ -120,7 +120,12 @@ function useWsRouter(ctx) {
         optimistic.type = msg.type;
         optimistic.content = msg.content;
         optimistic.reply_to_message_id = msg.reply_to_message_id;
-        optimistic.media_url = msg.media_url;
+        // Keep displaying our own just-sent media from the local blob URL - the
+        // sender already has the bytes, no need to fetch the presigned GET.
+        // Stash the server URL so the message cache can persist it (blob: URLs
+        // are dead on the next reload - see useMessageCache.saveChatMessages).
+        optimistic.media_url_remote = msg.media_url;
+        if (!optimistic._localMediaUrl) optimistic.media_url = msg.media_url;
         optimistic.media_mime = msg.media_mime;
         optimistic.media_size = msg.media_size;
         optimistic.media_name = msg.media_name;
@@ -137,9 +142,10 @@ function useWsRouter(ctx) {
           status: msg.status, reply_to_message_id: msg.reply_to_message_id,
           media_url: msg.media_url, media_mime: msg.media_mime, media_size: msg.media_size,
           media_name: msg.media_name, media_duration_seconds: msg.media_duration_seconds,
+          media_blur_hash: msg.media_blur_hash,
         });
-        if (msg.type === 2 && msg.media_url) ctx.probeMediaOrientation(msg.media_url, 'image');
-        else if (msg.type === 3 && msg.media_url) ctx.probeMediaOrientation(msg.media_url, 'video');
+        if (msg.type === 2 && msg.media_url) ctx.probeMediaOrientation(msg.media_url, 'image', msg.media_blur_hash);
+        else if (msg.type === 3 && msg.media_url) ctx.probeMediaOrientation(msg.media_url, 'video', msg.media_blur_hash);
         // Always follow your own message down; for someone else's, only if
         // the user was already reading the latest (not scrolled up).
         if (msg.sender_id === currentUser.value.id || wasPinned) {
@@ -300,6 +306,7 @@ function useWsRouter(ctx) {
         m.media_url = msg.media_url ?? null;
         m.is_edited = !!msg.is_edited;
         m.edited_at = msg.edited_at || m.edited_at;
+        if (msg.media_blur_hash !== undefined) m.media_blur_hash = msg.media_blur_hash;
         // Restore hands back a fresh presigned media_url that was never probed,
         // so imageOrientation() would default to 'landscape' and a portrait
         // photo would flash in the wide box before the re-probe corrects it.
@@ -310,8 +317,8 @@ function useWsRouter(ctx) {
           ctx.carryOverImageOrientation(oldMediaUrl, m.media_url);
         }
         delete m._deletedMediaUrl;
-        if (m.type === 2 && m.media_url) ctx.probeMediaOrientation(m.media_url, 'image');
-        else if (m.type === 3 && m.media_url) ctx.probeMediaOrientation(m.media_url, 'video');
+        if (m.type === 2 && m.media_url) ctx.probeMediaOrientation(m.media_url, 'image', m.media_blur_hash);
+        else if (m.type === 3 && m.media_url) ctx.probeMediaOrientation(m.media_url, 'video', m.media_blur_hash);
       }
       ctx.updateChatPreviewIfLast(msg.chat_id, msg.message_id, msg.content || '');
       return;

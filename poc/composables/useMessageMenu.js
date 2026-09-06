@@ -127,7 +127,12 @@ function useMessageMenu(ctx) {
     }
   }
 
-  function probeMediaOrientation(url, kind) {
+  // ADR 0014: a message that carries a blur_hash gets its reserved-box aspect
+  // from the hash (decoded client-side, no bytes). Probing intrinsic dims
+  // would fetch the full object and defeat lazy media loading, so skip it -
+  // pass the message's media_blur_hash as `blurHash`.
+  function probeMediaOrientation(url, kind, blurHash) {
+    if (blurHash) return;
     if (!url || probedMediaUrls.has(url)) return;
     probedMediaUrls.add(url);
     if (kind === 'video') {
@@ -146,8 +151,8 @@ function useMessageMenu(ctx) {
   // after history load and on each new_message).
   function probeLoadedImageOrientations() {
     for (const m of ctx.messages.value) {
-      if (m.type === 2 && m.media_url) probeMediaOrientation(m.media_url, 'image');
-      else if (m.type === 3 && m.media_url) probeMediaOrientation(m.media_url, 'video');
+      if (m.type === 2 && m.media_url) probeMediaOrientation(m.media_url, 'image', m.media_blur_hash);
+      else if (m.type === 3 && m.media_url) probeMediaOrientation(m.media_url, 'video', m.media_blur_hash);
     }
   }
 

@@ -65,6 +65,7 @@
 <script src="firebase-config.js"></script>
 <script src="firebase-init.js"></script>
 <script src="data/country-codes.js"></script>
+<script src="vendor/thumbhash.js"></script>
 <!-- Structural split into child components (see CLAUDE.md) - plain
      Vue.defineComponent objects loaded as sibling scripts, since this PoC
      has no build step and can't use .vue SFCs. All business logic/state
@@ -110,6 +111,7 @@
 <script src="composables/useMessageEdit.js"></script>
 <script src="composables/useAudioWaveform.js"></script>
 <script src="composables/useMediaUpload.js"></script>
+<script src="composables/useMediaPlaceholder.js"></script>
 <script src="composables/useSettings.js"></script>
 <script src="composables/useProfileEdit.js"></script>
 <script src="composables/useWsRouter.js"></script>
@@ -199,6 +201,7 @@ const app = createApp({
     Object.assign(ctx, useMessageEdit(ctx));
     Object.assign(ctx, useAudioWaveform(ctx));
     Object.assign(ctx, useMediaUpload(ctx));
+    Object.assign(ctx, useMediaPlaceholder(ctx));
     Object.assign(ctx, useSettings(ctx));
     Object.assign(ctx, useProfileEdit(ctx));
     Object.assign(ctx, useWsRouter(ctx));
@@ -307,6 +310,7 @@ const app = createApp({
               :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass"
               :senderAvatarUrl="senderAvatarUrl"
               :quotedPreviewFor="quotedPreviewFor" :imageOrientation="imageOrientation"
+              :thumbHashToDataUrl="thumbHashToDataUrl" :thumbHashToAspect="thumbHashToAspect"
               :connectionError="messagesConnectionError"
               @message-contextmenu="openMessageContextMenu" @load-older="onMessagesScroll"
               @voice-played="onVoicePlayed" @retry-message="retryFailedMessage" />

@@ -80,6 +80,13 @@ class Message(Base):
     media_name = Column(Text, nullable=True)
     media_duration_seconds = Column(BigInteger, nullable=True)
 
+    # Tiny blurred placeholder (ThumbHash, base64) computed by the sender's
+    # browser at send time - image thumbnail, or a video's first frame. The
+    # client renders this instantly on chat open and only fetches the real
+    # object bytes on an explicit tap (ADR 0014). NULL for text/system/file
+    # messages and for anything sent by a pre-feature client.
+    media_blur_hash = Column(Text, nullable=True)
+
     # Loosely-referenced on purpose: a strict FK here would need to include
     # the partition key (created_at) of the replied-to row, which is awkward
     # across partitions at this scale. Validated at the application layer instead.

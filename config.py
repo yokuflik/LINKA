@@ -403,6 +403,10 @@ MESSAGE_TYPE_BY_MEDIA_KIND = {v: k for k, v in MEDIA_KIND_BY_MESSAGE_TYPE.items(
 # Cap on the client-supplied original filename kept on a media message.
 MAX_MEDIA_FILENAME_LENGTH = int(os.environ.get("MAX_MEDIA_FILENAME_LENGTH", "255"))
 
+# Cap on the client-supplied blur placeholder (ThumbHash, base64) - ADR 0014.
+# A real ThumbHash is ~28-44 chars; 64 is generous headroom. Untrusted input.
+MAX_MEDIA_BLUR_HASH_LENGTH = int(os.environ.get("MAX_MEDIA_BLUR_HASH_LENGTH", "64"))
+
 # --- Time-partition management (scripts/manage_partitions.py, ADR 0005) ---
 # messages is RANGE-partitioned by created_at, message_receipt_log by
 # occurred_at. A standalone idempotent script creates dated partitions ahead

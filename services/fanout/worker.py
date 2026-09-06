@@ -72,6 +72,9 @@ def _rebuild_media(fields: dict) -> Optional[dict]:
     duration = _int_or_none(fields.get("media_duration_seconds", ""))
     if duration is not None:
         media["duration_seconds"] = duration
+    blur_hash = _str_or_none(fields.get("media_blur_hash", ""))
+    if blur_hash is not None:
+        media["blur_hash"] = blur_hash
     return media
 
 

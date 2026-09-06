@@ -140,6 +140,44 @@ async def test_identical_bytes_dedupe_to_one_object(db_session, redis_db):
     assert blob.ref_count == 2
 
 
+async def test_blur_hash_is_stored_and_reused_on_dedupe(db_session, redis_db):
+    """ADR 0014: the sender's ThumbHash lands on the message + blob, and a
+    later deduped re-send that omits it inherits the stored one."""
+    chat_id = await _make_private(db_session, 21, 22)
+    body = b"\x89PNG\r\n\x1a\n" + b"blur" * 24
+    digest = hashlib.sha256(body).hexdigest()
+    key = await _upload(db_session, "image", "image/png", body)
+
+    m1 = await message_service.process_outgoing(
+        db_session, sender_id=21, chat_id=chat_id, client_message_id=str(uuid.uuid4()),
+        type=2, media={"key": key, "blur_hash": "1QcSHQRnh493V4dIh4eXh1h4kJUI"},
+    )
+    assert m1.media_blur_hash == "1QcSHQRnh493V4dIh4eXh1h4kJUI"
+
+    from database.crud.crud_media_blob import get_blob_by_hash
+
+    blob = await get_blob_by_hash(db_session, digest)
+    assert blob.blur_hash == "1QcSHQRnh493V4dIh4eXh1h4kJUI"
+
+    # Re-send with no blur_hash -> backfilled from the blob.
+    m2 = await message_service.process_outgoing(
+        db_session, sender_id=22, chat_id=chat_id, client_message_id=str(uuid.uuid4()),
+        type=2, media={"key": key},
+    )
+    assert m2.media_blur_hash == "1QcSHQRnh493V4dIh4eXh1h4kJUI"
+
+
+async def test_bad_blur_hash_is_dropped_not_fatal(db_session, redis_db):
+    chat_id = await _make_private(db_session, 23, 24)
+    key = await _upload(db_session, "image", "image/png", b"\x89PNG\r\n\x1a\n" + b"x" * 40)
+
+    message = await message_service.process_outgoing(
+        db_session, sender_id=23, chat_id=chat_id, client_message_id=str(uuid.uuid4()),
+        type=2, media={"key": key, "blur_hash": "not valid! spaces & symbols"},
+    )
+    assert message.media_blur_hash is None
+
+
 async def test_media_type_without_payload_is_rejected(db_session, redis_db):
     chat_id = await _make_private(db_session, 7, 8)
 

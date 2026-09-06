@@ -302,6 +302,8 @@ class MessageOut(BaseModel):
     media_size: Optional[int] = None
     media_name: Optional[str] = None
     media_duration_seconds: Optional[int] = None
+    # Blurred placeholder (ThumbHash, base64) - a real stored column (ADR 0014).
+    media_blur_hash: Optional[str] = None
 
     is_edited: bool
     edited_at: Optional[datetime]

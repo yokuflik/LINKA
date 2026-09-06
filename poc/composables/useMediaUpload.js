@@ -5,8 +5,8 @@
 //
 // Needs from ctx: apiFetch, log, logError, wsIsOpen, activeChatId,
 // messageInput, messagesError, MEDIA_MAX_BYTES, shrinkImageToFit,
-// notifyRecording, and (from useMessageSend) replyingToMessage - read
-// call-time via ctx.
+// notifyRecording, messages, currentUser, scrollMessagesToBottom, and
+// (from useMessageSend) replyingToMessage - read call-time via ctx.
 function useMediaUpload(ctx) {
   const { ref } = Vue;
 
@@ -27,6 +27,82 @@ function useMediaUpload(ctx) {
     return Array.from(new Uint8Array(digest))
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
+  }
+
+  // Compute a ThumbHash base64 placeholder (ADR 0014) from a decoded image
+  // source. Draws into a <=100px canvas (ThumbHash's hard cap), reads the RGBA
+  // bytes, encodes. Any failure returns null - the placeholder is cosmetic and
+  // the bubble degrades to eager-load without it.
+  function encodeThumbHash(source, srcW, srcH) {
+    try {
+      if (!window.ThumbHash || !srcW || !srcH) return null;
+      const scale = Math.min(1, 100 / Math.max(srcW, srcH));
+      const w = Math.max(1, Math.round(srcW * scale));
+      const h = Math.max(1, Math.round(srcH * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const g = canvas.getContext('2d');
+      g.drawImage(source, 0, 0, w, h);
+      const { data } = g.getImageData(0, 0, w, h);
+      return window.ThumbHash.thumbHashToBase64(window.ThumbHash.rgbaToThumbHash(w, h, data));
+    } catch (err) {
+      ctx.logError('thumbhash encode failed', err);
+      return null;
+    }
+  }
+
+  // Image file -> ThumbHash base64 via a decoded <img>.
+  async function computeImageBlurHash(file) {
+    try {
+      const url = URL.createObjectURL(file);
+      try {
+        const img = new Image();
+        img.decoding = 'async';
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = () => reject(new Error('image decode failed'));
+          img.src = url;
+        });
+        return encodeThumbHash(img, img.naturalWidth, img.naturalHeight);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      ctx.logError('image blur hash failed', err);
+      return null;
+    }
+  }
+
+  // Video file -> ThumbHash base64 of the first frame via a detached <video>
+  // seeked to 0.
+  async function computeVideoBlurHash(file) {
+    try {
+      const url = URL.createObjectURL(file);
+      const video = document.createElement('video');
+      video.muted = true;
+      video.preload = 'auto';
+      video.playsInline = true;
+      try {
+        await new Promise((resolve, reject) => {
+          video.onloadeddata = resolve;
+          video.onerror = () => reject(new Error('video load failed'));
+          video.src = url;
+        });
+        await new Promise((resolve) => {
+          video.onseeked = resolve;
+          try { video.currentTime = 0; } catch (_) { resolve(); }
+          // Some browsers fire nothing if currentTime is already 0.
+          setTimeout(resolve, 500);
+        });
+        return encodeThumbHash(video, video.videoWidth, video.videoHeight);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      ctx.logError('video blur hash failed', err);
+      return null;
+    }
   }
 
   // `forceKind` ('file') is passed when the pick came from the Documents menu
@@ -54,12 +130,10 @@ function useMediaUpload(ctx) {
     // reports none at all, so fall back to a neutral one the backend accepts.
     const mimeType = file.type || 'application/octet-stream';
     if (file.size <= 0) { ctx.messagesError.value = 'That file looks empty.'; return; }
-    // Downscale/recompress an oversize photo in-browser (not documents/video).
-    if (kind === 'image' && file.size > ctx.MEDIA_MAX_BYTES.image) {
-      file = await ctx.shrinkImageToFit(file, ctx.MEDIA_MAX_BYTES.image, { maxDim: 1600 });
-    }
-    if (file.size > ctx.MEDIA_MAX_BYTES[kind]) {
-      const label = kind === 'image' ? 'image' : kind === 'video' ? 'video' : 'file';
+    // Non-image oversize is a hard stop (we don't recompress video / documents).
+    // An oversize photo is downscaled below, after the optimistic bubble is up.
+    if (kind !== 'image' && file.size > ctx.MEDIA_MAX_BYTES[kind]) {
+      const label = kind === 'video' ? 'video' : 'file';
       const limitMb = ctx.MEDIA_MAX_BYTES[kind] / 1024 / 1024;
       const gotMb = (file.size / 1024 / 1024).toFixed(1);
       ctx.messagesError.value = 'This ' + label + ' is ' + gotMb + ' MB — the maximum is '
@@ -70,10 +144,58 @@ function useMediaUpload(ctx) {
       ctx.messagesError.value = 'Cannot send - WebSocket is not connected.';
       return;
     }
+
+    const clientMessageId = crypto.randomUUID();
+    const caption = ctx.messageInput.value.trim();
+    const replyToId = ctx.replyingToMessage.value ? ctx.replyingToMessage.value.id : null;
+
+    // Optimistic bubble FIRST, before any of the slow work (shrink, thumbhash,
+    // hashing, upload). The sender already holds the bytes they just picked, so
+    // render straight from a local object URL with a 🕓 pending clock - never
+    // download our own media back from the server. The bubble stays pending
+    // until its own new_message echo lands, at which point the normal
+    // sent/delivered/read tick logic takes over. `_localMediaUrl` marks the row
+    // so the reconcile keeps this URL (see useWsRouter) and the message cache
+    // swaps in the presigned URL only when persisting (blob: URLs die on reload).
+    const localUrl = URL.createObjectURL(file);
+    let optimistic = null;
+    if (ctx.activeChatId.value) {
+      optimistic = {
+        id: null, client_message_id: clientMessageId, chat_id: ctx.activeChatId.value,
+        sender_id: ctx.currentUser.value.id, type: MEDIA_MESSAGE_TYPE[kind],
+        content: caption || null, created_at: new Date().toISOString(),
+        is_edited: false, edited_at: null, status: 'SENT',
+        reply_to_message_id: replyToId,
+        media_url: localUrl, _localMediaUrl: localUrl,
+        media_mime: mimeType, media_size: file.size, media_name: file.name,
+        media_duration_seconds: null, media_blur_hash: null,
+        pending: true, send_failed: false,
+      };
+      ctx.messages.value.push(optimistic);
+      Vue.nextTick(ctx.scrollMessagesToBottom);
+    }
+    // Clear the composer now - the bubble is already on screen.
+    ctx.messageInput.value = '';
+    ctx.replyingToMessage.value = null;
+
     mediaUploadBusy.value = true;
     try {
+      const chatId = ctx.activeChatId.value;
+      // Downscale/recompress an oversize photo in-browser (not documents/video).
+      if (kind === 'image' && file.size > ctx.MEDIA_MAX_BYTES.image) {
+        file = await ctx.shrinkImageToFit(file, ctx.MEDIA_MAX_BYTES.image, { maxDim: 1600 });
+      }
+      if (file.size > ctx.MEDIA_MAX_BYTES[kind]) {
+        throw new Error('image is still too large after downscaling');
+      }
+      // Blur placeholder (ADR 0014): computed from the final (post-shrink) file.
+      let blurHash = null;
+      if (kind === 'image') blurHash = await computeImageBlurHash(file);
+      else if (kind === 'video') blurHash = await computeVideoBlurHash(file);
+      if (optimistic && blurHash) optimistic.media_blur_hash = blurHash;
+
       const sha256 = await sha256Hex(file);
-      const ticket = await ctx.apiFetch(`/chats/${ctx.activeChatId.value}/messages/upload-ticket`, {
+      const ticket = await ctx.apiFetch(`/chats/${chatId}/messages/upload-ticket`, {
         method: 'POST',
         body: JSON.stringify({ kind, mime_type: mimeType, size_bytes: file.size, sha256 }),
       });
@@ -90,20 +212,19 @@ function useMediaUpload(ctx) {
 
       const payload = {
         type: 'send_message',
-        chat_id: ctx.activeChatId.value,
-        client_message_id: crypto.randomUUID(),
+        chat_id: chatId,
+        client_message_id: clientMessageId,
         message_type: MEDIA_MESSAGE_TYPE[kind],
         media: { key: ticket.storage_key, name: file.name },
       };
-      const caption = ctx.messageInput.value.trim();
+      if (blurHash) payload.media.blur_hash = blurHash;
       if (caption) payload.content = caption;
-      if (ctx.replyingToMessage.value) payload.reply_to_message_id = ctx.replyingToMessage.value.id;
+      if (replyToId) payload.reply_to_message_id = replyToId;
       ctx.log('WS →', payload);
       ctx.sendRaw(payload);
-      ctx.messageInput.value = '';
-      ctx.replyingToMessage.value = null;
     } catch (err) {
       ctx.logError('media send failed', err);
+      if (optimistic) { optimistic.pending = false; optimistic.send_failed = true; }
       ctx.messagesError.value = 'Could not send that file: ' + (err.message || err);
     } finally {
       mediaUploadBusy.value = false;
@@ -216,10 +337,37 @@ function useMediaUpload(ctx) {
     }
     const ext = { 'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3' }[type] || 'm4a';
     const name = 'voice-' + Date.now() + '.' + ext;
+
+    const clientMessageId = crypto.randomUUID();
+    const chatId = ctx.activeChatId.value;
+    const replyToId = ctx.replyingToMessage.value ? ctx.replyingToMessage.value.id : null;
+
+    // Optimistic voice bubble FIRST, played from the local recording blob with
+    // a 🕓 pending clock - no round-trip to fetch our own audio back, and the
+    // 🕓 -> tick transition follows the normal receipt logic. See sendMediaMessage.
+    const localUrl = URL.createObjectURL(blob);
+    let optimistic = null;
+    if (chatId) {
+      optimistic = {
+        id: null, client_message_id: clientMessageId, chat_id: chatId,
+        sender_id: ctx.currentUser.value.id, type: MEDIA_MESSAGE_TYPE.audio,
+        content: null, created_at: new Date().toISOString(),
+        is_edited: false, edited_at: null, status: 'SENT',
+        reply_to_message_id: replyToId,
+        media_url: localUrl, _localMediaUrl: localUrl,
+        media_mime: type, media_size: blob.size, media_name: name,
+        media_duration_seconds: duration, media_blur_hash: null,
+        pending: true, send_failed: false,
+      };
+      ctx.messages.value.push(optimistic);
+      Vue.nextTick(ctx.scrollMessagesToBottom);
+    }
+    ctx.replyingToMessage.value = null;
+
     mediaUploadBusy.value = true;
     try {
       const sha256 = await sha256Hex(blob);
-      const ticket = await ctx.apiFetch(`/chats/${ctx.activeChatId.value}/messages/upload-ticket`, {
+      const ticket = await ctx.apiFetch(`/chats/${chatId}/messages/upload-ticket`, {
         method: 'POST',
         body: JSON.stringify({ kind: 'audio', mime_type: type, size_bytes: blob.size, sha256 }),
       });
@@ -233,17 +381,17 @@ function useMediaUpload(ctx) {
       }
       const payload = {
         type: 'send_message',
-        chat_id: ctx.activeChatId.value,
-        client_message_id: crypto.randomUUID(),
+        chat_id: chatId,
+        client_message_id: clientMessageId,
         message_type: MEDIA_MESSAGE_TYPE.audio,
         media: { key: ticket.storage_key, name, duration_seconds: duration },
       };
-      if (ctx.replyingToMessage.value) payload.reply_to_message_id = ctx.replyingToMessage.value.id;
+      if (replyToId) payload.reply_to_message_id = replyToId;
       ctx.log('WS →', payload);
       ctx.sendRaw(payload);
-      ctx.replyingToMessage.value = null;
     } catch (err) {
       ctx.logError('voice send failed', err);
+      if (optimistic) { optimistic.pending = false; optimistic.send_failed = true; }
       ctx.messagesError.value = 'Could not send that recording: ' + (err.message || err);
     } finally {
       mediaUploadBusy.value = false;

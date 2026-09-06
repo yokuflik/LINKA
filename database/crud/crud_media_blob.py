@@ -53,20 +53,27 @@ async def reserve_blob(
 
 
 async def confirm_and_ref(
-    session: AsyncSession, *, storage_key: str, mime: str, size: int
+    session: AsyncSession,
+    *,
+    storage_key: str,
+    mime: str,
+    size: int,
+    blur_hash: Optional[str] = None,
 ) -> None:
     """
     Called from the send path once the object is HEAD-verified: stamp
     uploaded_at / authoritative mime+size on first use and bump ref_count.
+    ``blur_hash`` (ADR 0014) is stored only if the blob doesn't have one yet.
     """
+    values = {
+        "mime": mime,
+        "size": size,
+        "uploaded_at": func.coalesce(MediaBlob.uploaded_at, func.now()),
+        "ref_count": MediaBlob.ref_count + 1,
+    }
+    if blur_hash is not None:
+        values["blur_hash"] = func.coalesce(MediaBlob.blur_hash, blur_hash)
     await session.execute(
-        update(MediaBlob)
-        .where(MediaBlob.storage_key == storage_key)
-        .values(
-            mime=mime,
-            size=size,
-            uploaded_at=func.coalesce(MediaBlob.uploaded_at, func.now()),
-            ref_count=MediaBlob.ref_count + 1,
-        )
+        update(MediaBlob).where(MediaBlob.storage_key == storage_key).values(**values)
     )
     await session.commit()

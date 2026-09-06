@@ -63,6 +63,7 @@ async def enqueue_outgoing_message(
     media_key: Optional[str] = None,
     media_name: Optional[str] = None,
     media_duration_seconds: Optional[int] = None,
+    media_blur_hash: Optional[str] = None,
 ) -> str:
     """
     Append one outgoing message onto the send stream. Returns the stream
@@ -85,6 +86,7 @@ async def enqueue_outgoing_message(
             "media_key": _clean(media_key),
             "media_name": _clean(media_name),
             "media_duration_seconds": _clean(media_duration_seconds),
+            "media_blur_hash": _clean(media_blur_hash),
         },
         maxlen=MESSAGE_SEND_STREAM_MAXLEN,
         approximate=True,

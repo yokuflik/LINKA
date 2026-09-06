@@ -163,6 +163,9 @@ function useOutbox(ctx) {
   // Retry a failed bubble: rebuild its frame and requeue.
   function retryFailedMessage(m) {
     if (!m || !m.send_failed || !m.client_message_id) return;
+    // Media bubbles can't be retried from here - the upload ticket / bytes are
+    // gone. The user re-picks the file. (Only text goes through the outbox.)
+    if (m.type && m.type !== 1) return;
     const payload = {
       type: 'send_message',
       chat_id: m.chat_id,

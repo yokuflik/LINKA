@@ -67,6 +67,9 @@ async def main(drop: bool) -> None:
                 "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_size BIGINT",
                 "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_name TEXT",
                 "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_duration_seconds BIGINT",
+                # Blurred placeholder (ThumbHash, base64) - ADR 0014.
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_blur_hash TEXT",
+                "ALTER TABLE media_blob ADD COLUMN IF NOT EXISTS blur_hash TEXT",
                 # Voice-recording "played" receipt watermarks (see
                 # MessageStatus.PLAYED / crud_participant.recompute_chat_receipt_cursors).
                 "ALTER TABLE participants ADD COLUMN IF NOT EXISTS last_played_message_id BIGINT",

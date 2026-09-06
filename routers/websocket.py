@@ -336,9 +336,10 @@ async def _handle_send_message(user_id: int, connection_id: str, payload: dict, 
     client_message_id = payload["client_message_id"]
     reply_to_message_id = payload.get("reply_to_message_id")
 
-    # Media message payload: {"media": {"key", "name"?, "duration_seconds"?}}
-    # plus message_type 2/3/4/5. The key is HEAD-verified against storage in
-    # the fan-out worker - a raw client key is never trusted.
+    # Media message payload: {"media": {"key", "name"?, "duration_seconds"?,
+    # "blur_hash"?}} plus message_type 2/3/4/5. The key is HEAD-verified against
+    # storage in the fan-out worker - a raw client key is never trusted;
+    # blur_hash is validated (charset + length) there too (ADR 0014).
     media = payload.get("media")
     if media is not None and not isinstance(media, dict):
         raise ValueError("media must be an object")
@@ -363,6 +364,7 @@ async def _handle_send_message(user_id: int, connection_id: str, payload: dict, 
             media_key=media.get("key") if media else None,
             media_name=media.get("name") if media else None,
             media_duration_seconds=media.get("duration_seconds") if media else None,
+            media_blur_hash=media.get("blur_hash") if media else None,
         )
     except Exception:
         # A dropped enqueue loses the message while the sender thinks it sent -

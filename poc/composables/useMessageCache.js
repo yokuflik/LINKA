@@ -13,7 +13,9 @@
 function useMessageCache(ctx) {
   const KEY_PREFIX = 'linka_msgcache_';
   // Bump when the stored shape changes so stale entries are ignored.
-  const SCHEMA = 1;
+  // Bump when the cached message shape changes so stale snapshots refetch once.
+  // v2: ADR 0014 media_blur_hash (rides along in the stored message object).
+  const SCHEMA = 2;
   // Cap what we keep per chat so localStorage can't grow unbounded.
   const MAX_CACHED = 60;
 
@@ -41,7 +43,14 @@ function useMessageCache(ctx) {
   function saveChatMessages(chatId, list) {
     if (!chatId || !Array.isArray(list)) return;
     try {
-      const messages = list.slice(-MAX_CACHED);
+      // Our own just-sent media is displayed from a local blob: URL that is
+      // dead on the next reload - persist the server presigned URL instead and
+      // strip the local-only markers.
+      const messages = list.slice(-MAX_CACHED).map((m) => {
+        if (!m || !m._localMediaUrl) return m;
+        const { _localMediaUrl, media_url_remote, ...rest } = m;
+        return { ...rest, media_url: media_url_remote || null };
+      });
       localStorage.setItem(keyFor(chatId), JSON.stringify({ v: SCHEMA, messages }));
     } catch (err) {
       // Quota errors etc. are non-fatal - we just fall back to the network.

@@ -42,6 +42,12 @@ class MediaBlob(Base):
     # decremented (no lifecycle deletion - ADR 0010 / storage known-gap).
     ref_count = Column(BigInteger, nullable=False, default=0)
 
+    # Blurred placeholder (ThumbHash, base64) for this blob's bytes, stored on
+    # first confirmed use (ADR 0014). Lets a deduped re-send / forward reuse the
+    # preview without the client recomputing it. NULL for non-visual kinds
+    # (file/audio) and until a hash-bearing send first references the blob.
+    blur_hash = Column(Text, nullable=True)
+
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     # NULL until the object is confirmed present in storage (HEAD at send time
     # or an explicit confirm). A row with uploaded_at IS NULL means a ticket

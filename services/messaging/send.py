@@ -90,6 +90,7 @@ async def process_outgoing(
         media_size=attachment.size if attachment else None,
         media_name=attachment.name if attachment else None,
         media_duration_seconds=attachment.duration_seconds if attachment else None,
+        media_blur_hash=attachment.blur_hash if attachment else None,
     )
 
     await redis_client.set(idem_key, str(message.id), ex=_IDEMPOTENCY_TTL_SECONDS)
@@ -167,6 +168,9 @@ async def fan_out_message(session: AsyncSession, message: Message, client_messag
         "media_size": message.media_size,
         "media_name": message.media_name,
         "media_duration_seconds": message.media_duration_seconds,
+        # Blurred placeholder (ADR 0014) - the client renders this immediately
+        # and only fetches media_url's bytes on tap.
+        "media_blur_hash": message.media_blur_hash,
         "created_at": message.created_at.isoformat(),
         # Echoed back only on the live event (never persisted on Message) so
         # the sender's own connection can match this to its optimistic bubble

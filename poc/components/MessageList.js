@@ -19,6 +19,10 @@ const MessageList = {
     // the fixed reserved box below so the bubble has its final height before
     // the image decodes.
     imageOrientation: { type: Function, required: true },
+    // ADR 0014 blur placeholder: (hash) => 'data:image/png;base64,...' | null
+    // and (hash) => width/height ratio | null. Both memoized in the composable.
+    thumbHashToDataUrl: { type: Function, required: true },
+    thumbHashToAspect: { type: Function, required: true },
     // True when the history fetch failed (server down / offline) and there's
     // nothing cached - show a "waiting for connection" state instead of the
     // misleading "No messages here" empty state.
@@ -98,6 +102,68 @@ const MessageList = {
       if (event && event.target) event.target.classList.remove('opacity-0');
     }
 
+    // ADR 0014: a hash-bearing image/video bubble does not fetch its bytes
+    // until the viewer taps it. `_openedMedia` holds the message ids whose
+    // real <img>/<video> src is now bound. Legacy rows with no blur_hash keep
+    // loading eagerly (openMedia is a no-op guard away).
+    const openedMedia = Vue.reactive({});
+    function hasBlur(m) { return !!(m && m.media_blur_hash); }
+    function isMediaOpened(m) {
+      // Our own just-sent media is already local (blob: URL) - show it straight
+      // away, never behind a "tap to view" affordance.
+      return !hasBlur(m) || !!m._localMediaUrl || !!openedMedia[m.id || m.client_message_id];
+    }
+    function openMedia(m) {
+      openedMedia[m.id || m.client_message_id] = true;
+    }
+    // Human-readable byte size for the download button label.
+    function formatBytes(n) {
+      if (!n || n <= 0) return '';
+      if (n < 1024) return n + ' B';
+      if (n < 1048576) return Math.max(1, Math.round(n / 1024)) + ' KB';
+      return (n / 1048576).toFixed(1) + ' MB';
+    }
+    // Which hash-bearing bubbles are mid-download (spinner on the button).
+    const mediaDownloading = Vue.reactive({});
+    // Per-message blob: URL of downloaded bytes. We bind THIS (not the presigned
+    // URL) as the <img>/<video> src so the browser never sees the S3
+    // Content-Disposition: attachment header and never triggers a "save as".
+    const downloadedBlobUrl = Vue.reactive({});
+    function mediaSrc(m) {
+      const key = m.id || m.client_message_id;
+      return downloadedBlobUrl[key] || m.media_url;
+    }
+    // "Download" = pull the bytes into memory and reveal the media inline in the
+    // bubble (WhatsApp-style). No "save as" dialog, no auto-save.
+    async function downloadMedia(m) {
+      const key = m.id || m.client_message_id;
+      if (!m.media_url || mediaDownloading[key]) return;
+      mediaDownloading[key] = true;
+      try {
+        const resp = await fetch(m.media_url);
+        if (!resp.ok) throw new Error('http ' + resp.status);
+        const blob = await resp.blob();
+        downloadedBlobUrl[key] = URL.createObjectURL(blob);
+        openMedia(m);
+      } catch (err) {
+        console.error('[Linka] media download failed', err);
+      } finally {
+        mediaDownloading[key] = false;
+      }
+    }
+    // Reserved-box style from the thumbhash aspect ratio (falls back to the
+    // legacy two-shape guess when the row has no hash). Width is capped so a
+    // very wide/tall image still fits the pane.
+    function mediaBoxStyle(m) {
+      const ratio = hasBlur(m) ? props.thumbHashToAspect(m.media_blur_hash) : null;
+      if (!ratio) return null;
+      const w = ratio >= 1 ? 256 : 192;
+      return { width: w + 'px', aspectRatio: String(ratio) };
+    }
+    function blurUrl(m) {
+      return hasBlur(m) ? props.thumbHashToDataUrl(m.media_blur_hash) : null;
+    }
+
     // Long-press = right-click on touch devices (WhatsApp/Telegram/iMessage
     // convention). Hold ~450ms without moving more than a few px, then open
     // the same context menu at the touch point. A move/scroll or an early
@@ -143,6 +209,8 @@ const MessageList = {
       messagesEl, onScroll, isBareMedia, rows,
       onTouchStart, onTouchMove, onTouchEnd,
       imageLoaded, markImageLoaded,
+      isMediaOpened, openMedia, mediaBoxStyle, blurUrl,
+      formatBytes, downloadMedia, mediaDownloading, mediaSrc,
     };
   },
   expose: ['messagesEl'],
@@ -207,24 +275,74 @@ const MessageList = {
                placeholder), so scrollHeight is right before the <img>
                decodes; the image fades in on load, filling the box
                (object-cover). Two shapes only, by design. -->
+          <!-- ADR 0014: box sized from the thumbhash aspect (mediaBoxStyle),
+               else the legacy two-shape guess. When the row has a blur_hash
+               the real <img> src is withheld until the bubble is tapped -
+               a blurred data: URL background stands in with a "tap to view"
+               affordance. Rows without a hash load eagerly as before. -->
           <div v-if="m.media_url && m.type === 2" class="mb-1">
-            <div class="relative rounded-lg overflow-hidden bg-white border border-black"
-                 :class="imageOrientation(m.media_url) === 'portrait' ? 'w-48 aspect-[3/4]' : 'w-64 aspect-[4/3]'">
-              <!-- Loading spinner over the white placeholder until @load -->
-              <div v-if="!imageLoaded[m.media_url]" class="absolute inset-0 flex items-center justify-center">
-                <span class="w-6 h-6 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin"></span>
+            <!-- Our own just-sent photo: the local file is right here, show it
+                 directly in a reserved box, no spinner / opacity / lazy load. -->
+            <div v-if="m._localMediaUrl"
+                 class="relative rounded-lg overflow-hidden bg-slate-100 border border-black"
+                 :style="mediaBoxStyle(m)"
+                 :class="mediaBoxStyle(m) ? '' : (imageOrientation(m.media_url) === 'portrait' ? 'w-48 aspect-[3/4]' : 'w-64 aspect-[4/3]')">
+              <img :src="m.media_url" :alt="m.media_name || 'image'"
+                   class="w-full h-full object-cover" />
+            </div>
+            <div v-else class="relative rounded-lg overflow-hidden bg-white border border-black"
+                 :style="mediaBoxStyle(m)"
+                 :class="mediaBoxStyle(m) ? '' : (imageOrientation(m.media_url) === 'portrait' ? 'w-48 aspect-[3/4]' : 'w-64 aspect-[4/3]')">
+              <img v-if="blurUrl(m) && !isMediaOpened(m)" :src="blurUrl(m)" alt="" @error="$event.target.style.display='none'"
+                   class="absolute inset-0 w-full h-full object-cover" />
+              <div v-if="!isMediaOpened(m)"
+                   class="absolute inset-0 flex items-center justify-center">
+                <button type="button" @click.stop="downloadMedia(m)" :disabled="mediaDownloading[m.id || m.client_message_id]"
+                        class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium bg-black/60 text-white hover:bg-black/75 disabled:opacity-60">
+                  <span v-if="mediaDownloading[m.id || m.client_message_id]" class="w-3.5 h-3.5 rounded-full border-2 border-white/40 border-t-white animate-spin"></span>
+                  <svg v-else viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>
+                  <span>{{ formatBytes(m.media_size) || 'Download' }}</span>
+                </button>
               </div>
-              <img :src="m.media_url" :alt="m.media_name || 'image'" loading="lazy"
-                   class="w-full h-full object-cover opacity-0 transition-opacity duration-200"
-                   @load="markImageLoaded(m.media_url, $event)" />
+              <template v-if="isMediaOpened(m)">
+                <div v-if="!imageLoaded[m.media_url]" class="absolute inset-0 flex items-center justify-center">
+                  <span class="w-6 h-6 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin"></span>
+                </div>
+                <img :src="mediaSrc(m)" :alt="m.media_name || 'image'" loading="lazy"
+                     class="w-full h-full object-cover opacity-0 transition-opacity duration-200"
+                     @load="markImageLoaded(m.media_url, $event)" />
+              </template>
             </div>
           </div>
-          <!-- Video: same fixed two-shape reserved box as images, so
-               scrollHeight is right before metadata loads. -->
+          <!-- Video: same reserved box; blurred first frame + ▶ badge until
+               tapped, then a real <video controls>. -->
           <div v-else-if="m.media_url && m.type === 3" class="mb-1">
-            <div class="rounded-lg overflow-hidden bg-black/80 border border-black"
-                 :class="imageOrientation(m.media_url) === 'portrait' ? 'w-48 aspect-[3/4]' : 'w-64 aspect-[4/3]'">
+            <!-- Our own just-sent video: play straight from the local file, in
+                 a reserved box. -->
+            <div v-if="m._localMediaUrl"
+                 class="relative rounded-lg overflow-hidden bg-black border border-black"
+                 :style="mediaBoxStyle(m)"
+                 :class="mediaBoxStyle(m) ? '' : (imageOrientation(m.media_url) === 'portrait' ? 'w-48 aspect-[3/4]' : 'w-64 aspect-[4/3]')">
               <video :src="m.media_url" controls preload="metadata"
+                     class="w-full h-full object-contain"></video>
+            </div>
+            <div v-else class="relative rounded-lg overflow-hidden bg-black/80 border border-black"
+                 :style="mediaBoxStyle(m)"
+                 :class="mediaBoxStyle(m) ? '' : (imageOrientation(m.media_url) === 'portrait' ? 'w-48 aspect-[3/4]' : 'w-64 aspect-[4/3]')">
+              <template v-if="!isMediaOpened(m)">
+                <img v-if="blurUrl(m)" :src="blurUrl(m)" alt="" @error="$event.target.style.display='none'"
+                     class="absolute inset-0 w-full h-full object-cover" />
+                <div class="absolute inset-0 flex items-center justify-center">
+                  <button type="button" @click.stop="downloadMedia(m)" :disabled="mediaDownloading[m.id || m.client_message_id]"
+                          class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium bg-black/60 text-white hover:bg-black/75 disabled:opacity-60">
+                    <span v-if="mediaDownloading[m.id || m.client_message_id]" class="w-3.5 h-3.5 rounded-full border-2 border-white/40 border-t-white animate-spin"></span>
+                    <svg v-else viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>
+                    <span>{{ formatBytes(m.media_size) || 'Download' }}</span>
+                  </button>
+                </div>
+              </template>
+              <video v-else :src="mediaSrc(m)" controls preload="metadata"
+                     controlslist="nodownload noremoteplayback" disablepictureinpicture
                      class="w-full h-full object-contain"></video>
             </div>
           </div>

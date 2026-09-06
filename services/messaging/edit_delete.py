@@ -68,6 +68,7 @@ async def restore_message(session: AsyncSession, user_id: int, chat_id: int, mes
                 "edited_at": message.edited_at.isoformat() if message.edited_at else None,
                 # Presigned GET, same as the live new_message / history path.
                 "media_url": media_service.message_media_download_url(message.media_key),
+                "media_blur_hash": message.media_blur_hash,
             },
         )
     return message

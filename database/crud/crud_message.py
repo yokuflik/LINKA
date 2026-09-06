@@ -81,6 +81,7 @@ async def create_message(
     media_size: Optional[int] = None,
     media_name: Optional[str] = None,
     media_duration_seconds: Optional[int] = None,
+    media_blur_hash: Optional[str] = None,
 ) -> Optional[Message]:
     """
     Insert a new message into the chat and bump the chat's recency
@@ -108,6 +109,7 @@ async def create_message(
         media_size=media_size,
         media_name=media_name,
         media_duration_seconds=media_duration_seconds,
+        media_blur_hash=media_blur_hash,
     )
 
     session.add(new_message)

@@ -329,15 +329,16 @@ _AVATARS_PUBLIC_READ_POLICY = {
 
 # Avatars are already world-readable via <img>; a GET CORS rule additionally
 # lets a browser `fetch()` them (and use <img crossorigin>) to keep full-res
-# copies in Cache Storage (ADR 0016 device cache). GET only, no credentials.
-# MinIO returns NotImplemented for PutBucketCors and already serves
-# `Access-Control-Allow-Origin: *` at the server level, so this call only
-# matters against real AWS S3.
+# copies in Cache Storage (ADR 0016 device cache). PUT is required for the
+# browser's presigned avatar upload (preflight on content-type/content-length).
+# No credentials. MinIO returns NotImplemented for PutBucketCors and already
+# serves `Access-Control-Allow-Origin: *` at the server level, so this call
+# only matters against real AWS S3.
 _AVATARS_CORS_CONFIG = {
     "CORSRules": [
         {
             "AllowedOrigins": ["*"],
-            "AllowedMethods": ["GET", "HEAD"],
+            "AllowedMethods": ["GET", "HEAD", "PUT"],
             "AllowedHeaders": ["*"],
             "ExposeHeaders": ["ETag", "Content-Length"],
             "MaxAgeSeconds": 3600,

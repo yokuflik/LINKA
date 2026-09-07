@@ -165,6 +165,34 @@ const MessageList = {
       return hasBlur(m) ? props.thumbHashToDataUrl(m.media_blur_hash) : null;
     }
 
+    // Small thumbnail for a quoted image/video reply: the real presigned URL
+    // if we have it (already loaded elsewhere in this chat), else the blur
+    // data: URL, else nothing. Never triggers its own download.
+    // Tapping a quoted reply preview scrolls to the original message (if it's
+    // in the loaded list) and briefly highlights it.
+    const highlightedId = Vue.ref(null);
+    let highlightTimer = null;
+    function jumpToQuoted(m) {
+      if (m.reply_to_message_id == null) return;
+      const targetId = m.reply_to_message_id;
+      const root = messagesEl.value;
+      if (!root) return;
+      const el = root.querySelector('[data-mid="' + targetId + '"]');
+      if (!el) return; // scrolled out of the loaded page - nothing to jump to
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      highlightedId.value = targetId;
+      if (highlightTimer) clearTimeout(highlightTimer);
+      highlightTimer = setTimeout(() => { highlightedId.value = null; }, 1600);
+    }
+
+    function quotedReplyThumb(m) {
+      const q = props.quotedPreviewFor(m);
+      if (!q || !q.media || (q.media.type !== 2 && q.media.type !== 3)) return null;
+      if (q.media.url) return q.media.url;
+      if (q.media.blur_hash) return props.thumbHashToDataUrl(q.media.blur_hash);
+      return null;
+    }
+
     // Long-press = right-click on touch devices (WhatsApp/Telegram/iMessage
     // convention). Hold ~450ms without moving more than a few px, then open
     // the same context menu at the touch point. A move/scroll or an early
@@ -212,6 +240,7 @@ const MessageList = {
       imageLoaded, markImageLoaded,
       isMediaOpened, openMedia, mediaBoxStyle, blurUrl,
       formatBytes, downloadMedia, mediaDownloading, mediaSrc,
+      quotedReplyThumb, jumpToQuoted, highlightedId,
     };
   },
   expose: ['messagesEl'],
@@ -233,8 +262,9 @@ const MessageList = {
           <span class="inline-block px-2.5 py-1 rounded-full text-[11px] bg-slate-200 text-slate-600">{{ systemMessageText(m) }}</span>
         </div>
       <div v-else-if="m.sender_id != null" data-row="msg"
-           class="max-w-md w-fit flex items-end gap-2"
-           :class="m.sender_id === currentUser.id ? 'ml-auto text-right' : ''">
+           :data-mid="m.id"
+           class="max-w-md w-fit flex items-end gap-2 rounded-2xl transition-colors duration-500"
+           :class="[m.sender_id === currentUser.id ? 'ml-auto text-right' : '', highlightedId && m.id === highlightedId ? 'bg-amber-200/70' : '']">
         <Avatar v-if="m.sender_id !== currentUser.id"
                 :url="senderAvatarUrl(m.sender_id)" :preview="senderAvatarPreview(m.sender_id)" :name="senderLabel(m.sender_id)"
                 :colorKey="m.sender_id" sizeClass="w-7 h-7 text-xs"
@@ -263,10 +293,25 @@ const MessageList = {
                is itself a reply (reply_to_message_id set). quotedPreviewFor
                looks the original message up client-side (it's a lookup, not
                a re-render decision, so it stays a plain function prop). -->
-          <div v-if="quotedPreviewFor(m)" class="mb-1 px-2 py-1 rounded border-l-4 text-left text-xs"
+          <div v-if="quotedPreviewFor(m)" class="mb-1 pl-2 pr-1 py-1 rounded border-l-4 text-left text-xs flex items-stretch gap-2 cursor-pointer"
+               @click.stop="jumpToQuoted(m)"
                :class="m.sender_id === currentUser.id ? 'bg-white/10 border-white/60 text-white/90' : 'bg-slate-100 border-teal-600 text-slate-600'">
-            <div class="font-semibold truncate">{{ quotedPreviewFor(m).sender }}</div>
-            <div class="truncate opacity-90">{{ quotedPreviewFor(m).snippet }}</div>
+            <div class="min-w-0 flex-1">
+              <div class="font-semibold truncate">{{ quotedPreviewFor(m).sender }}</div>
+              <div v-if="quotedPreviewFor(m).media" class="truncate opacity-90 flex items-center gap-1">
+                <span>{{ quotedPreviewFor(m).media.type === 2 ? '📷'
+                  : quotedPreviewFor(m).media.type === 3 ? '🎬'
+                  : quotedPreviewFor(m).media.type === 4 ? '🎤' : '📄' }}</span>
+                <span class="truncate">{{ quotedPreviewFor(m).snippet
+                  || quotedPreviewFor(m).media.name
+                  || quotedPreviewFor(m).media.kindLabel }}</span>
+              </div>
+              <div v-else class="truncate opacity-90">{{ quotedPreviewFor(m).snippet }}</div>
+            </div>
+            <!-- Tiny thumbnail for image / video replies. -->
+            <img v-if="quotedReplyThumb(m)" :src="quotedReplyThumb(m)" alt=""
+                 @error="$event.target.style.display='none'"
+                 class="shrink-0 w-9 h-9 rounded object-cover self-center" />
           </div>
           <!-- Media attachment (image / video). media_url is a short-lived
                presigned GET attached by the backend to both history and the

@@ -35,9 +35,26 @@ function useMessageSend(ctx) {
     if (m.reply_to_message_id == null) return null;
     const original = ctx.messages.value.find((x) => x.id === m.reply_to_message_id);
     if (!original) return { sender: '', snippet: 'Original message' };
+    // Media messages (image / video / file / voice): carry enough to render a
+    // small visual echo of the original (thumbnail for image/video, an icon +
+    // label for file/voice) instead of an empty text snippet.
+    let media = null;
+    if (original.media_url || original.type === 2 || original.type === 3 || original.type === 4 || original.type === 5) {
+      media = {
+        type: original.type,
+        url: original.media_url || original._localMediaUrl || null,
+        blur_hash: original.media_blur_hash || null,
+        name: original.media_name || null,
+        kindLabel: original.type === 2 ? 'Photo'
+          : original.type === 3 ? 'Video'
+          : original.type === 4 ? 'Voice message'
+          : 'File',
+      };
+    }
     return {
       sender: original.sender_id != null ? ctx.replySenderLabel(original.sender_id) : 'System',
       snippet: (original.content || '').slice(0, 80),
+      media,
     };
   }
 

@@ -116,8 +116,12 @@ const AuthScreen = {
   template: `
     <div class="h-full flex items-center justify-center p-4">
       <div class="w-full max-w-sm bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-        <h1 class="text-xl font-semibold mb-1">Linka</h1>
-        <p class="text-sm text-slate-500 mb-5">
+        <div class="flex flex-col items-center text-center mb-5">
+          <img src="assets/linka-logo-192.png" alt="Linka"
+               class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl shadow-sm select-none" draggable="false" />
+          <h1 class="mt-3 text-xl font-semibold">Linka</h1>
+        </div>
+        <p class="text-sm text-slate-500 mb-5 text-center">
           {{ authStage === 'welcome' ? 'Set up your profile' : 'Sign in with your phone' }}
         </p>
 

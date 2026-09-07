@@ -1,0 +1,13 @@
+{
+  "name": "Linka",
+  "short_name": "Linka",
+  "description": "Real-time messaging",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0f766e",
+  "theme_color": "#0f766e",
+  "icons": [
+    { "src": "assets/linka-logo-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/linka-logo-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

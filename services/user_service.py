@@ -161,6 +161,16 @@ async def get_profile_by_phone(session: AsyncSession, phone_number: str) -> Opti
     return await get_user_by_phone(session, phone_number)
 
 
+async def get_profile_by_username(session: AsyncSession, username: str) -> Optional[User]:
+    """Exact-match only (ADR 0017): the sole username lookup. No prefix / LIKE /
+    substring / trigram - anti-harvest. Returns None on a malformed username."""
+    try:
+        norm = validate_username_format(username)
+    except UsernameError:
+        return None
+    return await crud_user.get_user_by_username(session, norm)
+
+
 async def update_profile(
     session: AsyncSession,
     user_id: int,

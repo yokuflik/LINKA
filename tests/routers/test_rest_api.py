@@ -190,6 +190,27 @@ async def test_lookup_user_by_phone_requires_auth(client, db_session: AsyncSessi
     assert resp.status_code == 403
 
 
+async def test_lookup_user_by_username(client, db_session: AsyncSession, redis_db):
+    target, target_token, _ = await _login(client, redis_db, "+972500100031")
+    _, looker_token, _ = await _login(client, redis_db, "+972500100032")
+
+    await client.patch("/users/me", json={"username": "searchme_user"}, headers=_auth_header(target_token))
+
+    resp = await client.get("/users/by-username", params={"username": "SearchMe_User"}, headers=_auth_header(looker_token))
+    assert resp.status_code == 200
+    assert resp.json()["id"] == target["id"]
+
+
+async def test_lookup_user_by_username_not_found_returns_404(client, db_session: AsyncSession, redis_db):
+    _, token, _ = await _login(client, redis_db, "+972500100033")
+
+    resp = await client.get("/users/by-username", params={"username": "nobody_here_xyz"}, headers=_auth_header(token))
+    assert resp.status_code == 404
+
+    resp = await client.get("/users/by-username", params={"username": "!!bad"}, headers=_auth_header(token))
+    assert resp.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # /chats
 # ---------------------------------------------------------------------------

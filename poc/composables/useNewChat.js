@@ -6,14 +6,192 @@
 // userById, loadChats, selectChat. (createGroupChat takes its payload from
 // NewGroupModal.)
 function useNewChat(ctx) {
-  const { ref } = Vue;
+  const { ref, computed } = Vue;
 
   const showNewPrivate = ref(false);
+  const showNewChatModal = ref(false);
   const showNewGroupModal = ref(false);
   const newGroupBusy = ref(false);
   const newGroupError = ref('');
   const newPrivatePhone = ref('');
   const chatFormError = ref('');
+
+  // --- New-chat modal: exact-match user search (username or phone) ---------
+  const userSearchQuery = ref('');
+  const userSearchBusy = ref(false);
+  const userSearchError = ref('');
+  const userSearchResult = ref(null); // a UserOut, or null
+  let userSearchSeq = 0;
+  let userSearchTimer = null;
+  const USER_SEARCH_DEBOUNCE_MS = 3000;
+
+  function resetUserSearch() {
+    if (userSearchTimer) { clearTimeout(userSearchTimer); userSearchTimer = null; }
+    userSearchQuery.value = '';
+    userSearchBusy.value = false;
+    userSearchError.value = '';
+    userSearchResult.value = null;
+  }
+
+  function openNewChatModal() {
+    resetUserSearch();
+    showNewChatModal.value = true;
+  }
+
+  // Partial matches over EXISTING chats (groups + private peers), shown as a
+  // scrollable list under the search row. Pure client-side substring match -
+  // no request. Matches on the resolved display name and, for a private
+  // chat, also on the peer's phone number (digits-only, so "+972 50" and
+  // "97250" both hit). Empty query -> nothing.
+  const existingChatMatches = computed(() => {
+    const q = userSearchQuery.value.trim().toLowerCase().replace(/^@/, '');
+    if (!q) return [];
+    const qDigits = q.replace(/\D/g, '');
+    return ctx.chats.value.filter((item) => {
+      const chat = item.chat;
+      if ((ctx.chatDisplayName(chat) || '').toLowerCase().includes(q)) return true;
+      if (chat.is_group) return false;
+      const otherId = ctx.privateChatOtherUserId.value[chat.id];
+      const phone = otherId && ctx.userById.value[otherId] && ctx.userById.value[otherId].phone_number;
+      const titlePhone = ctx.privateChatTitles.value[chat.id]; // often "username || phone"
+      const hay = `${phone || ''} ${titlePhone || ''}`;
+      return qDigits.length >= 2 && hay.replace(/\D/g, '').includes(qDigits);
+    });
+  });
+
+  // Called on every keystroke (v-model). Debounce the network lookup: fire
+  // it once the user has paused for USER_SEARCH_DEBOUNCE_MS.
+  function onUserSearchInput() {
+    userSearchError.value = '';
+    userSearchResult.value = null;
+    if (userSearchTimer) clearTimeout(userSearchTimer);
+    userSearchSeq++; // cancel any in-flight response
+    userSearchBusy.value = false;
+    if (!userSearchQuery.value.trim()) return;
+    userSearchTimer = setTimeout(() => { userSearchTimer = null; runUserSearch(); }, USER_SEARCH_DEBOUNCE_MS);
+  }
+
+  // Exact match only (ADR 0017): a "+"-prefixed / all-digit query hits
+  // /users/by-phone, anything else /users/by-username. No prefix search.
+  async function runUserSearch() {
+    if (userSearchTimer) { clearTimeout(userSearchTimer); userSearchTimer = null; }
+    const raw = userSearchQuery.value.trim();
+    userSearchError.value = '';
+    userSearchResult.value = null;
+    if (!raw) return;
+    const seq = ++userSearchSeq;
+    userSearchBusy.value = true;
+    try {
+      const looksLikePhone = /^\+?\d[\d\s-]*$/.test(raw);
+      const path = looksLikePhone
+        ? `/users/by-phone?phone_number=${encodeURIComponent(raw.replace(/[\s-]/g, ''))}`
+        : `/users/by-username?username=${encodeURIComponent(raw.replace(/^@/, ''))}`;
+      const user = await ctx.apiFetch(path);
+      if (seq !== userSearchSeq) return;
+      userSearchResult.value = user;
+    } catch (err) {
+      if (seq !== userSearchSeq) return;
+      userSearchError.value = err.status === 404 ? 'No user found — check the exact username or phone number.' : err.message;
+    } finally {
+      if (seq === userSearchSeq) userSearchBusy.value = false;
+    }
+  }
+
+  // --- New-group modal: member picker (step 1) ---------------------------
+  // Your private-chat peers, in sidebar (chat-list) order - shown first in
+  // the picker list. Each entry is a UserOut (resolved from userById).
+  const privateChatPeers = computed(() => {
+    const out = [];
+    const seen = new Set();
+    for (const item of ctx.chats.value) {
+      const chat = item.chat;
+      if (chat.is_group) continue;
+      const otherId = ctx.privateChatOtherUserId.value[chat.id];
+      if (!otherId || seen.has(otherId)) continue;
+      const user = ctx.userById.value[otherId];
+      if (!user) continue;
+      seen.add(otherId);
+      out.push(user);
+    }
+    return out;
+  });
+
+  // Exact-match user lookup for the group picker (same logic as the
+  // new-chat search: +digits -> /users/by-phone, else /users/by-username).
+  const groupSearchQuery = ref('');
+  const groupSearchBusy = ref(false);
+  const groupSearchError = ref('');
+  const groupSearchResult = ref(null); // a UserOut, or null
+  let groupSearchSeq = 0;
+  let groupSearchTimer = null;
+
+  function resetGroupSearch() {
+    if (groupSearchTimer) { clearTimeout(groupSearchTimer); groupSearchTimer = null; }
+    groupSearchQuery.value = '';
+    groupSearchBusy.value = false;
+    groupSearchError.value = '';
+    groupSearchResult.value = null;
+  }
+
+  function onGroupSearchInput() {
+    groupSearchError.value = '';
+    groupSearchResult.value = null;
+    if (groupSearchTimer) clearTimeout(groupSearchTimer);
+    groupSearchSeq++;
+    groupSearchBusy.value = false;
+    if (!groupSearchQuery.value.trim()) return;
+    groupSearchTimer = setTimeout(() => { groupSearchTimer = null; runGroupSearch(); }, 2000);
+  }
+
+  async function runGroupSearch() {
+    if (groupSearchTimer) { clearTimeout(groupSearchTimer); groupSearchTimer = null; }
+    const raw = groupSearchQuery.value.trim();
+    groupSearchError.value = '';
+    groupSearchResult.value = null;
+    if (!raw) return;
+    const seq = ++groupSearchSeq;
+    groupSearchBusy.value = true;
+    try {
+      const looksLikePhone = /^\+?\d[\d\s-]*$/.test(raw);
+      const path = looksLikePhone
+        ? `/users/by-phone?phone_number=${encodeURIComponent(raw.replace(/[\s-]/g, ''))}`
+        : `/users/by-username?username=${encodeURIComponent(raw.replace(/^@/, ''))}`;
+      const user = await ctx.apiFetch(path);
+      if (seq !== groupSearchSeq) return;
+      ctx.userById.value[user.id] = user;
+      groupSearchResult.value = user;
+    } catch (err) {
+      if (seq !== groupSearchSeq) return;
+      groupSearchError.value = err.status === 404 ? 'No user found — check the exact username or phone number.' : err.message;
+    } finally {
+      if (seq === groupSearchSeq) groupSearchBusy.value = false;
+    }
+  }
+
+  function openNewGroupModal() {
+    resetGroupSearch();
+    newGroupError.value = '';
+    showNewChatModal.value = false;
+    showNewGroupModal.value = true;
+  }
+
+  // Pick an existing chat straight from the partial-match list.
+  async function pickExistingChat(chatId) {
+    showNewChatModal.value = false;
+    await ctx.selectChat(chatId);
+  }
+
+  // Pick the found user: open a draft chat (or the existing one), same as
+  // the old createPrivateChat tail.
+  async function pickSearchedUser(user) {
+    showNewChatModal.value = false;
+    const existing = ctx.chats.value.find(
+      (c) => !c.chat.is_group && ctx.privateChatOtherUserId.value[c.chat.id] === user.id
+    );
+    if (existing) { await ctx.selectChat(existing.chat.id); return; }
+    ctx.userById.value[user.id] = user;
+    ctx.openDraftChat(user);
+  }
 
   // Opening a private chat no longer creates it: we resolve the phone number
   // to a user and open a *draft* pane. The chat row is created server-side
@@ -87,24 +265,16 @@ function useNewChat(ctx) {
     return ticket.storage_key;
   }
 
-  // payload: { title, about, memberPhones, photoFile } from NewGroupModal.
+  // payload: { title, about, memberUsers, photoFile } from NewGroupModal.
+  // `memberUsers` is a list of already-resolved UserOut objects picked in
+  // step 1 of the wizard (peers + exact-match search hits).
   async function createGroupChat(payload) {
     newGroupError.value = '';
     const title = (payload.title || '').trim();
     if (!title) { newGroupError.value = 'Enter a group name.'; return; }
-    const phones = (payload.memberPhones || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0);
     newGroupBusy.value = true;
     try {
-      // Resolve each member phone number to a user id first (/chats/groups
-      // itself only knows ids), same as creating a private chat.
-      const targets = await Promise.all(
-        phones.map((phone) => ctx.apiFetch(`/users/by-phone?phone_number=${encodeURIComponent(phone)}`).catch((err) => {
-          throw err.status === 404 ? new Error(`No user with phone number ${phone}`) : err;
-        }))
-      );
+      const targets = payload.memberUsers || [];
       const memberIds = targets.map((t) => t.id);
       for (const t of targets) ctx.userById.value[t.id] = t; // already known - skip a later round trip
 
@@ -136,8 +306,15 @@ function useNewChat(ctx) {
   }
 
   return {
-    showNewPrivate, showNewGroupModal, newGroupBusy, newGroupError,
+    showNewPrivate, showNewChatModal, showNewGroupModal, newGroupBusy, newGroupError,
     newPrivatePhone, chatFormError,
+    userSearchQuery, userSearchBusy, userSearchError, userSearchResult,
+    existingChatMatches,
+    openNewChatModal, resetUserSearch, runUserSearch, onUserSearchInput,
+    pickSearchedUser, pickExistingChat,
+    privateChatPeers,
+    groupSearchQuery, groupSearchBusy, groupSearchError, groupSearchResult,
+    onGroupSearchInput, runGroupSearch, openNewGroupModal,
     createPrivateChat, commitDraftChat, uploadAvatarBytes, createGroupChat,
   };
 }

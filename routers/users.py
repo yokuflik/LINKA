@@ -66,6 +66,23 @@ async def get_profile_by_phone(
     return user
 
 
+@router.get("/by-username", response_model=UserOut)
+async def get_profile_by_username(
+    username: str,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Exact-match username lookup (ADR 0017) - e.g. to start a private chat by
+    username. No prefix / substring search: a full handle or nothing."""
+    await rate_limit_service.enforce_sliding_window(
+        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+    )
+    user = await user_service.get_profile_by_username(session, username)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No user with that username")
+    return user
+
+
 @router.patch("/me", response_model=UserOut)
 async def update_my_profile(
     body: UserProfileUpdateIn,

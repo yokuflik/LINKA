@@ -109,10 +109,31 @@ const MessageInput = {
       else this.$emit('start-recording');
     },
   },
+  inject: { thumbHashToDataUrl: { default: null } },
   computed: {
     recordingClock() {
       const s = Math.max(0, Math.floor(this.recordingSeconds));
       return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+    },
+    // Icon + label for a media message being replied to (photo / video /
+    // voice / file), null for a plain-text reply.
+    replyMediaKind() {
+      const m = this.replyingToMessage;
+      if (!m) return null;
+      if (m.type === 2) return { icon: '📷', label: 'Photo' };
+      if (m.type === 3) return { icon: '🎬', label: 'Video' };
+      if (m.type === 4) return { icon: '🎤', label: 'Voice message' };
+      if (m.type === 5 || m.media_url) return { icon: '📄', label: 'File' };
+      return null;
+    },
+    // Small thumbnail for an image / video reply: real URL if present, else
+    // the blur data: URL. Never triggers its own download.
+    replyMediaThumb() {
+      const m = this.replyingToMessage;
+      if (!m || (m.type !== 2 && m.type !== 3)) return null;
+      if (m.media_url || m._localMediaUrl) return m.media_url || m._localMediaUrl;
+      if (m.media_blur_hash && this.thumbHashToDataUrl) return this.thumbHashToDataUrl(m.media_blur_hash);
+      return null;
     },
   },
   template: `
@@ -131,11 +152,18 @@ const MessageInput = {
         </div>
         <button @click="$emit('cancel-edit')" class="text-slate-400 hover:text-slate-600 text-lg leading-none px-1">&times;</button>
       </div>
-      <div v-else-if="replyingToMessage" class="px-3 pt-2 flex items-start gap-2">
+      <div v-else-if="replyingToMessage" class="px-3 pt-2 flex items-center gap-2">
         <div class="flex-1 min-w-0 pl-2 border-l-4 border-teal-600 text-xs">
           <div class="font-semibold text-teal-700">{{ senderLabel(replyingToMessage.sender_id) }}</div>
-          <div class="truncate text-slate-500">{{ replyingToMessage.content }}</div>
+          <div v-if="replyMediaKind" class="truncate text-slate-500 flex items-center gap-1">
+            <span>{{ replyMediaKind.icon }}</span>
+            <span class="truncate">{{ (replyingToMessage.content || '').trim() || replyingToMessage.media_name || replyMediaKind.label }}</span>
+          </div>
+          <div v-else class="truncate text-slate-500">{{ replyingToMessage.content }}</div>
         </div>
+        <img v-if="replyMediaThumb" :src="replyMediaThumb" alt=""
+             @error="$event.target.style.display='none'"
+             class="shrink-0 w-9 h-9 rounded object-cover" />
         <button @click="$emit('cancel-reply')" class="text-slate-400 hover:text-slate-600 text-lg leading-none px-1">&times;</button>
       </div>
       <div class="p-3 flex items-center gap-2">

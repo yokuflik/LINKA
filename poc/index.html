@@ -4,8 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Linka — WebSocket PoC</title>
-<!-- Inline favicon (data URI) so browsers stop 404-ing on /favicon.ico. -->
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f766e'/%3E%3Ctext x='16' y='22' font-size='18' text-anchor='middle' fill='white' font-family='sans-serif'%3EL%3C/text%3E%3C/svg%3E">
+<!-- Brand favicon: 32px PNG inlined as a data URI (no /favicon.ico round-trip),
+     plus file-based icons for larger contexts + PWA install. -->
+<link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAAXNSR0IArs4c6QAAAHhlWElmTU0AKgAAAAgABAEaAAUAAAABAAAAPgEbAAUAAAABAAAARgEoAAMAAAABAAIAAIdpAAQAAAABAAAATgAAAAAAAAEsAAAAAQAAASwAAAABAAOgAQADAAAAAQABAACgAgAEAAAAAQAAACCgAwAEAAAAAQAAACAAAAAA+eom7wAAAAlwSFlzAAAuIwAALiMBeKU/dgAABNhJREFUSA3tVktv41QUth07jpNmpnlM82gyhfIoUwqiQxkESIgFsBgJITbsEBs2rNnzR1iwAAkhsQHxZkAjFQTVjKYseHWqaZpJ6zya98ONfW1fvmunThwyncVodtwo8bXvOd93znfOvQ5v2zbP89x9G8J9Qx4B/09wV4XFmRbUGVjCdabB5EO3R/DrTiaXMJ9BgL7CCAQCMx0m/UEPGzcay7IEZ0waYC5MoQDaNM07oQ+poVPiQbi++AUyXOAId2/VnQhTIhBCYD3F6vl80vzh88YV73Zy4tLAffIh5j4skMECpm7WjNspgeVcbh5XkjR2RoiWdBWeJseCxdfmqO048AIPd+Y1MXw1QIIGIYqieAZ92/y48k9Br6RC4kvhpfXooyInHNm1G53fTX6YFTNPKxsSJ44gKQcCt34egm+jgdyCjichIJUP9ne21MNLkUzfNP/QqxZStO09Qx0YJCcs7Ru3t7VtmOGooTxLE2Wg/jJME7gJsogoZ1PuWrn2/Fz+ymHxSSW3q3UGJulZ+uGwE+eWfyzfzovLB3qVycMB/kRYL3hn4iNwYKE7kx4fgefinPxbrc61w9W+XT+m80I4LCodws8Hg8mQsjtURSvKM3QW0Eio0wlcO0Cjl66ptdfT2UVZISYnDbk1JXO1p35a/8sahmxe2LcbkhFdDj5Y0I4EgXNkmsHB8vIoUaJGs5lMxLuEvvft5mps7vLqwwtK6Oph+Zd+o28PHooqSTn4+Hz6p/bNjCC/kX6qYxnXu4WG2X07/Rzq32w14rG4JEke5rRETCXK4ak8NCixRI4Sgf+52e63j9/MrJhE2e1aH+7tkJ6UlxfQ5AEU1hD4Y1xZ+BPRjih8GZiEHDUasVhcDgaR8vViWe1pX+wd3KjV3n/h4keF/fNhaSUeaxEzJgeLpJaLRdZCmaykPJJIoiPQ4u1mI5FI3C0D7B3KWRbdWMp893fRaHUvpc4NLZt0hu9cWH1xMf/9gaoTE1nud7Vf60Wgw9jpjBk18Enk5EixLxkDpaZFa0edZxbThXK9PRgqhKtrw3pPw94N2QG10n1MWSh1NNt0GpUFhU09rqirkY/ALQCjcRpPFPiNfOqb7VuXH1ja/LO4ciZ8VpZRwdWz8S9L6lpy+bPdwhPhpBAYvdKZ40j58cV3VLDHLBpmhq9l03df3uCpvbVTTJ4JX8ylcWji9pVs+utjfbNUejWTeuvCmrv1ERML/z8Z+ItsmuVKJRqdD0ciLg3OQknkdcOSg4GtPfWrnaIo8q+tLK3nM8S0pYBgOOccAsJ5oWmDfq+TTqVEcRy3TyL2wuD5TreDaNy04a4b7H+NTuxnl7OVdrd+1Fw/n8EtUtSR40nIsO92HEf/nyBfBrButVqlg4NUKpuIJ5ykx6qCZmjguKehYNDDZaoCkeeajUa1quZyuVgs5px+bAVjnAtusBCJRKJzc4XCrXa7hQ0hieM96RqwSHXdzQ9PID0xzVariR2wsHAO7pPozMUXC6sT1TStWq3WajXDYAr7OmMM7IjI9AEgL8tBoKdSabxLIDNwvTFNgAVwAHowGIAJp5NnOmMCAp5HScNhtEVEluWp8OEyg8AFwosJYyq/GRxOCqw7/IF7lnck8CzuceLT6x6xZrqPCE6X4vTVmbjew38BUMC8NdZOWxgAAAAASUVORK5CYII=">
+<link rel="apple-touch-icon" href="assets/linka-logo-180.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0f766e">
 
 
 <!--
@@ -85,6 +89,7 @@
 <script src="components/MembersModal.js"></script>
 <script src="components/ProfileEditModal.js"></script>
 <script src="components/SettingsModal.js"></script>
+<script src="components/NewChatModal.js"></script>
 <script src="components/NewGroupModal.js"></script>
 <script src="components/ToastList.js"></script>
 
@@ -165,17 +170,70 @@
     pointer-events: none;
   }
   .day-separator > span { pointer-events: auto; }
+
+  /* First-load splash: full-screen brand logo shown until the WebSocket
+     connects (or a short timeout). Subtle pulse while waiting. */
+  #splash {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    background: #f1f5f9; /* slate-100, matches body */
+    transition: opacity .4s ease;
+  }
+  #splash.is-hiding { opacity: 0; pointer-events: none; }
+  #splash img {
+    width: 6rem;
+    height: 6rem;
+    border-radius: 1.25rem;
+    box-shadow: 0 10px 30px -10px rgba(15, 118, 110, .45);
+    animation: splash-pulse 1.6s ease-in-out infinite;
+  }
+  #splash span { font-size: .8rem; color: #64748b; letter-spacing: .02em; }
+  @keyframes splash-pulse {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.06); opacity: .82; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #splash img { animation: none; }
+  }
 </style>
 </head>
 <body class="h-screen bg-slate-100 text-slate-900 antialiased">
 <div id="app" class="h-full"></div>
+
+<!-- First-load splash (plain DOM, outside Vue). Removed once the app decides
+     it's ready: authed + WS connected, or not-authed (nothing to wait for),
+     or a 6s safety timeout. -->
+<div id="splash">
+  <img src="assets/linka-logo-192.png" alt="Linka" />
+  <span>Connecting…</span>
+</div>
+<script>
+  (function () {
+    var el = document.getElementById('splash');
+    if (!el) return;
+    var done = false;
+    window.__hideSplash = function () {
+      if (done) return;
+      done = true;
+      el.classList.add('is-hiding');
+      setTimeout(function () { el.remove(); }, 450);
+    };
+    setTimeout(window.__hideSplash, 6000); // safety net
+  })();
+</script>
 
 <script>
 const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch, provide } = Vue;
 
 const app = createApp({
   components: {
-    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, MessageDetailsModal, MembersModal, ProfileEditModal, SettingsModal, NewGroupModal, ToastList, AvatarLightbox,
+    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, MessageDetailsModal, MembersModal, ProfileEditModal, SettingsModal, NewChatModal, NewGroupModal, ToastList, AvatarLightbox,
   },
   setup() {
     // ---------------------------------------------------------------
@@ -231,6 +289,12 @@ const app = createApp({
     // ---------------------------------------------------------------
     watch(apiBase, (v) => localStorage.setItem('linka_api_base', v));
 
+    // Dismiss the first-load splash: once the socket is up, or as soon as we
+    // know there's no session to restore (nothing to wait for).
+    const hideSplash = () => window.__hideSplash && window.__hideSplash();
+    watch(ctx.wsStatus, (s) => { if (s === 'connected') hideSplash(); }, { immediate: true });
+    if (!accessToken.value) nextTick(hideSplash);
+
     onMounted(async () => {
       if (accessToken.value) {
         try {
@@ -277,16 +341,13 @@ const app = createApp({
       <div class="flex flex-1 min-h-0">
         <ChatSidebar
           :class="activePaneVisible ? 'hidden md:flex' : 'flex'"
-          v-model:showNewPrivate="showNewPrivate"
-          v-model:newPrivatePhone="newPrivatePhone"
           :chatFormError="chatFormError" :chatsError="chatsError" :chats="chats" :activeChatId="activeChatId"
           :chatDisplayName="chatDisplayName" :formatChatTime="formatChatTime"
           :chatAvatarUrl="chatAvatarUrl" :chatAvatarName="chatAvatarName" :chatAvatarColorKey="chatAvatarColorKey"
           :chatAvatarPreview="chatAvatarPreview"
           :typingLabelForChat="typingLabelForChat" :unreadCountByChatId="unreadCountByChatId"
           :isChatMuted="isChatMuted"
-          @create-private-chat="createPrivateChat"
-          @open-new-group="newGroupError = ''; showNewGroupModal = true"
+          @open-new-chat="openNewChatModal"
           @select-chat="selectChat"
           @chat-contextmenu="openChatContextMenu" />
 
@@ -418,8 +479,30 @@ const app = createApp({
       :error="messageReceiptsError" :snippet="messageDetailsSnippet" :name-for="userLabelById"
       @close="closeMessageDetails" />
 
+    <NewChatModal v-if="showNewChatModal"
+      v-model:query="userSearchQuery"
+      :busy="userSearchBusy" :error="userSearchError" :result="userSearchResult"
+      :existingMatches="existingChatMatches"
+      :userLabel="(u) => u.username || u.phone_number"
+      :chatLabel="chatDisplayName"
+      :chatAvatarUrl="chatAvatarUrl" :chatAvatarPreview="chatAvatarPreview"
+      :chatAvatarColorKey="chatAvatarColorKey"
+      @input-query="onUserSearchInput"
+      @search="runUserSearch"
+      @pick="pickSearchedUser"
+      @pick-chat="pickExistingChat"
+      @new-group="openNewGroupModal"
+      @close="showNewChatModal = false" />
+
     <NewGroupModal v-if="showNewGroupModal"
       :busy="newGroupBusy" :error="newGroupError"
+      :peers="privateChatPeers"
+      v-model:searchQuery="groupSearchQuery"
+      :searchBusy="groupSearchBusy" :searchError="groupSearchError" :searchResult="groupSearchResult"
+      :userLabel="(u) => u.username || u.phone_number"
+      :userAvatarUrl="userAvatarUrl" :userAvatarPreview="userAvatarPreview"
+      @input-search="onGroupSearchInput"
+      @search="runGroupSearch"
       @close="showNewGroupModal = false"
       @create="createGroupChat" />
 

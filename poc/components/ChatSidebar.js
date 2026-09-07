@@ -1,10 +1,7 @@
-// Left sidebar: new-private form + "+ Group" (opens NewGroupModal) + the
-// chat list itself. v-model-style props (showNewPrivate/newPrivatePhone) are
-// two-way bound via update:* emits, matching the root's existing refs 1:1.
+// Left sidebar: one big "New chat" button (opens NewChatModal) + the chat
+// list itself.
 const ChatSidebar = {
   props: {
-    showNewPrivate: { type: Boolean, required: true },
-    newPrivatePhone: { type: String, required: true },
     chatFormError: { type: String, required: true },
     chatsError: { type: String, required: true },
     chats: { type: Array, required: true },
@@ -19,33 +16,19 @@ const ChatSidebar = {
     unreadCountByChatId: { type: Object, required: true },
     isChatMuted: { type: Function, required: true },
   },
-  emits: [
-    'update:showNewPrivate', 'update:newPrivatePhone',
-    'create-private-chat', 'open-new-group', 'select-chat', 'chat-contextmenu',
-  ],
-  methods: {
-    // Real methods (not chained inline-statement handlers) - a chained
-    // "$emit(a); $emit(b)" string is fragile in Vue's inline-handler
-    // compiler and can silently drop the second call.
-    openNewPrivate() {
-      this.$emit('update:showNewPrivate', !this.showNewPrivate);
-    },
-  },
+  emits: ['open-new-chat', 'select-chat', 'chat-contextmenu'],
   template: `
     <aside class="w-full md:w-72 shrink-0 flex flex-col border-r border-slate-200 bg-white">
-      <div class="p-3 border-b border-slate-200 flex gap-2">
-        <button @click="openNewPrivate"
-                class="flex-1 text-xs px-2 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">+ Private</button>
-        <button @click="$emit('open-new-group')"
-                class="flex-1 text-xs px-2 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">+ Group</button>
-      </div>
-
-      <div v-if="showNewPrivate" class="p-3 border-b border-slate-200 bg-slate-50">
-        <label class="block text-xs font-medium text-slate-500 mb-1">Their phone number</label>
-        <input :value="newPrivatePhone" @input="$emit('update:newPrivatePhone', $event.target.value)"
-               placeholder="+972501234567" @keyup.enter="$emit('create-private-chat')"
-               class="w-full mb-2 px-2 py-1.5 text-sm border border-slate-300 rounded-lg font-mono" />
-        <button @click="$emit('create-private-chat')" class="w-full py-1.5 text-sm bg-teal-700 text-white rounded-lg">Create</button>
+      <div class="p-3 border-b border-slate-200">
+        <button @click="$emit('open-new-chat')"
+                class="w-full flex items-center justify-center gap-2 py-2.5 text-sm font-semibold bg-teal-700 text-white rounded-xl hover:bg-teal-800">
+          <svg viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          New chat
+        </button>
       </div>
 
       <p v-if="chatFormError" class="px-3 py-1 text-xs text-red-600">{{ chatFormError }}</p>
@@ -89,7 +72,7 @@ const ChatSidebar = {
             </div>
           </div>
         </div>
-        <p v-if="!chats.length" class="p-3 text-sm text-slate-400">No chats yet — create one above.</p>
+        <p v-if="!chats.length" class="p-3 text-sm text-slate-400">No chats yet — tap "New chat" above.</p>
       </div>
     </aside>
   `,

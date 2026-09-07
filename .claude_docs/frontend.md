@@ -20,6 +20,12 @@ There is **no real client app** — only a single-file HTML/Vue PoC (`poc/`) for
 - `setup()` logic split into `poc/composables/*.js` (`useX(ctx)` factories merged onto one shared `ctx`).
 - Plan/progress in `poc/composables/REFACTOR_PLAN.md`.
 
+## Branding / logo
+- Source logo `poc/assets/linka-icon.jpeg` (2048², ~1.1 MB — never referenced directly). Derived PNGs live beside it: `linka-logo-512/192/180.png`, `favicon-32.png` (regenerate with `sips -s format png -Z <size> linka-icon.jpeg --out …`).
+- `index.html`: `favicon-32` inlined as a `data:image/png;base64` `<link rel="icon">`; `apple-touch-icon` → `assets/linka-logo-180.png`; `<link rel="manifest" href="manifest.webmanifest">` (name/icons/theme `#0f766e`); `<meta name="theme-color">`.
+- **First-load splash** — plain DOM `#splash` (logo + pulse, CSS in the `<style>` block, `prefers-reduced-motion` aware) sitting outside `#app`. A tiny pre-Vue script exposes `window.__hideSplash` (+ 6 s safety timeout); root `setup()` calls it when `wsStatus === 'connected'` or immediately when there's no stored `accessToken`.
+- Logo also in `AuthScreen` (centered above the card, all stages) and `AppHeader` (7×7 rounded, wordmark hidden `<sm`). All `<img src>` are `assets/…` relative to `poc/index.html`. CSP `img-src 'self' data: blob: https:` already covers these.
+
 ## Running
 - Open `poc/index.html` directly (CORS wide open, dev-only). OTP codes print to server console — no real SMS/FCM.
 - **For the full-res avatar device cache** (`useAvatarCache.js`), serve the PoC over `http://localhost` instead — `cd poc && python3 -m http.server 5500`. Cache Storage (`caches`) is `undefined` on `file://` (not a secure context); on a miss the composable silently falls back to re-downloading. Deployed, it's same-origin HTTPS so this is automatic.
@@ -28,10 +34,10 @@ There is **no real client app** — only a single-file HTML/Vue PoC (`poc/`) for
 ## Hard rules (also in root CLAUDE.md)
 - **NEVER display the raw `user_id`** in the UI (chat lists, message bubbles, headers). Show the peer's server `username`, falling back to `phone_number` (ADR 0018 — `display_name` is gone). There is **no client-side contact book** (the old `MOCK_CONTACT_NAMES` map is gone). `user_id` is strictly for backend logic / API calls.
 - **No autonomous visual testing** — no browser tools, Puppeteer, screenshots, or local servers to verify the UI. The user tests manually and reports back.
-- **After editing `poc/index.html`, syntax-check its inline `<script>`** — one error (e.g. a duplicate `const`) silently kills the whole PoC:
+- **After editing `poc/index.html`, syntax-check its inline `<script>`s** — one error (e.g. a duplicate `const`) silently kills the whole PoC. There are now **two** inline scripts: `[0]` = the pre-Vue splash remover (`window.__hideSplash`), `[1]` = the root app. Check both:
   ```
-  python3 -c "import re; open('/tmp/i.js','w').write(re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>', open('poc/index.html').read(), re.S)[0])"
-  node --check /tmp/i.js
+  python3 -c "import re; s=re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>', open('poc/index.html').read(), re.S); [open(f'/tmp/i{i}.js','w').write(x) for i,x in enumerate(s)]"
+  node --check /tmp/i0.js && node --check /tmp/i1.js
   ```
   `poc/components/*.js` and `poc/composables/*.js` can be `node --check`ed directly.
 - **Never chain multiple `$emit(...)` calls with `;` in an inline template expression** — always use a real method.
@@ -92,6 +98,20 @@ There is **no real client app** — only a single-file HTML/Vue PoC (`poc/`) for
 - `useChats`: `MUTE_PRESETS`, `muteChat(chatId, presetKey)` / `muteChatUntil(chatId, iso)` / `unmuteChat(chatId)` (all optimistic on `item.muted_until`, roll back on failure), `isChatMuted(item)` (future-expiry check), `mutedUntilLabel(item)` ('' for a year-9999 "forever"). Menu handlers: `mutePresetFromMenu` / `muteUntilFromMenu` / `unmuteFromMenu`. "Forever" = ISO `9999-12-31T23:59:59Z`.
 - **Multi-device:** server echoes `chat_mute_changed {chat_id, muted_until}` on the personal channel; `useWsRouter` sets `item.muted_until` in place (acting tab's echo is a no-op).
 - `ChatSidebar` shows a 🔇 icon next to the timestamp when `isChatMuted(item)`, and greys the unread badge (still shown, just `bg-slate-400`). Takes an `isChatMuted` fn prop.
+
+## New chat (sidebar)
+- One big **"New chat"** button (clean line-art `+`) in `ChatSidebar` (`@open-new-chat`) replaces the old `+ Private` / `+ Group` pair and the inline phone form.
+- `components/NewChatModal.js` (same modal style as `SettingsModal`; flex column, `max-h-[85vh]`):
+  - **Search row** — exact-match user lookup by **username or phone** (no prefix search). `useNewChat.runUserSearch` routes an all-digits / `+`-prefixed query to `GET /users/by-phone`, anything else to `GET /users/by-username` (strips a leading `@`); seq-guarded. **Auto-fires 3 s (`USER_SEARCH_DEBOUNCE_MS`) after the user stops typing** (`onUserSearchInput` on `@input`, debounced; each keystroke bumps the seq so an in-flight response is discarded). The Search button still forces an immediate lookup. Hit → one tappable result row; `pickSearchedUser` opens the existing chat or `openDraftChat(user)`.
+  - **"From your chats"** — `existingChatMatches` computed: client-side substring match of the trimmed query over **all existing chats** (groups + private peers), no request. Matches on `ctx.chatDisplayName(chat)`; for a private chat also on the **peer's phone number** (both sides stripped to digits, needs ≥2 digits, so `+972 50` and `97250` both hit — via `privateChatOtherUserId` → `userById[...].phone_number` and the `privateChatTitles` fallback). Rendered as a **scrollable** list (`flex-1 min-h-0 overflow-y-auto`) inside the modal body so it never covers the "New group" button, which sits in a `shrink-0` footer. `pickExistingChat(chatId)` → `selectChat`.
+  - **"New group"** button → `openNewGroupModal` (closes this modal, opens `NewGroupModal`).
+- `useNewChat` state: `showNewChatModal`, `userSearchQuery/Busy/Error/Result`, `existingChatMatches`, `openNewChatModal`, `onUserSearchInput`, `runUserSearch`, `pickSearchedUser`, `pickExistingChat`. The old `createPrivateChat` / `showNewPrivate` / `newPrivatePhone` remain in the composable (unused by UI now).
+
+## New group (two-step wizard — `components/NewGroupModal.js`)
+- Opened via `openNewGroupModal` (from the New-chat modal's "New group" button).
+- **Step 1 "Add members":** search row (exact-match user lookup by username or phone, **same routing as the new-chat search** — `+`/digits → `/users/by-phone`, else `/users/by-username`; auto-fires 3s after typing stops via `onGroupSearchInput`, seq-guarded) over a scrollable list. List shows `privateChatPeers` (your private-chat peers as `UserOut`, in sidebar order — sourced from `ctx.chats` × `privateChatOtherUserId` × `userById`, so a peer whose chat was never opened this session won't show until opened) with the current search hit pinned on top. Tap a row to toggle-select; selected members render as removable chips. "Next" → step 2.
+- **Step 2 "Group details":** the group photo + name + description fields (unchanged), "Back"/"Create group".
+- `useNewChat`: `privateChatPeers`, `groupSearchQuery/Busy/Error/Result`, `onGroupSearchInput`, `runGroupSearch`, `openNewGroupModal`. `createGroupChat` now takes `payload.memberUsers` (list of already-resolved `UserOut` from the picker) instead of `payload.memberPhones` — **no more phone→user resolution round-trips** for group members.
 
 ## Draft private chats
 - Opening a private chat from the sidebar no longer POSTs `/chats/private`. `useNewChat.createPrivateChat` resolves the phone → user and calls `useChats.openDraftChat(user)`, which sets `draftChat = {otherUserId, phone, user}`, nulls `activeChatId`, and subscribes to presence **by user id** (the `subscribe_presence` gate is the target's `privacy.online`, not a shared chat — so `everyone` resolves with no chat row; `contacts` won't).

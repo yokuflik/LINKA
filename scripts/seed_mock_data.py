@@ -63,33 +63,35 @@ TEXT_MESSAGE_TYPE = 1
 # login screen accepts. Usernames must match config.USERNAME_REGEX
 # (^[a-z][a-z0-9_]{2,31}$).
 USERS = [
-    ("1", "daniel_cohen"),
-    ("2", "noa_levi"),
-    ("3", "avi_mizrahi"),
-    ("4", "maya_gold"),
-    ("5", "yossi_avraham"),
-    ("6", "shira_peretz"),
-    ("7", "omer_azulay"),
-    ("8", "tamar_mizrahi"),
-    ("9", "itay_bendavid"),
-    ("10", "roni_katz"),
+    ("1", "daniel_shapira"),
+    ("2", "noa_ben_ami"),
+    ("3", "avraham_dahan"),
+    ("4", "maya_friedman"),
+    ("5", "yonatan_regev"),
+    ("6", "shira_barkat"),
+    ("7", "omer_shalev"),
+    ("8", "tamar_nachmani"),
+    ("9", "eitan_rosenberg"),
+    ("10", "roni_halevi"),
 ]
 
 # Indices into USERS. Deliberately not every possible pair - a dataset where
 # everyone has a chat with everyone hides bugs in the "no chat with this
-# person yet" path.
+# person yet" path. Users 5 and 7 are left with no private chats at all so
+# the "search for someone you've never messaged" path has real subjects.
 PRIVATE_PAIRS = [
-    (0, 1), (0, 2), (1, 2), (1, 3), (3, 4),
-    (4, 5), (5, 6), (6, 7), (7, 8), (8, 9),
-    (0, 9), (2, 7),
+    (0, 1), (0, 2), (0, 3), (1, 2), (1, 4),
+    (2, 3), (3, 4), (3, 9), (4, 8), (6, 8),
+    (6, 9), (8, 9), (0, 8), (1, 9),
 ]
 
 # (title, owner index, other member indices, group photo file in mock_photos/)
 GROUP_CHATS = [
-    ("Linka Devs", 0, [1, 2, 3], "g1.jpg"),
-    ("Weekend Trip", 3, [0, 4, 5], "g2.jpg"),
-    ("Cohen Family", 2, [1, 4, 9], "g3.jpg"),
-    ("Book Club", 6, [7, 8, 9], "g4.jpg"),
+    ("Linka Core Team", 0, [1, 2, 3, 8], "g1.jpg"),
+    ("Weekend in the North", 3, [0, 4, 5], "g2.jpg"),
+    ("Shapira Family", 0, [1, 4, 9], "g3.jpg"),
+    ("Thursday Book Club", 6, [1, 7, 8, 9], "g4.jpg"),
+    ("Neighborhood Watch", 5, [4, 6, 7], "g5.jpg"),
 ]
 
 # Nothing here matters beyond being varied in length - a few are long enough
@@ -125,6 +127,16 @@ _PHRASES = [
     "call me when you're free",
     "ok",
     "that's actually a great idea",
+    "running about 15 minutes late, start without me",
+    "can someone review my PR when you get a chance?",
+    "the restaurant is fully booked, trying somewhere else",
+    "forwarding the details now",
+    "let's sync on this Monday",
+    "totally forgot, my bad",
+    "weather looks good for the weekend",
+    "I'll bring the tent if you handle the food",
+    "did the payment go through on your end?",
+    "see you there",
 ]
 
 

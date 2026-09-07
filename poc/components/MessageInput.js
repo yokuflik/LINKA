@@ -137,7 +137,8 @@ const MessageInput = {
     },
   },
   template: `
-    <div class="border-t border-slate-200 bg-white">
+    <div class="border-t border-slate-200 bg-white"
+         style="padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 0.5rem)">
       <div v-if="attachError"
            class="mx-3 mt-2 flex items-center gap-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
         <span class="text-base leading-none">⚠️</span>

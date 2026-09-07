@@ -37,11 +37,27 @@ function useAudioWaveform(ctx) {
       return { bars, stop() {} };
     }
 
+    // iOS Safari starts the shared AudioContext 'suspended' and won't feed the
+    // analyser until it's actually running - resume() is async, so kick it and
+    // let the RAF loop pick up data once it lands.
+    if (ac.state === 'suspended') ac.resume().catch(() => {});
+
     const source = ac.createMediaStreamSource(stream);
     const analyser = ac.createAnalyser();
     analyser.fftSize = 256;
     analyser.smoothingTimeConstant = 0.6;
     source.connect(analyser);
+
+    // iOS bug: a MediaStreamSource that isn't connected to the destination
+    // produces all-silent (128) time-domain samples. Route it through a muted
+    // gain node so the graph runs without any audible mic monitoring.
+    let sink = null;
+    try {
+      sink = ac.createGain();
+      sink.gain.value = 0;
+      analyser.connect(sink);
+      sink.connect(ac.destination);
+    } catch (e) { /* non-fatal */ }
 
     const buffer = new Uint8Array(analyser.frequencyBinCount);
     let raf = 0;
@@ -72,6 +88,8 @@ function useAudioWaveform(ctx) {
         stopped = true;
         if (raf) cancelAnimationFrame(raf);
         try { source.disconnect(); } catch (e) { /* already gone */ }
+        try { analyser.disconnect(); } catch (e) { /* already gone */ }
+        try { if (sink) sink.disconnect(); } catch (e) { /* already gone */ }
       },
     };
   }

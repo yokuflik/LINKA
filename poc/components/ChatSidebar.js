@@ -31,8 +31,8 @@ const ChatSidebar = {
         </button>
       </div>
 
-      <p v-if="chatFormError" class="px-3 py-1 text-xs text-red-600">{{ chatFormError }}</p>
-      <p v-if="chatsError" class="px-3 py-1 text-xs text-red-600">{{ chatsError }}</p>
+      <InlineAlert :message="chatFormError" class="mx-3 my-1" />
+      <InlineAlert :message="chatsError" class="mx-3 my-1" />
 
       <div class="flex-1 overflow-y-auto">
         <div v-for="item in chats" :key="item.chat.id" @click="$emit('select-chat', item.chat.id)"

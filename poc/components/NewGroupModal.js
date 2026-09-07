@@ -151,7 +151,7 @@ const NewGroupModal = {
               {{ searchBusy ? '…' : 'Search' }}
             </button>
           </div>
-          <p v-if="searchError" class="mb-1 text-xs text-red-600">{{ searchError }}</p>
+          <InlineAlert :message="searchError" class="mb-1" />
 
           <div class="flex-1 min-h-0 overflow-y-auto -mx-1 px-1 mt-1">
             <button v-if="searchResult" @click="toggle(searchResult)"
@@ -203,7 +203,7 @@ const NewGroupModal = {
               <button v-if="photoPreviewUrl" type="button" @click="clearPhoto"
                       class="mt-1 text-xs text-slate-400">Remove photo</button>
               <p v-else class="mt-1 text-xs text-slate-400">Group photo (optional)</p>
-              <p v-if="photoError" class="mt-1 text-xs text-red-600">{{ photoError }}</p>
+              <InlineAlert :message="photoError" class="mt-1" />
             </div>
 
             <label class="block text-xs font-medium text-slate-500 mb-1">Group name</label>
@@ -219,7 +219,7 @@ const NewGroupModal = {
             </p>
           </div>
 
-          <p v-if="error" class="text-xs text-red-600 mb-2 shrink-0">{{ error }}</p>
+          <InlineAlert :message="error" class="mb-2 shrink-0" />
 
           <div class="border-t border-slate-200 pt-3 mt-2 shrink-0 flex gap-2">
             <button @click="step = 1" :disabled="busy"

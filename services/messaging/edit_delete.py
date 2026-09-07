@@ -1,10 +1,16 @@
 """Editing and deleting an existing message."""
 
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
+logger = logging.getLogger(__name__)
+
+from database.crud.crud_media_blob import delete_blob_row, deref_blob
 from database.crud.crud_message import (
     edit_message_content,
     get_message_by_id,
+    purge_message as crud_purge_message,
     soft_delete_message,
     undelete_message,
 )
@@ -46,6 +52,40 @@ async def delete_message(session: AsyncSession, user_id: int, chat_id: int, mess
             chat_id, {"event": "message_deleted", "chat_id": str(chat_id), "message_id": str(message_id)}
         )
     return deleted
+
+
+async def purge_message(session: AsyncSession, user_id: int, chat_id: int, message_id: int) -> bool:
+    """
+    Hard "delete forever" (ADR 0021). Sender-only; the message must already be
+    soft-deleted. Wipes content / media to nothing, blocks restore permanently,
+    and for a media message derefs the blob - deleting the object from S3 and
+    the media_blob row on the last reference.
+    """
+    existing = await get_message_by_id(session, chat_id=chat_id, message_id=message_id)
+    if existing is None or existing.sender_id != user_id:
+        raise NotAParticipantError(f"User {user_id} may not purge message {message_id}")
+
+    media_key = await crud_purge_message(session, chat_id=chat_id, message_id=message_id)
+    if media_key is None:
+        return False  # not currently deleted, or already purged
+
+    if media_key:
+        try:
+            remaining = await deref_blob(session, media_key)
+            if remaining == 0:
+                try:
+                    await media_service.delete_object(media_key)
+                except Exception as exc:  # best-effort - row is already gone from messages
+                    logger.error("purge: failed to delete S3 object %s: %s", media_key, exc)
+                await delete_blob_row(session, media_key)
+        except Exception as exc:
+            logger.error("purge: blob deref failed for %s: %s", media_key, exc)
+
+    await realtime_service.publish_event(
+        chat_id,
+        {"event": "message_purged", "chat_id": str(chat_id), "message_id": str(message_id)},
+    )
+    return True
 
 
 async def restore_message(session: AsyncSession, user_id: int, chat_id: int, message_id: int) -> "object":

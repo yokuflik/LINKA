@@ -50,8 +50,40 @@ function useMessageEdit(ctx) {
   // the backend re-checks ownership. The message_restored echo (useWsRouter)
   // brings content/media back for other devices; we also revert optimistically.
   function canRestoreMessage(m) {
-    return !!m && m.sender_id != null && m.deleted_at != null
+    return !!m && m.sender_id != null && m.deleted_at != null && m.purged_at == null
       && ctx.currentUser.value && m.sender_id === ctx.currentUser.value.id;
+  }
+
+  // "Delete forever" (ADR 0021): only for your own, already-soft-deleted,
+  // not-yet-purged message. Wipes the text to nothing server-side and, for a
+  // media message, deletes the object from S3 - irreversible. Fans out
+  // message_purged so every participant blanks the bubble permanently.
+  function canPurgeMessage(m) {
+    return !!m && m.sender_id != null && m.deleted_at != null && m.purged_at == null
+      && ctx.currentUser.value && m.sender_id === ctx.currentUser.value.id;
+  }
+
+  function purgeMessage(message) {
+    ctx.closeMessageContextMenu();
+    if (!canPurgeMessage(message) || !ctx.activeChatId.value) return;
+    if (!ctx.wsIsOpen()) {
+      ctx.showToast("You're offline — try again once you're reconnected.");
+      return;
+    }
+    if (!window.confirm('Delete this message forever? This cannot be undone.')) return;
+    const payload = {
+      type: 'purge_message',
+      chat_id: ctx.activeChatId.value,
+      message_id: message.id,
+    };
+    ctx.log('WS →', payload);
+    ctx.sendRaw(payload);
+    // Optimistic: lock it as purged so Restore / Delete forever disappear.
+    message.purged_at = new Date().toISOString();
+    message.content = null;
+    message.media_url = null;
+    delete message._preDeleteContent;
+    delete message._preDeleteMediaUrl;
   }
 
   function restoreMessage(message) {
@@ -105,6 +137,7 @@ function useMessageEdit(ctx) {
   return {
     canDeleteMessage, deleteMessage,
     canRestoreMessage, restoreMessage,
+    canPurgeMessage, purgeMessage,
     canEditMessage, editingMessage, startEditMessage, cancelEdit,
   };
 }

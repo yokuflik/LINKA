@@ -43,7 +43,7 @@ function useMembers(ctx) {
     } catch (err) {
       if (err.status === 404) membersModalError.value = `No user with phone number ${phone}`;
       else if (err.status === 409) membersModalError.value = 'User is already a member.';
-      else membersModalError.value = err.message;
+      else membersModalError.value = ctx.friendlyError(err, "That didn't work. Please try again.");
     } finally {
       membersModalBusy.value = false;
     }
@@ -72,7 +72,7 @@ function useMembers(ctx) {
       member.role = newRole;
     } catch (err) {
       if (err.status === 403) membersModalError.value = 'Only the group owner can change roles.';
-      else membersModalError.value = err.message;
+      else membersModalError.value = ctx.friendlyError(err, "That didn't work. Please try again.");
     }
   }
 
@@ -119,7 +119,7 @@ function useMembers(ctx) {
       await ctx.resolveChatMemberPhones(ctx.activeChatId.value);
     } catch (err) {
       if (err.status === 403) membersModalError.value = 'You cannot remove this member.';
-      else membersModalError.value = err.message;
+      else membersModalError.value = ctx.friendlyError(err, "That didn't work. Please try again.");
     }
   }
 
@@ -175,7 +175,7 @@ function useMembers(ctx) {
       ctx.activeChatId.value = null;
       ctx.messages.value = [];
     } catch (err) {
-      membersModalError.value = err.status === 409 ? 'Name a new owner first.' : err.message;
+      membersModalError.value = err.status === 409 ? 'Name a new owner first.' : ctx.friendlyError(err, "We couldn't complete that. Please try again.");
     } finally {
       leaveGroupBusy.value = false;
     }

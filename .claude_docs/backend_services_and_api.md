@@ -13,7 +13,7 @@ FastAPI (REST + WebSocket) · PyJWT · Pydantic v2 · pytest/pytest-asyncio/http
   - `common.py` (`SYSTEM_MESSAGE_TYPE`, `_check_content_length`)
   - `media_validation.py` (`_validate_media`, `MediaAttachment`)
   - `send.py` (`process_outgoing`, `send_system_message`, `fan_out_message`, idempotency)
-  - `edit_delete.py` (`edit_message`, `delete_message`)
+  - `edit_delete.py` (`edit_message`, `delete_message`, `restore_message`, `purge_message` — ADR 0021 hard "delete forever": sender-only, must already be soft-deleted; nulls content/media, blocks restore, derefs the media blob → S3 `delete_object` + blob-row delete on last ref, fans out `message_purged`)
   - `read_api.py` (`get_message_history` — attaches derived status + presigned `media_url`)
   - `receipts.py` (`mark_as_delivered/read/played`, `get_message_receipts`, detailed-log enqueue)
   - Tests monkeypatch `message_service.MAX_MESSAGE_CONTENT_LENGTH` / `RECEIPT_NAMED_LIST_MAX_MEMBERS` on the facade — submodules read those back off the facade at call time, so keep them importable there.
@@ -89,6 +89,7 @@ now takes `request: Request`); `routers/chats.py::list_my_chats` and
 - No `call_service.py` / WebRTC — explicitly deferred.
 - No DB migrations; no automated partition management.
 - **Forward**: no backend support at all (no endpoint/action).
+- No *general* storage-object GC — only the ADR-0021 `purge_message` path deletes an S3 object.
 - FANOUT_REWRITE_PLAN.md steps 1–4 all landed.
 
 ## Working conventions

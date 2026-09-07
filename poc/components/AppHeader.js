@@ -7,18 +7,28 @@ const AppHeader = {
     avatarPreview: { default: null },
   },
   emits: ['logout', 'edit-profile', 'open-settings'],
+  computed: {
+    // User-friendly label for the connection dot - never the raw
+    // 'disconnected' / 'error' state names.
+    wsStatusLabel() {
+      return {
+        connected: 'Connected',
+        connecting: 'Connecting…',
+      }[this.wsStatus] || 'Reconnecting…';
+    },
+  },
   template: `
     <header class="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
       <div class="flex items-center gap-3">
         <span class="flex items-center gap-2 font-semibold">
-          <img src="assets/linka-logo-192.png" alt="Linka"
+          <img src="assets/maskable_icon_x192.png" alt="Linka"
                class="w-7 h-7 rounded-lg select-none" draggable="false" />
           <span class="hidden sm:inline">Linka</span>
         </span>
         <span class="flex items-center gap-1.5 text-xs text-slate-500">
           <span class="w-2 h-2 rounded-full"
                 :class="{ 'bg-emerald-500': wsStatus === 'connected', 'bg-amber-400': wsStatus === 'connecting', 'bg-red-500': wsStatus === 'error' || wsStatus === 'disconnected' }"></span>
-          {{ wsStatus }}
+          {{ wsStatusLabel }}
         </span>
       </div>
       <div class="flex items-center gap-3 text-sm">

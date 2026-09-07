@@ -201,7 +201,7 @@ function useProfileEdit(ctx) {
         profileError.value = map[reason] || ('Username: ' + reason.replace(/_/g, ' '));
         profileUsernameCheck.value = { status: 'bad', reason };
       } else {
-        profileError.value = err.message || String(err);
+        profileError.value = ctx.friendlyError(err, "We couldn't save your profile. Please try again.");
       }
     } finally {
       profileBusy.value = false;
@@ -257,7 +257,7 @@ function useProfileEdit(ctx) {
       ctx.showToast('Group info updated');
     } catch (err) {
       if (err.status === 403) groupEditError.value = 'Only group admins can edit group info.';
-      else groupEditError.value = err.message || String(err);
+      else groupEditError.value = ctx.friendlyError(err, "We couldn't save the group info. Please try again.");
     } finally {
       groupEditBusy.value = false;
     }

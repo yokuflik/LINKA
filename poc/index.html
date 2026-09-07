@@ -4,10 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Linka — WebSocket PoC</title>
-<!-- Brand favicon: 32px PNG inlined as a data URI (no /favicon.ico round-trip),
-     plus file-based icons for larger contexts + PWA install. -->
-<link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAAXNSR0IArs4c6QAAAHhlWElmTU0AKgAAAAgABAEaAAUAAAABAAAAPgEbAAUAAAABAAAARgEoAAMAAAABAAIAAIdpAAQAAAABAAAATgAAAAAAAAEsAAAAAQAAASwAAAABAAOgAQADAAAAAQABAACgAgAEAAAAAQAAACCgAwAEAAAAAQAAACAAAAAA+eom7wAAAAlwSFlzAAAuIwAALiMBeKU/dgAABNhJREFUSA3tVktv41QUth07jpNmpnlM82gyhfIoUwqiQxkESIgFsBgJITbsEBs2rNnzR1iwAAkhsQHxZkAjFQTVjKYseHWqaZpJ6zya98ONfW1fvmunThwyncVodtwo8bXvOd93znfOvQ5v2zbP89x9G8J9Qx4B/09wV4XFmRbUGVjCdabB5EO3R/DrTiaXMJ9BgL7CCAQCMx0m/UEPGzcay7IEZ0waYC5MoQDaNM07oQ+poVPiQbi++AUyXOAId2/VnQhTIhBCYD3F6vl80vzh88YV73Zy4tLAffIh5j4skMECpm7WjNspgeVcbh5XkjR2RoiWdBWeJseCxdfmqO048AIPd+Y1MXw1QIIGIYqieAZ92/y48k9Br6RC4kvhpfXooyInHNm1G53fTX6YFTNPKxsSJ44gKQcCt34egm+jgdyCjichIJUP9ne21MNLkUzfNP/QqxZStO09Qx0YJCcs7Ru3t7VtmOGooTxLE2Wg/jJME7gJsogoZ1PuWrn2/Fz+ymHxSSW3q3UGJulZ+uGwE+eWfyzfzovLB3qVycMB/kRYL3hn4iNwYKE7kx4fgefinPxbrc61w9W+XT+m80I4LCodws8Hg8mQsjtURSvKM3QW0Eio0wlcO0Cjl66ptdfT2UVZISYnDbk1JXO1p35a/8sahmxe2LcbkhFdDj5Y0I4EgXNkmsHB8vIoUaJGs5lMxLuEvvft5mps7vLqwwtK6Oph+Zd+o28PHooqSTn4+Hz6p/bNjCC/kX6qYxnXu4WG2X07/Rzq32w14rG4JEke5rRETCXK4ak8NCixRI4Sgf+52e63j9/MrJhE2e1aH+7tkJ6UlxfQ5AEU1hD4Y1xZ+BPRjih8GZiEHDUasVhcDgaR8vViWe1pX+wd3KjV3n/h4keF/fNhaSUeaxEzJgeLpJaLRdZCmaykPJJIoiPQ4u1mI5FI3C0D7B3KWRbdWMp893fRaHUvpc4NLZt0hu9cWH1xMf/9gaoTE1nud7Vf60Wgw9jpjBk18Enk5EixLxkDpaZFa0edZxbThXK9PRgqhKtrw3pPw94N2QG10n1MWSh1NNt0GpUFhU09rqirkY/ALQCjcRpPFPiNfOqb7VuXH1ja/LO4ciZ8VpZRwdWz8S9L6lpy+bPdwhPhpBAYvdKZ40j58cV3VLDHLBpmhq9l03df3uCpvbVTTJ4JX8ylcWji9pVs+utjfbNUejWTeuvCmrv1ERML/z8Z+ItsmuVKJRqdD0ciLg3OQknkdcOSg4GtPfWrnaIo8q+tLK3nM8S0pYBgOOccAsJ5oWmDfq+TTqVEcRy3TyL2wuD5TreDaNy04a4b7H+NTuxnl7OVdrd+1Fw/n8EtUtSR40nIsO92HEf/nyBfBrButVqlg4NUKpuIJ5ykx6qCZmjguKehYNDDZaoCkeeajUa1quZyuVgs5px+bAVjnAtusBCJRKJzc4XCrXa7hQ0hieM96RqwSHXdzQ9PID0xzVariR2wsHAO7pPozMUXC6sT1TStWq3WajXDYAr7OmMM7IjI9AEgL8tBoKdSabxLIDNwvTFNgAVwAHowGIAJp5NnOmMCAp5HScNhtEVEluWp8OEyg8AFwosJYyq/GRxOCqw7/IF7lnck8CzuceLT6x6xZrqPCE6X4vTVmbjew38BUMC8NdZOWxgAAAAASUVORK5CYII=">
-<link rel="apple-touch-icon" href="assets/linka-logo-180.png">
+<!-- Brand icons: single maskable PNG (downscaled variants beside it) for favicon,
+     apple-touch-icon, and PWA install. -->
+<link rel="icon" type="image/png" sizes="192x192" href="assets/maskable_icon_x192.png">
+<link rel="apple-touch-icon" href="assets/maskable_icon_x192.png">
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#0f766e">
 
@@ -85,12 +85,14 @@
 <script src="components/MessageList.js"></script>
 <script src="components/MessageInput.js"></script>
 <script src="components/MessageContextMenu.js"></script>
+<script src="components/ForwardModal.js"></script>
 <script src="components/MessageDetailsModal.js"></script>
 <script src="components/MembersModal.js"></script>
 <script src="components/ProfileEditModal.js"></script>
 <script src="components/SettingsModal.js"></script>
 <script src="components/NewChatModal.js"></script>
 <script src="components/NewGroupModal.js"></script>
+<script src="components/InlineAlert.js"></script>
 <script src="components/ToastList.js"></script>
 
 <!-- Composables: global use*(ctx) factories the root setup() stitches into ctx -->
@@ -114,6 +116,7 @@
 <script src="composables/useNewChat.js"></script>
 <script src="composables/useMessageMenu.js"></script>
 <script src="composables/useMessageSend.js"></script>
+<script src="composables/useForward.js"></script>
 <script src="composables/useMessageEdit.js"></script>
 <script src="composables/useAudioWaveform.js"></script>
 <script src="composables/useMediaUpload.js"></script>
@@ -201,6 +204,13 @@
   @media (prefers-reduced-motion: reduce) {
     #splash img { animation: none; }
   }
+  /* Toast stack enter/leave (see components/ToastList.js) */
+  .toast-enter-active, .toast-leave-active { transition: opacity .25s ease, transform .25s ease; }
+  .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(1rem); }
+  .toast-leave-active { position: absolute; right: 0; }
+  @media (prefers-reduced-motion: reduce) {
+    .toast-enter-active, .toast-leave-active { transition: none; }
+  }
 </style>
 </head>
 <body class="h-screen bg-slate-100 text-slate-900 antialiased">
@@ -210,7 +220,7 @@
      it's ready: authed + WS connected, or not-authed (nothing to wait for),
      or a 6s safety timeout. -->
 <div id="splash">
-  <img src="assets/linka-logo-192.png" alt="Linka" />
+  <img src="assets/maskable_icon_x192.png" alt="Linka" />
   <span>Connecting…</span>
 </div>
 <script>
@@ -233,7 +243,7 @@ const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick
 
 const app = createApp({
   components: {
-    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, MessageDetailsModal, MembersModal, ProfileEditModal, SettingsModal, NewChatModal, NewGroupModal, ToastList, AvatarLightbox,
+    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, ForwardModal, MessageDetailsModal, MembersModal, ProfileEditModal, SettingsModal, NewChatModal, NewGroupModal, ToastList, AvatarLightbox,
   },
   setup() {
     // ---------------------------------------------------------------
@@ -259,6 +269,7 @@ const app = createApp({
     Object.assign(ctx, useNewChat(ctx));
     Object.assign(ctx, useMessageMenu(ctx));
     Object.assign(ctx, useMessageSend(ctx));
+    Object.assign(ctx, useForward(ctx));
     Object.assign(ctx, useMessageEdit(ctx));
     Object.assign(ctx, useAudioWaveform(ctx));
     Object.assign(ctx, useMediaUpload(ctx));
@@ -311,6 +322,9 @@ const app = createApp({
 
     onBeforeUnmount(() => disconnectWebSocket());
 
+    // Leaving the OTP step: stop any in-flight auth connection-retry loop.
+    ctx.onBackToPhone = () => { ctx.abandonAuthRetry(); authStage.value = 'phone'; };
+
     // Every composable slice is already on `ctx` (each use*() returns ctx
     // itself), so the template can bind straight to it - nothing left to
     // merge on.
@@ -327,8 +341,9 @@ const app = createApp({
       :avatarPreviewUrl="avatarPreviewUrl" :avatarError="avatarError"
       :usernameCheck="usernameCheck"
       :authStage="authStage" :authError="authError" :authBusy="authBusy"
+      :connMessage="connRetry ? connRetryMessage() : ''"
       @pick-avatar="pickAvatar" @clear-avatar="clearAvatar"
-      @request-otp="requestOtp" @verify-otp="verifyOtp" @back-to-phone="authStage = 'phone'"
+      @request-otp="requestOtp" @verify-otp="verifyOtp" @back-to-phone="onBackToPhone"
       @check-username="checkUsername" @submit-welcome="submitWelcome" @skip-welcome="skipWelcome" />
 
     <div class="h-full flex flex-col" v-if="isAuthed && authStage !== 'welcome'">
@@ -377,7 +392,7 @@ const app = createApp({
               @open-members-modal="openMembersModal" />
 
             <MessageList ref="messagesEl"
-              :messages="messages" :currentUser="currentUser"
+              :messages="messages" :currentUser="currentUser" :isGroup="activeChatIsGroup"
               :shouldShowSystemMessage="shouldShowSystemMessage" :systemMessageText="systemMessageText"
               :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass"
               :senderAvatarUrl="senderAvatarUrl" :senderAvatarPreview="senderAvatarPreview"
@@ -409,15 +424,21 @@ const app = createApp({
           <MessageContextMenu v-if="contextMenuMessage"
             :position="contextMenuPosition"
             :canShowDetails="canShowMessageDetails(contextMenuMessage)"
+            :canCopy="canCopyMessage(contextMenuMessage)"
+            :canForward="canForwardMessage(contextMenuMessage)"
             :canEdit="canEditMessage(contextMenuMessage)"
             :canDelete="canDeleteMessage(contextMenuMessage)"
             :canRestore="canRestoreMessage(contextMenuMessage)"
+            :canPurge="canPurgeMessage(contextMenuMessage)"
             @close="closeMessageContextMenu"
             @reply="startReplyTo(contextMenuMessage)"
+            @copy="copyMessage(contextMenuMessage)"
+            @forward="openForwardModal(contextMenuMessage)"
             @details="openMessageDetails(contextMenuMessage)"
             @edit="startEditMessage(contextMenuMessage)"
             @delete="deleteMessage(contextMenuMessage)"
-            @restore="restoreMessage(contextMenuMessage)" />
+            @restore="restoreMessage(contextMenuMessage)"
+            @purge="purgeMessage(contextMenuMessage)" />
         </main>
       </div>
     </div>
@@ -479,6 +500,23 @@ const app = createApp({
       :error="messageReceiptsError" :snippet="messageDetailsSnippet" :name-for="userLabelById"
       @close="closeMessageDetails" />
 
+    <ForwardModal v-if="showForwardModal"
+      v-model:query="forwardQuery"
+      :busy="forwardBusy" :searchBusy="forwardUserBusy" :error="forwardError"
+      :userResult="forwardUserResult" :chatMatches="forwardChatMatches"
+      :selectedCount="forwardSelectedCount"
+      :isChatSelected="isChatSelected" :isUserSelected="isUserSelected"
+      :userLabel="(u) => u.username || u.phone_number"
+      :chatLabel="chatDisplayName"
+      :chatAvatarUrl="chatAvatarUrl" :chatAvatarPreview="chatAvatarPreview"
+      :chatAvatarColorKey="chatAvatarColorKey"
+      @input-query="onForwardSearchInput"
+      @search="runForwardSearch"
+      @toggle-chat="toggleForwardChat"
+      @toggle-user="toggleForwardUser"
+      @confirm="confirmForward"
+      @close="closeForwardModal" />
+
     <NewChatModal v-if="showNewChatModal"
       v-model:query="userSearchQuery"
       :busy="userSearchBusy" :error="userSearchError" :result="userSearchResult"
@@ -511,6 +549,7 @@ const app = createApp({
 });
 app.component('Avatar', Avatar);
 app.component('VoiceMessage', VoiceMessage);
+app.component('InlineAlert', InlineAlert);
 app.mount('#app');
 </script>
 </body>

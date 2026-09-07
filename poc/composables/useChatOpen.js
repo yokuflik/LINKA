@@ -30,6 +30,23 @@ function useChatOpen(ctx) {
     return ctx.messagesEl.value && ctx.messagesEl.value.messagesEl;
   }
 
+  // Guard against a spurious "load older" fire right after a chat opens. When a
+  // freshly-rendered history page is still at scrollTop 0 (before
+  // scrollMessagesToBottom lands, and again briefly while lazy media expands
+  // the reserved boxes), the MessageList's onScroll reports rowsAbove = 0 <=
+  // LOAD_OLDER_THRESHOLD and we'd immediately page in the previous 50 messages,
+  // parking the view in the middle of the chat instead of at the bottom. Stays
+  // false from selectChat until the initial bottom-scroll has settled.
+  let initialScrollSettled = false;
+
+  function markInitialScrollSettled() {
+    // Two RAFs + a short timeout: past the requestAnimationFrame(jump) in
+    // scrollMessagesToBottom and any synchronous media metadata reflow.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      setTimeout(() => { initialScrollSettled = true; }, 150);
+    }));
+  }
+
   // True when the pane is scrolled to (or very near) the bottom.
   function isPinnedToBottom() {
     const el = messagesScrollEl();
@@ -70,6 +87,7 @@ function useChatOpen(ctx) {
     const oldestId = ctx.messages.value[0].id;
     const el = messagesScrollEl();
     const prevScrollHeight = el ? el.scrollHeight : 0;
+    const prevScrollTop = el ? el.scrollTop : 0;
     ctx.loadingOlderMessages.value = true;
     try {
       const page = await ctx.apiFetch(`/chats/${chatId}/messages?limit=${ctx.MESSAGE_PAGE_SIZE}&before_id=${oldestId}`);
@@ -78,7 +96,11 @@ function useChatOpen(ctx) {
       if (page.length) {
         ctx.messages.value = page.slice().reverse().concat(ctx.messages.value);
         await nextTick();
-        if (el) el.scrollTop = el.scrollHeight - prevScrollHeight;
+        // Keep the user looking at the same message: the newly-prepended block
+        // grew scrollHeight by (new - prev); add that to where they were, don't
+        // snap to the old/new boundary (which sits near the top of the fresh
+        // page and immediately re-triggers onScroll -> paging the whole chat).
+        if (el) el.scrollTop = prevScrollTop + (el.scrollHeight - prevScrollHeight);
       }
     } catch (err) {
       ctx.logError('failed to load older messages:', err.message);
@@ -89,6 +111,7 @@ function useChatOpen(ctx) {
 
   // MessageList reports how many message rows are scrolled above the viewport.
   function onMessagesScroll(rowsAboveViewport) {
+    if (!initialScrollSettled) return;
     if (rowsAboveViewport <= ctx.LOAD_OLDER_THRESHOLD) loadOlderMessages();
   }
 
@@ -133,6 +156,7 @@ function useChatOpen(ctx) {
 
   async function selectChat(chatId) {
     discardDraftChat();
+    initialScrollSettled = false;
     ctx.activeChatId.value = chatId;
     ctx.messages.value = [];
     ctx.messagesError.value = '';
@@ -192,6 +216,7 @@ function useChatOpen(ctx) {
       ctx.probeLoadedImageOrientations();
       await nextTick();
       scrollMessagesToBottom();
+      markInitialScrollSettled();
       ctx.sendReceipt('mark_delivered', chatId, newestId);
       ctx.sendReceipt('mark_read', chatId, newestId);
       return;
@@ -227,6 +252,7 @@ function useChatOpen(ctx) {
       ctx.probeLoadedImageOrientations();
       await nextTick();
       scrollMessagesToBottom();
+      markInitialScrollSettled();
 
       // Opening a chat catches up on both receipts in one go, including
       // anything sent while this chat wasn't the active one. Use the merged

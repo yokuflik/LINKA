@@ -40,7 +40,7 @@ const SettingsModal = {
         </label>
         <p class="mt-1 mb-3 text-xs text-slate-400">If off, you won't send read receipts and won't see others' — in 1:1 chats only.</p>
 
-        <p v-if="error" class="mb-2 text-xs text-red-600">{{ error }}</p>
+        <InlineAlert :message="error" class="mb-2" />
 
         <div class="flex gap-2">
           <button @click="$emit('save')" :disabled="busy"

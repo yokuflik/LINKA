@@ -21,7 +21,7 @@ function useMessageMenu(ctx) {
   // right-clicking near an edge.
   const contextMenuPosition = computed(() => ({
     x: Math.min(contextMenuRawPosition.value.x, window.innerWidth - 168),
-    y: Math.min(contextMenuRawPosition.value.y, window.innerHeight - 224),
+    y: Math.min(contextMenuRawPosition.value.y, window.innerHeight - 264),
   }));
 
   function openMessageContextMenu({ message, event }) {
@@ -48,6 +48,37 @@ function useMessageMenu(ctx) {
   // read/played a message, not just its sender.
   function canShowMessageDetails(m) {
     return !!m && m.sender_id != null && m.deleted_at == null;
+  }
+
+  // "Copy" is offered only when there's actual text to put on the clipboard:
+  // a text message, or a media message that carries a caption. Pure
+  // image/video/voice/file with no caption has nothing to copy.
+  function canCopyMessage(m) {
+    return !!m && m.deleted_at == null && !!(m.content && m.content.trim());
+  }
+
+  async function copyMessage(m) {
+    closeMessageContextMenu();
+    const text = (m && m.content ? m.content : '').trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (err) {
+      // Fallback for insecure contexts (file://) where the async clipboard
+      // API is unavailable.
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch (err2) {
+        ctx.logError('copy to clipboard failed', err2);
+      }
+    }
   }
 
   // Pulls the per-person receipt breakdown for one message. Also re-run
@@ -158,7 +189,8 @@ function useMessageMenu(ctx) {
 
   return {
     contextMenuMessage, contextMenuPosition, openMessageContextMenu, closeMessageContextMenu,
-    canShowMessageDetails, detailsModalMessage, messageReceipts, messageReceiptsLoading,
+    canShowMessageDetails, canCopyMessage, copyMessage,
+    detailsModalMessage, messageReceipts, messageReceiptsLoading,
     messageReceiptsError, messageDetailsSnippet, loadMessageReceipts,
     openMessageDetails, closeMessageDetails,
     imageOrientation, probeMediaOrientation, probeLoadedImageOrientations,

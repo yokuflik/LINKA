@@ -304,6 +304,25 @@ function useWsRouter(ctx) {
       return;
     }
 
+    if (msg.event === 'message_purged') {
+      // Hard "delete forever" (ADR 0021): the text is gone server-side and any
+      // media object may already be deleted from S3. Keep the bubble as a
+      // permanent tombstone and drop any Restore/Delete-forever affordance.
+      const m = ctx.messages.value.find((x) => x.id === msg.message_id);
+      if (m) {
+        m.purged_at = new Date().toISOString();
+        m.deleted_at = m.deleted_at || m.purged_at;
+        m.content = null;
+        m.media_url = null;
+        m.media_blur_hash = null;
+        delete m._deletedMediaUrl;
+        delete m._preDeleteContent;
+        delete m._preDeleteMediaUrl;
+      }
+      ctx.updateChatPreviewIfLast(msg.chat_id, msg.message_id, '🚫 Message deleted');
+      return;
+    }
+
     if (msg.event === 'message_restored') {
       // Undo the tombstone: bring the content/media back from the event
       // (the row was never physically removed server-side).

@@ -78,7 +78,7 @@ function useSettings(ctx) {
       showSettingsModal.value = false;
       ctx.showToast('Settings saved');
     } catch (err) {
-      settingsError.value = err.message || String(err);
+      settingsError.value = ctx.friendlyError(err, "We couldn't save your settings. Please try again.");
     } finally {
       settingsBusy.value = false;
     }

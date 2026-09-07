@@ -24,7 +24,12 @@ from services.messaging.send import (  # noqa: F401
     process_outgoing,
     send_system_message,
 )
-from services.messaging.edit_delete import delete_message, edit_message, restore_message  # noqa: F401
+from services.messaging.edit_delete import (  # noqa: F401
+    delete_message,
+    edit_message,
+    purge_message,
+    restore_message,
+)
 from services.messaging.read_api import get_message_history  # noqa: F401
 from services.messaging.receipts import (  # noqa: F401
     get_message_receipts,

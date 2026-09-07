@@ -20,6 +20,9 @@ const AuthScreen = {
     avatarError: { type: String, default: '' },
     authError: { type: String, required: true },
     authBusy: { type: Boolean, required: true },
+    // Non-empty while apiFetch is retrying an auth call after a network
+    // failure / rate-limit: a live "retrying in Ns…" line.
+    connMessage: { type: String, default: '' },
   },
   emits: [
     'update:otpCode', 'update:profileDraft',
@@ -117,7 +120,7 @@ const AuthScreen = {
     <div class="h-full flex items-center justify-center p-4">
       <div class="w-full max-w-sm bg-white rounded-xl shadow-sm border border-slate-200 p-6">
         <div class="flex flex-col items-center text-center mb-5">
-          <img src="assets/linka-logo-192.png" alt="Linka"
+          <img src="assets/maskable_icon_x192.png" alt="Linka"
                class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl shadow-sm select-none" draggable="false" />
           <h1 class="mt-3 text-xl font-semibold">Linka</h1>
         </div>
@@ -209,7 +212,7 @@ const AuthScreen = {
             <button v-if="avatarPreviewUrl" type="button" @click="$emit('clear-avatar')"
                     class="mt-1 text-xs text-slate-400">Remove photo</button>
             <p v-else class="mt-1 text-xs text-slate-400">Profile photo (optional)</p>
-            <p v-if="avatarError" class="mt-1 text-xs text-red-600">{{ avatarError }}</p>
+            <InlineAlert :message="avatarError" class="mt-1" />
           </div>
 
           <label class="block text-xs font-medium text-slate-500 mb-1">Username</label>
@@ -235,7 +238,8 @@ const AuthScreen = {
                   class="w-full mt-2 py-1 text-sm text-slate-500">Skip for now</button>
         </template>
 
-        <p v-if="authError" class="mt-3 text-sm text-red-600">{{ authError }}</p>
+        <InlineAlert :message="authError" class="mt-3" />
+        <InlineAlert :message="connMessage" variant="warning" class="mt-3" />
       </div>
     </div>
   `,

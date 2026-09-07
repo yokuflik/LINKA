@@ -337,6 +337,51 @@ async def soft_delete_message(session: AsyncSession, chat_id: int, message_id: i
     return deleted
 
 
+async def purge_message(session: AsyncSession, chat_id: int, message_id: int) -> Optional[str]:
+    """
+    Hard "delete forever" (ADR 0021): wipe an already-soft-deleted message's
+    content / media to nothing and stamp purged_at, so its text is gone and it
+    can never be restored. The row is not physically removed (partition PK).
+
+    Returns the pre-purge media_key (so the caller can deref / GC the blob), or
+    an empty string when the message had no media, or None if it was not a
+    currently-deleted, not-yet-purged message.
+
+    Time Complexity: O(log N) - (chat_id, id) B-Tree lookup + an O(1) heap update.
+    """
+    stmt = (
+        update(Message)
+        .where(
+            Message.chat_id == chat_id,
+            Message.id == message_id,
+            Message.deleted_at.is_not(None),
+            Message.purged_at.is_(None),
+        )
+        .values(
+            content=None,
+            media_key=None,
+            media_mime=None,
+            media_size=None,
+            media_name=None,
+            media_duration_seconds=None,
+            media_blur_hash=None,
+            reply_to_message_id=None,
+            is_edited=False,
+            edited_at=None,
+            purged_at=func.now(),
+        )
+    )
+    # media_key must be read before the UPDATE nulls it.
+    existing = await get_message_by_id(session, chat_id=chat_id, message_id=message_id)
+    if existing is None or existing.deleted_at is None or existing.purged_at is not None:
+        return None
+    media_key = existing.media_key or ""
+
+    await session.execute(stmt)
+    await session.commit()
+    return media_key
+
+
 async def undelete_message(session: AsyncSession, chat_id: int, message_id: int) -> Optional[Message]:
     """
     Reverse a soft delete (clears deleted_at). No time limit - the row and its
@@ -348,7 +393,12 @@ async def undelete_message(session: AsyncSession, chat_id: int, message_id: int)
     """
     stmt = (
         update(Message)
-        .where(Message.chat_id == chat_id, Message.id == message_id, Message.deleted_at.is_not(None))
+        .where(
+            Message.chat_id == chat_id,
+            Message.id == message_id,
+            Message.deleted_at.is_not(None),
+            Message.purged_at.is_(None),
+        )
         .values(deleted_at=None)
         .returning(Message)
     )

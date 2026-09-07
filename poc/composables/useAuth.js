@@ -33,6 +33,48 @@ function useAuth(ctx) {
   const authError = ref('');
   const authBusy = ref(false);
 
+  // Connection-retry banner for the auth screen. While apiFetch is looping on
+  // a network failure / rate-limit, connRetry holds { reason, secondsLeft }
+  // and a 1s ticker counts it down; cleared on success / abandon.
+  const connRetry = ref(null);
+  let _connRetryTimer = null;
+  let _authScreenLeft = false;
+  function clearConnRetry() {
+    connRetry.value = null;
+    if (_connRetryTimer) { clearInterval(_connRetryTimer); _connRetryTimer = null; }
+  }
+  function connRetryMessage() {
+    const r = connRetry.value;
+    if (!r) return '';
+    const s = r.secondsLeft;
+    const unit = s === 1 ? 'second' : 'seconds';
+    const when = s > 0 ? ('Retrying in ' + s + ' ' + unit + '…') : 'Retrying…';
+    return r.reason === 'rate_limited'
+      ? ('Too many attempts right now. ' + when)
+      : ('Having trouble reaching the server. ' + when + " We'll keep trying.");
+  }
+  // Hand this to apiFetch as { onRetry, retryCancelled } for an auth call.
+  function authRetryHooks() {
+    _authScreenLeft = false;
+    return {
+      onRetry: ({ waitMs, reason }) => {
+        if (_connRetryTimer) clearInterval(_connRetryTimer);
+        connRetry.value = { reason, secondsLeft: Math.ceil(waitMs / 1000) };
+        _connRetryTimer = setInterval(() => {
+          if (!connRetry.value) return;
+          connRetry.value = { ...connRetry.value, secondsLeft: Math.max(0, connRetry.value.secondsLeft - 1) };
+        }, 1000);
+      },
+      retryCancelled: () => _authScreenLeft,
+    };
+  }
+  // Called by the template when the user navigates away from the OTP/phone
+  // step so an in-flight retry loop stops instead of running forever unseen.
+  function abandonAuthRetry() {
+    _authScreenLeft = true;
+    clearConnRetry();
+  }
+
   const avatarFile = ref(null);
   const avatarPreviewUrl = ref(null);
   const avatarError = ref('');
@@ -107,6 +149,7 @@ function useAuth(ctx) {
   async function requestOtp() {
     authError.value = '';
     authBusy.value = true;
+    clearConnRetry();
     phoneNumber.value = ctx.resolvedPhone.value;
     try {
       if (ctx.phoneIsWhitelisted.value) {
@@ -114,6 +157,7 @@ function useAuth(ctx) {
         await apiFetch('/auth/otp/request', {
           method: 'POST',
           body: JSON.stringify({ phone_number: phoneNumber.value }),
+          ...authRetryHooks(),
         });
         log('OTP (dev stub) requested for', phoneNumber.value, '- any code works');
       } else {
@@ -124,21 +168,24 @@ function useAuth(ctx) {
       }
       authStage.value = 'otp';
     } catch (err) {
-      authError.value = err.message || 'Failed to request code';
+      authError.value = ctx.friendlyError(err, "We couldn't send your code. Please check the number and try again.");
     } finally {
       authBusy.value = false;
+      clearConnRetry();
     }
   }
 
   async function verifyOtp() {
     authError.value = '';
     authBusy.value = true;
+    clearConnRetry();
     try {
       let body;
       if (ctx.phoneIsWhitelisted.value) {
         body = await apiFetch('/auth/otp/verify', {
           method: 'POST',
           body: JSON.stringify({ phone_number: phoneNumber.value, code: otpCode.value }),
+          ...authRetryHooks(),
         });
       } else {
         // Confirm the SMS code with Firebase, then trade its ID token for our pair.
@@ -148,6 +195,7 @@ function useAuth(ctx) {
         body = await apiFetch('/auth/firebase/verify', {
           method: 'POST',
           body: JSON.stringify({ id_token: idToken }),
+          ...authRetryHooks(),
         });
         try { await window.firebaseAuth.signOut(); } catch (e) { /* our JWT is the truth */ }
         firebaseConfirmation = null;
@@ -173,9 +221,10 @@ function useAuth(ctx) {
         await enterApp();
       }
     } catch (err) {
-      authError.value = err.message || 'Invalid code';
+      authError.value = ctx.friendlyError(err, "That code doesn't look right. Please check it and try again.");
     } finally {
       authBusy.value = false;
+      clearConnRetry();
     }
   }
 
@@ -190,7 +239,7 @@ function useAuth(ctx) {
     usernameCheck.value = { status: 'checking', reason: '' };
     _usernameCheckTimer = setTimeout(async () => {
       try {
-        const r = await apiFetch('/users/username-available?username=' + encodeURIComponent(raw));
+        const r = await apiFetch('/users/username-available?username=' + encodeURIComponent(raw), { noRetry: true });
         // Ignore a stale response if the field changed while in flight.
         if ((profileDraft.value.username || '').trim() !== raw) return;
         usernameCheck.value = r.available
@@ -207,6 +256,7 @@ function useAuth(ctx) {
   async function submitWelcome() {
     authError.value = '';
     authBusy.value = true;
+    clearConnRetry();
     try {
       const patch = {};
       const about = (profileDraft.value.about_text || '').trim();
@@ -219,6 +269,7 @@ function useAuth(ctx) {
         currentUser.value = await apiFetch('/users/me', {
           method: 'PATCH',
           body: JSON.stringify(patch),
+          ...authRetryHooks(),
         });
       }
       try {
@@ -230,10 +281,11 @@ function useAuth(ctx) {
     } catch (err) {
       // Backend sends { detail, reason } for a bad username.
       const reason = err && err.body && err.body.reason;
-      authError.value = reason ? ('Username: ' + reason.replace(/_/g, ' ')) : (err.message || 'Could not save your profile');
+      authError.value = reason ? ('Username: ' + reason.replace(/_/g, ' ')) : ctx.friendlyError(err, "We couldn't save your profile. Please try again.");
       if (reason) usernameCheck.value = { status: 'bad', reason };
     } finally {
       authBusy.value = false;
+      clearConnRetry();
     }
   }
 
@@ -265,6 +317,7 @@ function useAuth(ctx) {
     ctx.unreadCountByChatId.value = {};
     ctx.contextMenuMessage.value = null;
     ctx.replyingToMessage.value = null;
+    abandonAuthRetry();
     authStage.value = 'phone';
     otpCode.value = '';
     profileDraft.value = { about_text: '', username: '' };
@@ -286,6 +339,7 @@ function useAuth(ctx) {
   return {
     accessToken, refreshToken, currentUser, isAuthed,
     authStage, phoneNumber, otpCode, profileDraft, usernameCheck, authError, authBusy,
+    connRetry, connRetryMessage, abandonAuthRetry,
     avatarFile, avatarPreviewUrl, avatarError,
     pickAvatar, clearAvatar, uploadPickedAvatar,
     requestOtp, verifyOtp, checkUsername, submitWelcome, skipWelcome, logout,

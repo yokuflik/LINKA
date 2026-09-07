@@ -47,7 +47,8 @@ function useChatList(ctx) {
       // calls this - whichever finishes last has both ready.
       ctx.markAllChatsDelivered();
     } catch (err) {
-      ctx.chatsError.value = err.message;
+      ctx.chatsError.value = ctx.friendlyError(err, "We couldn't load your chats. Please try again in a moment.");
+      if (ctx.showErrorToast) ctx.showErrorToast(ctx.chatsError.value);
     }
   }
 

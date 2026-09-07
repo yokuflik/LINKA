@@ -176,6 +176,34 @@ async def test_deleting_an_already_deleted_message_returns_false(db_session: Asy
     assert second_attempt is False
 
 
+async def test_purge_requires_a_soft_deleted_message_then_wipes_it(db_session: AsyncSession, redis_db):
+    chat_id = await _make_group(db_session, 1, [2])
+    message = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="secret")
+
+    # Not deleted yet -> purge is a no-op.
+    assert await message_service.purge_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id) is False
+
+    await message_service.delete_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id)
+    assert await message_service.purge_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id) is True
+
+    from database.crud.crud_message import get_message_by_id
+    row = await get_message_by_id(db_session, chat_id=chat_id, message_id=message.id)
+    assert row.content is None and row.purged_at is not None
+
+    # Purged -> restore is blocked, second purge is a no-op.
+    assert await message_service.restore_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id) is None
+    assert await message_service.purge_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id) is False
+
+
+async def test_only_the_sender_can_purge_their_message(db_session: AsyncSession, redis_db):
+    chat_id = await _make_group(db_session, 1, [2])
+    message = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="x")
+    await message_service.delete_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id)
+
+    with pytest.raises(message_service.NotAParticipantError):
+        await message_service.purge_message(db_session, user_id=2, chat_id=chat_id, message_id=message.id)
+
+
 async def test_mark_as_read_updates_the_watermark(db_session: AsyncSession, redis_db):
     from database.crud.crud_participant import get_chat_participants
 

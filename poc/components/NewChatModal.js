@@ -2,7 +2,7 @@
 // sidebar. Same visual style as SettingsModal / NewGroupModal.
 //
 //   - Search row: find a user by EXACT username or phone (ADR 0017 - no
-//     prefix search). Auto-fires ~3s after the user stops typing (no button
+//     prefix search). Auto-fires ~1.5s after the user stops typing (no button
 //     needed; the button is still there for an immediate search).
 //   - Under it, a scrollable list of PARTIAL matches among EXISTING chats
 //     (groups + private peers) - pure client-side, capped height so it
@@ -50,7 +50,7 @@ const NewChatModal = {
         </div>
         <p class="text-xs text-slate-400 mb-2">Exact match to add someone new · partial matches from your chats below.</p>
 
-        <p v-if="error" class="mb-2 text-xs text-red-600">{{ error }}</p>
+        <InlineAlert :message="error" class="mb-2" />
 
         <!-- Scrollable results area: exact user hit + partial chat matches.
              Capped height so the "New group" button below stays visible. -->

@@ -78,7 +78,7 @@ const ProfileEditModal = {
           </div>
           <button v-if="shownAvatarUrl" type="button" @click="$emit('clear-avatar')"
                   class="mt-1 text-xs text-slate-400">Remove photo</button>
-          <p v-if="pickerError" class="mt-1 text-xs text-red-600">{{ pickerError }}</p>
+          <InlineAlert :message="pickerError" class="mt-1" />
         </div>
 
         <template v-if="nameKey">
@@ -100,7 +100,7 @@ const ProfileEditModal = {
         <textarea :value="form.about_text" @input="setField('about_text', $event.target.value)" rows="2"
                   class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg mb-3 resize-none"></textarea>
 
-        <p v-if="error" class="mb-2 text-xs text-red-600">{{ error }}</p>
+        <InlineAlert :message="error" class="mb-2" />
 
         <div class="flex gap-2">
           <button @click="$emit('save')" :disabled="busy || (showUsername && usernameCheck.status === 'bad')"

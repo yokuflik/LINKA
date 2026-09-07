@@ -107,7 +107,7 @@ const MembersModal = {
             <button @click="$emit('add-member-to-active-group')" :disabled="membersModalBusy"
                     class="px-3 py-1.5 text-sm bg-teal-700 text-white rounded-lg disabled:opacity-50">Add</button>
           </div>
-          <p v-if="membersModalError" class="mt-2 text-xs text-red-600">{{ membersModalError }}</p>
+          <InlineAlert :message="membersModalError" class="mt-2" />
         </div>
       </div>
     </div>

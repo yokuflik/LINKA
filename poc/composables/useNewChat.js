@@ -23,7 +23,7 @@ function useNewChat(ctx) {
   const userSearchResult = ref(null); // a UserOut, or null
   let userSearchSeq = 0;
   let userSearchTimer = null;
-  const USER_SEARCH_DEBOUNCE_MS = 3000;
+  const USER_SEARCH_DEBOUNCE_MS = 1500;
 
   function resetUserSearch() {
     if (userSearchTimer) { clearTimeout(userSearchTimer); userSearchTimer = null; }
@@ -91,7 +91,7 @@ function useNewChat(ctx) {
       userSearchResult.value = user;
     } catch (err) {
       if (seq !== userSearchSeq) return;
-      userSearchError.value = err.status === 404 ? 'No user found — check the exact username or phone number.' : err.message;
+      userSearchError.value = err.status === 404 ? 'No user found — check the exact username or phone number.' : ctx.friendlyError(err, "We couldn't run that search. Please try again.");
     } finally {
       if (seq === userSearchSeq) userSearchBusy.value = false;
     }
@@ -140,7 +140,7 @@ function useNewChat(ctx) {
     groupSearchSeq++;
     groupSearchBusy.value = false;
     if (!groupSearchQuery.value.trim()) return;
-    groupSearchTimer = setTimeout(() => { groupSearchTimer = null; runGroupSearch(); }, 2000);
+    groupSearchTimer = setTimeout(() => { groupSearchTimer = null; runGroupSearch(); }, 1500);
   }
 
   async function runGroupSearch() {
@@ -162,7 +162,7 @@ function useNewChat(ctx) {
       groupSearchResult.value = user;
     } catch (err) {
       if (seq !== groupSearchSeq) return;
-      groupSearchError.value = err.status === 404 ? 'No user found — check the exact username or phone number.' : err.message;
+      groupSearchError.value = err.status === 404 ? 'No user found — check the exact username or phone number.' : ctx.friendlyError(err, "We couldn't run that search. Please try again.");
     } finally {
       if (seq === groupSearchSeq) groupSearchBusy.value = false;
     }
@@ -213,7 +213,7 @@ function useNewChat(ctx) {
 
       ctx.openDraftChat(target);
     } catch (err) {
-      chatFormError.value = err.status === 404 ? `No user with phone number ${phone}` : err.message;
+      chatFormError.value = err.status === 404 ? `No user with phone number ${phone}` : ctx.friendlyError(err, "We couldn't start that chat. Please try again.");
     }
   }
 
@@ -299,7 +299,7 @@ function useNewChat(ctx) {
       await ctx.loadChats();
       await ctx.selectChat(chat.id);
     } catch (err) {
-      newGroupError.value = err.message;
+      newGroupError.value = ctx.friendlyError(err, "We couldn't create the group. Please try again.");
     } finally {
       newGroupBusy.value = false;
     }

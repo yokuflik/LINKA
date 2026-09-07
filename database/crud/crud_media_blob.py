@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete as sa_delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,4 +76,28 @@ async def confirm_and_ref(
     await session.execute(
         update(MediaBlob).where(MediaBlob.storage_key == storage_key).values(**values)
     )
+    await session.commit()
+
+
+async def deref_blob(session: AsyncSession, storage_key: str) -> Optional[int]:
+    """
+    Decrement ref_count for a blob (floored at 0) and return the new count, or
+    None if there is no such blob. Called from the message-purge path (ADR 0021)
+    - the caller deletes the object + this row when the count reaches 0.
+    """
+    stmt = (
+        update(MediaBlob)
+        .where(MediaBlob.storage_key == storage_key)
+        .values(ref_count=func.greatest(MediaBlob.ref_count - 1, 0))
+        .returning(MediaBlob.ref_count)
+    )
+    result = await session.execute(stmt)
+    new_count = result.scalar_one_or_none()
+    await session.commit()
+    return new_count
+
+
+async def delete_blob_row(session: AsyncSession, storage_key: str) -> None:
+    """Drop a media_blob row once its object has been deleted from storage."""
+    await session.execute(sa_delete(MediaBlob).where(MediaBlob.storage_key == storage_key))
     await session.commit()

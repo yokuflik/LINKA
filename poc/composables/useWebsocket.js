@@ -12,6 +12,8 @@ function useWebsocket(ctx) {
   let ws = null;
   let wsReconnectTimer = null;
   let heartbeatTimer = null;
+  let reconnectFailures = 0;
+  let sustainedOutageToasted = false;
 
   function wsIsOpen() {
     return !!ws && ws.readyState === WebSocket.OPEN;
@@ -32,6 +34,8 @@ function useWebsocket(ctx) {
 
     ws.onopen = () => {
       wsStatus.value = 'connected';
+      reconnectFailures = 0;
+      sustainedOutageToasted = false;
       log('WS connected');
       heartbeatTimer = setInterval(() => {
         if (!wsIsOpen()) return;
@@ -76,6 +80,13 @@ function useWebsocket(ctx) {
       if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
       ws = null;
       if (ctx.accessToken.value) {
+        // A single reconnect (e.g. uvicorn --reload) is normal and silent.
+        // Only warn once the outage has persisted across a few attempts.
+        reconnectFailures += 1;
+        if (reconnectFailures >= 3 && !sustainedOutageToasted && ctx.showErrorToast) {
+          sustainedOutageToasted = true;
+          ctx.showErrorToast("You're offline. We'll keep trying to reconnect.");
+        }
         log('reconnecting in 3s…');
         wsReconnectTimer = setTimeout(connectWebSocket, 3000);
       }

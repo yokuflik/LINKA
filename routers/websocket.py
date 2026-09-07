@@ -281,6 +281,14 @@ async def _handle_restore_message(user_id: int, connection_id: str, payload: dic
     )
 
 
+async def _handle_purge_message(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    async with session_scope() as session:
+        purged = await message_service.purge_message(
+            session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
+        )
+    await websocket.send_json({"type": "ack", "for": "purge_message", "purged": purged})
+
+
 async def _handle_mark_delivered(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
     async with session_scope() as session:
         await message_service.mark_as_delivered(
@@ -501,6 +509,7 @@ _HANDLERS = {
     "edit_message": _handle_edit_message,
     "delete_message": _handle_delete_message,
     "restore_message": _handle_restore_message,
+    "purge_message": _handle_purge_message,
     "mark_delivered": _handle_mark_delivered,
     "mark_read": _handle_mark_read,
     "mark_played": _handle_mark_played,
@@ -524,6 +533,7 @@ _ACTION_LIMITS = {
     "edit_message": ("ws_edit", "WS_EDIT_RATE_MAX", "WS_EDIT_RATE_WINDOW_SECONDS"),
     "delete_message": ("ws_edit", "WS_EDIT_RATE_MAX", "WS_EDIT_RATE_WINDOW_SECONDS"),
     "restore_message": ("ws_edit", "WS_EDIT_RATE_MAX", "WS_EDIT_RATE_WINDOW_SECONDS"),
+    "purge_message": ("ws_edit", "WS_EDIT_RATE_MAX", "WS_EDIT_RATE_WINDOW_SECONDS"),
     "typing": ("ws_typing", "WS_TYPING_RATE_MAX", "WS_TYPING_RATE_WINDOW_SECONDS"),
     "recording": ("ws_typing", "WS_TYPING_RATE_MAX", "WS_TYPING_RATE_WINDOW_SECONDS"),
     "subscribe_presence": ("ws_sub_presence", "WS_SUBSCRIBE_PRESENCE_RATE_MAX", "WS_SUBSCRIBE_PRESENCE_RATE_WINDOW_SECONDS"),

@@ -99,6 +99,13 @@ class Message(Base):
     # and unnecessary; a NULL check is enough to hide the message.
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Hard "delete forever" (ADR 0021): stamped when the sender purges an
+    # already-soft-deleted message. content / media_* are wiped to NULL, the
+    # media blob is dereffed (object removed from S3 on the last deref), and
+    # restore is permanently blocked. The row itself is never physically
+    # removed (partition PK). NULL = not purged.
+    purged_at = Column(DateTime(timezone=True), nullable=True)
+
     # No back_populates collections on Chat/User: with tens of billions of rows,
     # an ORM relationship like chat.messages would silently try to load an
     # unbounded result set. Always query messages explicitly with pagination.

@@ -11,11 +11,15 @@ function useChatMeta(ctx) {
   // Toasts - lightweight, auto-dismissing notifications
   // ---------------------------------------------------------------
   const toasts = ref([]);
-  function showToast(text) {
+  // variant: 'info' (default, neutral) | 'error' (something went wrong) |
+  // 'success' (an action completed). Errors linger a little longer.
+  function showToast(text, variant = 'info') {
     const id = crypto.randomUUID();
-    toasts.value.push({ id, text });
-    setTimeout(() => { toasts.value = toasts.value.filter((t) => t.id !== id); }, 4000);
+    toasts.value.push({ id, text, variant });
+    const ttl = variant === 'error' ? 6000 : 4000;
+    setTimeout(() => { toasts.value = toasts.value.filter((t) => t.id !== id); }, ttl);
   }
+  function showErrorToast(text) { showToast(text, 'error'); }
 
   // Mirrors the backend's crud_message.build_last_message_preview: a
   // caption-less media message shows a "kind" label, not an empty string, in
@@ -133,7 +137,7 @@ function useChatMeta(ctx) {
   const currentUserAvatarPreview = computed(() => userAvatarPreview(ctx.currentUser.value));
 
   return {
-    toasts, showToast,
+    toasts, showToast, showErrorToast,
     previewText, bumpChatPreview, refreshMessageStatuses, updateChatPreviewIfLast,
     formatChatTime,
     chatAvatarName, chatAvatarColorKey, chatAvatarUrl,

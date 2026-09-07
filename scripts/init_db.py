@@ -70,6 +70,9 @@ async def main(drop: bool) -> None:
                 "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_duration_seconds BIGINT",
                 # Blurred placeholder (ThumbHash, base64) - ADR 0014.
                 "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_blur_hash TEXT",
+                # Hard "delete forever" (ADR 0021) - stamped when the sender
+                # purges an already-soft-deleted message.
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS purged_at TIMESTAMPTZ",
                 "ALTER TABLE media_blob ADD COLUMN IF NOT EXISTS blur_hash TEXT",
                 # Inline avatar thumbnail (~64px JPEG data: URI) - ADR 0016.
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_pic_preview TEXT",

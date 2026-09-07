@@ -7,6 +7,9 @@ const MessageList = {
   props: {
     messages: { type: Array, required: true },
     currentUser: { type: Object, required: true },
+    // Group chat? Sender names above bubbles only show in groups; in a 1:1
+    // chat the peer's name is already in the header, so it's noise here.
+    isGroup: { type: Boolean, default: false },
     shouldShowSystemMessage: { type: Function, required: true },
     systemMessageText: { type: Function, required: true },
     senderLabel: { type: Function, required: true },
@@ -42,11 +45,14 @@ const MessageList = {
     function onScroll() {
       const el = messagesEl.value;
       if (!el) return;
-      const top = el.scrollTop;
+      // Each message row is nested inside a spacing wrapper div, so el.children
+      // are the wrappers - query the tagged rows directly. Count the ones fully
+      // scrolled above the visible area (measured against el's own top, since
+      // offsetParent isn't guaranteed to be el).
+      const elTop = el.getBoundingClientRect().top;
       let rowsAbove = 0;
-      for (const child of el.children) {
-        if (child.dataset.row !== 'msg') continue;
-        if (child.offsetTop + child.offsetHeight < top) rowsAbove++;
+      for (const rowEl of el.querySelectorAll('[data-row="msg"]')) {
+        if (rowEl.getBoundingClientRect().bottom < elTop) rowsAbove++;
         else break;
       }
       emit('load-older', rowsAbove);
@@ -73,17 +79,37 @@ const MessageList = {
         : { day: 'numeric', month: 'long', year: 'numeric' };
       return d.toLocaleDateString([], opts);
     }
+    // Two messages belong to the same visual cluster when the same user sent
+    // them back-to-back within a short window (WhatsApp-style). Within a
+    // cluster we tighten the vertical gap, show the sender name only on the
+    // first bubble and the sender avatar only next to the last one.
+    const GROUP_WINDOW_MS = 10 * 60 * 1000;
+    function sameCluster(prev, curr) {
+      if (!prev || !curr) return false;
+      if (prev.sender_id == null || curr.sender_id == null) return false;
+      if (prev.sender_id !== curr.sender_id) return false;
+      if (!prev.created_at || !curr.created_at) return false;
+      return dayKey(prev.created_at) === dayKey(curr.created_at)
+        && (new Date(curr.created_at) - new Date(prev.created_at)) <= GROUP_WINDOW_MS;
+    }
     const rows = Vue.computed(() => {
       const out = [];
       let lastKey = null;
-      for (const m of props.messages) {
-        if (!m.created_at) { out.push({ type: 'msg', m }); continue; }
+      const list = props.messages;
+      for (let i = 0; i < list.length; i++) {
+        const m = list[i];
+        if (!m.created_at) {
+          out.push({ type: 'msg', m, groupStart: true, groupEnd: true });
+          continue;
+        }
         const k = dayKey(m.created_at);
         if (k !== lastKey) {
           out.push({ type: 'separator', key: 'sep-' + k, label: dayLabel(m.created_at) });
           lastKey = k;
         }
-        out.push({ type: 'msg', m });
+        const groupStart = !sameCluster(list[i - 1], m);
+        const groupEnd = !sameCluster(m, list[i + 1]);
+        out.push({ type: 'msg', m, groupStart, groupEnd });
       }
       return out;
     });
@@ -245,15 +271,16 @@ const MessageList = {
   },
   expose: ['messagesEl'],
   template: `
-    <div ref="messagesEl" @scroll="onScroll" class="flex-1 overflow-y-auto p-4 space-y-2">
+    <div ref="messagesEl" @scroll="onScroll" class="flex-1 overflow-y-auto p-4">
       <template v-for="row in rows" :key="row.type === 'separator' ? row.key : (row.m.id || row.m.client_message_id)">
         <!-- Sticky day separator (WhatsApp-style). data-row is absent so
              onScroll's paging count ignores it. -->
-        <div v-if="row.type === 'separator'" class="day-separator flex justify-center">
+        <div v-if="row.type === 'separator'" class="day-separator flex justify-center py-1">
           <span class="inline-block w-40 text-center px-3 py-1 rounded-full text-[11px] font-medium bg-slate-200 text-slate-600 shadow-sm whitespace-nowrap overflow-hidden text-ellipsis">{{ row.label }}</span>
         </div>
       <template v-else>
       <template v-for="m in [row.m]" :key="m.id || m.client_message_id">
+      <div :class="row.groupEnd ? 'mb-2' : 'mb-0.5'">
         <!-- System messages (sender_id == null, e.g. "X added Y to the group") -
              centered, small, gray pill, like WhatsApp's own group-event lines.
              shouldShowSystemMessage filters out "role_changed" notices for
@@ -265,18 +292,26 @@ const MessageList = {
            :data-mid="m.id"
            class="max-w-md w-fit flex items-end gap-2 rounded-2xl transition-colors duration-500"
            :class="[m.sender_id === currentUser.id ? 'ml-auto text-right' : '', highlightedId && m.id === highlightedId ? 'bg-amber-200/70' : '']">
-        <Avatar v-if="m.sender_id !== currentUser.id"
-                :url="senderAvatarUrl(m.sender_id)" :preview="senderAvatarPreview(m.sender_id)" :name="senderLabel(m.sender_id)"
-                :colorKey="m.sender_id" sizeClass="w-7 h-7 text-xs"
-                class="shrink-0 mb-[18px]" />
+        <template v-if="m.sender_id !== currentUser.id">
+          <Avatar v-if="row.groupEnd"
+                  :url="senderAvatarUrl(m.sender_id)" :preview="senderAvatarPreview(m.sender_id)" :name="senderLabel(m.sender_id)"
+                  :colorKey="m.sender_id" sizeClass="w-7 h-7 text-xs"
+                  class="shrink-0 mb-[18px]" />
+          <!-- Keep bubbles aligned when the avatar is hidden mid-cluster. -->
+          <div v-else class="w-7 shrink-0"></div>
+        </template>
         <div class="min-w-0">
         <div class="inline-block text-sm cursor-pointer"
              :class="[
                isBareMedia(m)
                  ? 'p-0 bg-transparent rounded-lg'
                  : (m.sender_id === currentUser.id
-                     ? 'px-3 py-2 rounded-2xl bubble-tail bg-teal-700 text-white rounded-br-none bubble-tail-mine'
-                     : 'px-3 py-2 rounded-2xl bubble-tail bg-white border border-slate-200 rounded-bl-none bubble-tail-theirs')
+                     ? (row.groupEnd
+                         ? 'px-3 py-2 rounded-2xl bubble-tail bg-teal-700 text-white rounded-br-none bubble-tail-mine'
+                         : 'px-3 py-2 rounded-2xl bg-teal-700 text-white')
+                     : (row.groupEnd
+                         ? 'px-3 py-2 rounded-2xl bubble-tail bg-white border border-slate-200 rounded-bl-none bubble-tail-theirs'
+                         : 'px-3 py-2 rounded-2xl bg-white border border-slate-200'))
              ]"
              @contextmenu.prevent="$emit('message-contextmenu', { message: m, event: $event })"
              @touchstart.passive="onTouchStart(m, $event)"
@@ -288,7 +323,7 @@ const MessageList = {
           <span v-if="m.deleted_at" class="italic opacity-70"
                 :class="m.sender_id === currentUser.id ? 'text-white/80' : 'text-slate-400'">🚫 This message was deleted</span>
           <template v-else>
-          <div v-if="m.sender_id !== currentUser.id && !isBareMedia(m)" class="text-[11px] opacity-60 mb-0.5">{{ senderLabel(m.sender_id) }}</div>
+          <div v-if="isGroup && row.groupStart && m.sender_id !== currentUser.id && !isBareMedia(m)" class="text-[11px] opacity-60 mb-0.5">{{ senderLabel(m.sender_id) }}</div>
           <!-- Quoted reply preview (WhatsApp-style) - only when this message
                is itself a reply (reply_to_message_id set). quotedPreviewFor
                looks the original message up client-side (it's a lookup, not
@@ -425,7 +460,8 @@ const MessageList = {
             : ' (edited)' }}</span>
           </template>
         </div>
-        <div class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
+        <div v-if="row.groupEnd || m.send_failed || m.pending"
+             class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
              :class="m.sender_id === currentUser.id ? 'justify-end' : ''">
           <span>{{ new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
           <span v-if="m.send_failed" @click="$emit('retry-message', m)" role="button"
@@ -434,6 +470,7 @@ const MessageList = {
           <span v-else-if="m.sender_id === currentUser.id" class="text-sm font-bold leading-none" :class="statusTickClass(m.status)">{{ statusTickSymbol(m.status) }}</span>
         </div>
         </div>
+      </div>
       </div>
       </template>
       </template>

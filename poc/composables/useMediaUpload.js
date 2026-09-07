@@ -123,7 +123,7 @@ function useMediaUpload(ctx) {
     }
     const kind = mediaKindForMime(file.type, forceKind);
     if (!kind) {
-      ctx.messagesError.value = 'Unsupported file type: ' + (file.type || 'unknown');
+      ctx.messagesError.value = "That file type isn't supported. Please choose a photo, video, or document.";
       return;
     }
     // A generic document can carry any content type; the browser sometimes
@@ -141,7 +141,7 @@ function useMediaUpload(ctx) {
       return;
     }
     if (!ctx.wsIsOpen()) {
-      ctx.messagesError.value = 'Cannot send - WebSocket is not connected.';
+      ctx.messagesError.value = "You appear to be offline right now. Please try again once you're reconnected.";
       return;
     }
 
@@ -225,7 +225,7 @@ function useMediaUpload(ctx) {
     } catch (err) {
       ctx.logError('media send failed', err);
       if (optimistic) { optimistic.pending = false; optimistic.send_failed = true; }
-      ctx.messagesError.value = 'Could not send that file: ' + (err.message || err);
+      ctx.messagesError.value = ctx.friendlyError(err, "We couldn't send that file. Please try again.");
     } finally {
       mediaUploadBusy.value = false;
     }
@@ -263,7 +263,7 @@ function useMediaUpload(ctx) {
     try {
       recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (err) {
-      ctx.messagesError.value = 'Microphone access denied.';
+      ctx.messagesError.value = "We couldn't access your microphone. Please allow microphone access and try again.";
       return;
     }
     recordedChunks = [];
@@ -332,7 +332,7 @@ function useMediaUpload(ctx) {
       return;
     }
     if (!ctx.wsIsOpen()) {
-      ctx.messagesError.value = 'Cannot send - WebSocket is not connected.';
+      ctx.messagesError.value = "You appear to be offline right now. Please try again once you're reconnected.";
       return;
     }
     const ext = { 'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3' }[type] || 'm4a';
@@ -392,7 +392,7 @@ function useMediaUpload(ctx) {
     } catch (err) {
       ctx.logError('voice send failed', err);
       if (optimistic) { optimistic.pending = false; optimistic.send_failed = true; }
-      ctx.messagesError.value = 'Could not send that recording: ' + (err.message || err);
+      ctx.messagesError.value = ctx.friendlyError(err, "We couldn't send that voice message. Please try again.");
     } finally {
       mediaUploadBusy.value = false;
     }

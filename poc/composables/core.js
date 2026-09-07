@@ -76,7 +76,25 @@ function useCore(ctx) {
   // ---------------------------------------------------------------
   // REST helper - JSON in/out, Bearer auth, one auto-refresh-and-retry
   // on a 401, console logging on every request/response/error.
+  //
+  // Connection resilience: a network failure (server down / offline) or a
+  // 429 / rate_limited is retried automatically, forever, until it succeeds
+  // - a network failure every RETRY_NETWORK_MS (3s, fixed), a rate-limit
+  // with an escalating backoff (3s, 6s, 12s, ... capped at RETRY_BACKOFF_MAX_MS).
+  // Any other non-2xx (a real 4xx/5xx from our API) is thrown immediately.
+  //
+  // options.onRetry({ attempt, waitMs, reason })  - called before each wait so
+  //   the caller can show a "trouble connecting - retrying in Ns" message.
+  //   reason is 'network' | 'rate_limited'.
+  // options.retryCancelled  - a () => boolean; return true to stop retrying
+  //   (e.g. the user left the screen). The last error is then thrown.
+  // options.noRetry: true  - opt out entirely (single attempt, old behaviour).
   // ---------------------------------------------------------------
+  const RETRY_NETWORK_MS = 3000;
+  const RETRY_BACKOFF_BASE_MS = 3000;
+  const RETRY_BACKOFF_MAX_MS = 60000;
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
   async function apiFetch(path, options = {}) {
     const doFetch = () => {
       const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
@@ -85,32 +103,96 @@ function useCore(ctx) {
       return fetch(`${apiBase.value}${path}`, { ...options, headers });
     };
 
-    let resp;
-    try {
-      resp = await doFetch();
-    } catch (err) {
-      logError('network error calling', path, err);
-      throw err;
-    }
+    const onRetry = typeof options.onRetry === 'function' ? options.onRetry : null;
+    const cancelled = typeof options.retryCancelled === 'function' ? options.retryCancelled : () => false;
+    const canRetry = !options.noRetry;
+    let attempt = 0;
 
-    if (resp.status === 401 && ctx.refreshToken.value) {
-      log('401 on', path, '- attempting token refresh');
-      if (await tryRefresh()) resp = await doFetch();
-    }
+    // Loop: one iteration = one full request attempt. `continue` after a wait
+    // for a retryable failure; `return` / `throw` otherwise.
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      attempt += 1;
+      let resp;
+      try {
+        resp = await doFetch();
+      } catch (err) {
+        logError('network error calling', path, err);
+        err.isNetworkError = true; // consumed by friendlyError() for a graceful message
+        if (!canRetry || cancelled()) throw err;
+        if (onRetry) onRetry({ attempt, waitMs: RETRY_NETWORK_MS, reason: 'network' });
+        log(`retrying ${path} in ${RETRY_NETWORK_MS}ms (network, attempt ${attempt})`);
+        await sleep(RETRY_NETWORK_MS);
+        if (cancelled()) throw err;
+        continue;
+      }
 
-    if (!resp.ok) {
-      let detail = resp.statusText;
-      let body = null;
-      try { body = await resp.json(); detail = body.detail || detail; } catch (_) {}
-      logError('←', resp.status, path, detail);
-      const err = new Error(detail);
-      err.status = resp.status;
-      err.body = body;            // e.g. { detail, reason } for a bad username (ADR 0017)
-      throw err;
-    }
+      if (resp.status === 401 && ctx.refreshToken.value) {
+        log('401 on', path, '- attempting token refresh');
+        if (await tryRefresh()) resp = await doFetch().catch((err) => {
+          err.isNetworkError = true;
+          throw err;
+        });
+      }
 
-    log('←', resp.status, path);
-    return resp.status === 204 ? null : resp.json();
+      if (!resp.ok) {
+        let detail = resp.statusText;
+        let body = null;
+        try { body = await resp.json(); detail = body.detail || detail; } catch (_) {}
+        logError('←', resp.status, path, detail);
+
+        const isRateLimited = resp.status === 429 || (body && body.code === 'rate_limited');
+        if (isRateLimited && canRetry && !cancelled()) {
+          const waitMs = Math.min(RETRY_BACKOFF_BASE_MS * Math.pow(2, attempt - 1), RETRY_BACKOFF_MAX_MS);
+          if (onRetry) onRetry({ attempt, waitMs, reason: 'rate_limited' });
+          log(`retrying ${path} in ${waitMs}ms (rate_limited, attempt ${attempt})`);
+          await sleep(waitMs);
+          if (cancelled()) {
+            const err = new Error(detail); err.status = resp.status; err.body = body; throw err;
+          }
+          continue;
+        }
+
+        const err = new Error(detail);
+        err.status = resp.status;
+        err.body = body;          // e.g. { detail, reason } for a bad username (ADR 0017)
+        throw err;
+      }
+
+      log('←', resp.status, path);
+      return resp.status === 204 ? null : resp.json();
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Turn any thrown error (a fetch/network failure, a non-2xx from
+  // apiFetch, or a plain Error) into a short, non-technical sentence
+  // that is safe to show in the UI. Never leaks stack traces, HTTP
+  // status text, or browser strings like "Failed to fetch".
+  // ---------------------------------------------------------------
+  function friendlyError(err, fallback) {
+    const generic = fallback || 'Something went wrong. Please try again.';
+    if (!err) return generic;
+    // fetch() rejects with a TypeError when the connection drops / is blocked.
+    if (err.isNetworkError || err.name === 'TypeError') {
+      return "We're having trouble reaching the server right now. Please check your connection and try again.";
+    }
+    const status = err.status;
+    if (status === 429 || (err.body && err.body.code === 'rate_limited')) {
+      return "You're going a little too fast — please wait a moment and try again.";
+    }
+    if (status === 401 || status === 403) {
+      return 'Your session has expired. Please sign in again.';
+    }
+    if (typeof status === 'number' && status >= 500) {
+      return 'The server ran into a problem. Please try again in a little while.';
+    }
+    // A 4xx from our own API carries a human-readable `detail` we can trust.
+    if (typeof status === 'number' && status >= 400) {
+      const detail = err.body && typeof err.body.detail === 'string' ? err.body.detail : null;
+      if (detail && detail.length <= 140 && !/[<>{}]/.test(detail)) return detail;
+    }
+    return generic;
   }
 
   async function tryRefresh() {
@@ -138,6 +220,6 @@ function useCore(ctx) {
   return {
     apiBase, wsBase, log, logError,
     AVATAR_MAX_BYTES, MEDIA_MAX_BYTES, AVATAR_MIME,
-    apiFetch, tryRefresh, shrinkImageToFit,
+    apiFetch, tryRefresh, shrinkImageToFit, friendlyError,
   };
 }

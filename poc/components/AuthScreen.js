@@ -121,7 +121,7 @@ const AuthScreen = {
       <div class="w-full max-w-sm bg-white rounded-xl shadow-sm border border-slate-200 p-6">
         <div class="flex flex-col items-center text-center mb-5">
           <img src="assets/maskable_icon_x192.png" alt="Linka"
-               class="w-16 h-16 sm:w-20 sm:h-20 rounded-2xl shadow-sm select-none" draggable="false" />
+               class="w-16 h-16 sm:w-20 sm:h-20 shrink-0 rounded-2xl object-cover shadow-sm select-none" draggable="false" />
           <h1 class="mt-3 text-xl font-semibold">Linka</h1>
         </div>
         <p class="text-sm text-slate-500 mb-5 text-center">

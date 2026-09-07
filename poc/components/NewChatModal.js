@@ -83,11 +83,10 @@ const NewChatModal = {
                   class="w-full flex items-center justify-center gap-2 py-2 text-sm font-medium border border-slate-300 rounded-lg hover:bg-slate-50">
             <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor"
                  stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M17 21v-2a4 4 0 0 0-3-3.87" />
-              <path d="M9 21v-2a4 4 0 0 1 4-4h0a4 4 0 0 1 1 .13" />
-              <circle cx="9" cy="7" r="4" />
-              <line x1="19" y1="8" x2="19" y2="14" />
-              <line x1="22" y1="11" x2="16" y2="11" />
+              <circle cx="9" cy="8" r="3.2" />
+              <circle cx="17" cy="9.5" r="2.4" />
+              <path d="M4 19v-1.2A4.8 4.8 0 0 1 8.8 13h.4a4.8 4.8 0 0 1 4.8 4.8V19" />
+              <path d="M15.5 14.2a3.6 3.6 0 0 1 4.5 3.5V19" />
             </svg>
             New group
           </button>

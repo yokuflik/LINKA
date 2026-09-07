@@ -31,6 +31,11 @@ There is **no real client app** — only a single-file HTML/Vue PoC (`poc/`) for
 - **For the full-res avatar device cache** (`useAvatarCache.js`), serve the PoC over `http://localhost` instead — `cd poc && python3 -m http.server 5500`. Cache Storage (`caches`) is `undefined` on `file://` (not a secure context); on a miss the composable silently falls back to re-downloading. Deployed, it's same-origin HTTPS so this is automatic.
 - `uvicorn --reload` drops every WebSocket on each `.py` save; the PoC auto-reconnects (~3s). Not a bug.
 
+## Cache invalidation (mobile "won't update without Incognito" fix)
+- **Caddy** (`deploy/Caddyfile`, static `handle` block): `@entry` (`/`, `/index.html`, `/manifest.webmanifest`, `/sw.js`) → `Cache-Control: no-cache, no-store, must-revalidate`; `@assets` (`*.js *.css *.png *.jpg *.jpeg *.webp *.svg *.woff2`) → `public, max-age=86400`.
+- **JS/manifest cache-busting:** every **local** `<script src>` and `<link rel="manifest">` in `index.html` carries `?v=<release>` (e.g. `?v=2026.09.07-1`). No build step — bump with the `sed` one-liner in `deploy/README.md` ("Bump the PoC cache-busting version") before any `poc/` deploy. CDN scripts (Vue/Tailwind/Firebase/gstatic) untouched (already versioned).
+- **`poc/sw.js`** — intentionally **non-caching** service worker (no `fetch` handler). `install` → `skipWaiting()`; `activate` → deletes all Cache Storage keys ≠ `CACHE_VERSION` + `clients.claim()`. Registered at the tail of the root inline script (`navigator.serviceWorker.register('sw.js?v=…')`). Acts as a kill-switch for any SW left on a device and gives correct update semantics if real offline caching is added later. `KEEP_CACHES` allowlists `linka-avatar-fullres-v1` (ADR-0016 avatar cache) so a deploy doesn't wipe it.
+
 ## Hard rules (also in root CLAUDE.md)
 - **NEVER display the raw `user_id`** in the UI (chat lists, message bubbles, headers). Show the peer's server `username`, falling back to `phone_number` (ADR 0018 — `display_name` is gone). There is **no client-side contact book** (the old `MOCK_CONTACT_NAMES` map is gone). `user_id` is strictly for backend logic / API calls.
 - **No autonomous visual testing** — no browser tools, Puppeteer, screenshots, or local servers to verify the UI. The user tests manually and reports back.

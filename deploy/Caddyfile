@@ -56,6 +56,23 @@
 
 	handle {
 		root * /srv/poc
+
+		# Entry points must always revalidate with the server so a fresh deploy
+		# is picked up immediately - mobile browsers otherwise cache index.html
+		# hard and only Incognito shows the new build.
+		@entry path / /index.html /manifest.webmanifest /sw.js
+		header @entry {
+			Cache-Control "no-cache, no-store, must-revalidate"
+			Pragma "no-cache"
+			Expires "0"
+		}
+
+		# Static assets carry a ?v=<release> query string (JS/CSS) or are
+		# content-named (images), so they can be cached. 1 day (not immutable)
+		# since the query string, not a content hash, is what busts them.
+		@assets path *.js *.css *.png *.jpg *.jpeg *.webp *.svg *.woff2
+		header @assets Cache-Control "public, max-age=86400"
+
 		file_server
 	}
 }

@@ -133,6 +133,21 @@ crontab deploy/partition-maintenance.prod.crontab
 Runs `ensure` / `prune-receipts` / `cold` / `report` inside the app
 container, plus a nightly `pg_dump` to `/opt/linka/backups`.
 
+## Bump the PoC cache-busting version (before any deploy that touches `poc/`)
+
+`index.html` / `manifest.webmanifest` / `sw.js` are served `no-store` (see
+`Caddyfile`); every other local `poc/` asset is cached 1 day and busted by a
+`?v=<release>` query string. Bump it in one shot before `git pull` on the host
+(or locally before pushing):
+
+```bash
+cd poc && NEW=$(date +%Y.%m.%d)-1 && \
+  sed -i -E "s/\?v=[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9]+/?v=$NEW/g" index.html sw.js
+# macOS: sed -i '' -E ...   (bump the trailing -N for a second deploy the same day)
+```
+
+The non-caching `sw.js` also purges any stale Cache Storage on activate.
+
 ## Updating
 
 ```bash

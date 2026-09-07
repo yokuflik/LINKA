@@ -8,7 +8,7 @@
      apple-touch-icon, and PWA install. -->
 <link rel="icon" type="image/png" sizes="192x192" href="assets/maskable_icon_x192.png">
 <link rel="apple-touch-icon" href="assets/maskable_icon_x192.png">
-<link rel="manifest" href="manifest.webmanifest">
+<link rel="manifest" href="manifest.webmanifest?v=2026.09.07-1">
 <meta name="theme-color" content="#0f766e">
 
 
@@ -66,66 +66,66 @@
      dev-whitelist login still works. -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
-<script src="firebase-config.js"></script>
-<script src="firebase-init.js"></script>
-<script src="data/country-codes.js"></script>
-<script src="vendor/thumbhash.js"></script>
+<script src="firebase-config.js?v=2026.09.07-1"></script>
+<script src="firebase-init.js?v=2026.09.07-1"></script>
+<script src="data/country-codes.js?v=2026.09.07-1"></script>
+<script src="vendor/thumbhash.js?v=2026.09.07-1"></script>
 <!-- Structural split into child components (see CLAUDE.md) - plain
      Vue.defineComponent objects loaded as sibling scripts, since this PoC
      has no build step and can't use .vue SFCs. All business logic/state
      stays in the root app below; these only own template markup. -->
-<script src="components/Avatar.js"></script>
-<script src="components/AvatarLightbox.js"></script>
-<script src="components/AuthScreen.js"></script>
-<script src="components/AppHeader.js"></script>
-<script src="components/ChatSidebar.js"></script>
-<script src="components/ChatContextMenu.js"></script>
-<script src="components/ChatHeader.js"></script>
-<script src="components/VoiceMessage.js"></script>
-<script src="components/MessageList.js"></script>
-<script src="components/MessageInput.js"></script>
-<script src="components/MessageContextMenu.js"></script>
-<script src="components/ForwardModal.js"></script>
-<script src="components/MessageDetailsModal.js"></script>
-<script src="components/MembersModal.js"></script>
-<script src="components/ProfileEditModal.js"></script>
-<script src="components/SettingsModal.js"></script>
-<script src="components/NewChatModal.js"></script>
-<script src="components/NewGroupModal.js"></script>
-<script src="components/InlineAlert.js"></script>
-<script src="components/ToastList.js"></script>
+<script src="components/Avatar.js?v=2026.09.07-1"></script>
+<script src="components/AvatarLightbox.js?v=2026.09.07-1"></script>
+<script src="components/AuthScreen.js?v=2026.09.07-1"></script>
+<script src="components/AppHeader.js?v=2026.09.07-1"></script>
+<script src="components/ChatSidebar.js?v=2026.09.07-1"></script>
+<script src="components/ChatContextMenu.js?v=2026.09.07-1"></script>
+<script src="components/ChatHeader.js?v=2026.09.07-1"></script>
+<script src="components/VoiceMessage.js?v=2026.09.07-1"></script>
+<script src="components/MessageList.js?v=2026.09.07-1"></script>
+<script src="components/MessageInput.js?v=2026.09.07-1"></script>
+<script src="components/MessageContextMenu.js?v=2026.09.07-1"></script>
+<script src="components/ForwardModal.js?v=2026.09.07-1"></script>
+<script src="components/MessageDetailsModal.js?v=2026.09.07-1"></script>
+<script src="components/MembersModal.js?v=2026.09.07-1"></script>
+<script src="components/ProfileEditModal.js?v=2026.09.07-1"></script>
+<script src="components/SettingsModal.js?v=2026.09.07-1"></script>
+<script src="components/NewChatModal.js?v=2026.09.07-1"></script>
+<script src="components/NewGroupModal.js?v=2026.09.07-1"></script>
+<script src="components/InlineAlert.js?v=2026.09.07-1"></script>
+<script src="components/ToastList.js?v=2026.09.07-1"></script>
 
 <!-- Composables: global use*(ctx) factories the root setup() stitches into ctx -->
-<script src="composables/core.js"></script>
-<script src="composables/usePhoneInput.js"></script>
-<script src="composables/useAuth.js"></script>
-<script src="composables/useWebsocket.js"></script>
-<script src="composables/usePresence.js"></script>
-<script src="composables/useTyping.js"></script>
-<script src="composables/useChatMeta.js"></script>
-<script src="composables/useMessageCache.js"></script>
-<script src="composables/useOutbox.js"></script>
+<script src="composables/core.js?v=2026.09.07-1"></script>
+<script src="composables/usePhoneInput.js?v=2026.09.07-1"></script>
+<script src="composables/useAuth.js?v=2026.09.07-1"></script>
+<script src="composables/useWebsocket.js?v=2026.09.07-1"></script>
+<script src="composables/usePresence.js?v=2026.09.07-1"></script>
+<script src="composables/useTyping.js?v=2026.09.07-1"></script>
+<script src="composables/useChatMeta.js?v=2026.09.07-1"></script>
+<script src="composables/useMessageCache.js?v=2026.09.07-1"></script>
+<script src="composables/useOutbox.js?v=2026.09.07-1"></script>
 <!-- useChats is a facade over these four; load order = merge order -->
-<script src="composables/useChatStore.js"></script>
-<script src="composables/useChatMembers.js"></script>
-<script src="composables/useChatList.js"></script>
-<script src="composables/useChatOpen.js"></script>
-<script src="composables/useChatMenu.js"></script>
-<script src="composables/useChats.js"></script>
-<script src="composables/useMembers.js"></script>
-<script src="composables/useNewChat.js"></script>
-<script src="composables/useMessageMenu.js"></script>
-<script src="composables/useMessageSend.js"></script>
-<script src="composables/useForward.js"></script>
-<script src="composables/useMessageEdit.js"></script>
-<script src="composables/useAudioWaveform.js"></script>
-<script src="composables/useMediaUpload.js"></script>
-<script src="composables/useMediaPlaceholder.js"></script>
-<script src="composables/useSettings.js"></script>
-<script src="composables/useProfileEdit.js"></script>
-<script src="composables/useAvatarCache.js"></script>
-<script src="composables/useAvatarLightbox.js"></script>
-<script src="composables/useWsRouter.js"></script>
+<script src="composables/useChatStore.js?v=2026.09.07-1"></script>
+<script src="composables/useChatMembers.js?v=2026.09.07-1"></script>
+<script src="composables/useChatList.js?v=2026.09.07-1"></script>
+<script src="composables/useChatOpen.js?v=2026.09.07-1"></script>
+<script src="composables/useChatMenu.js?v=2026.09.07-1"></script>
+<script src="composables/useChats.js?v=2026.09.07-1"></script>
+<script src="composables/useMembers.js?v=2026.09.07-1"></script>
+<script src="composables/useNewChat.js?v=2026.09.07-1"></script>
+<script src="composables/useMessageMenu.js?v=2026.09.07-1"></script>
+<script src="composables/useMessageSend.js?v=2026.09.07-1"></script>
+<script src="composables/useForward.js?v=2026.09.07-1"></script>
+<script src="composables/useMessageEdit.js?v=2026.09.07-1"></script>
+<script src="composables/useAudioWaveform.js?v=2026.09.07-1"></script>
+<script src="composables/useMediaUpload.js?v=2026.09.07-1"></script>
+<script src="composables/useMediaPlaceholder.js?v=2026.09.07-1"></script>
+<script src="composables/useSettings.js?v=2026.09.07-1"></script>
+<script src="composables/useProfileEdit.js?v=2026.09.07-1"></script>
+<script src="composables/useAvatarCache.js?v=2026.09.07-1"></script>
+<script src="composables/useAvatarLightbox.js?v=2026.09.07-1"></script>
+<script src="composables/useWsRouter.js?v=2026.09.07-1"></script>
 <style>
   /* Chat-bubble speech tail - a smooth curved shape (WhatsApp/Telegram/
      iMessage-style), not a hard-cornered triangle. Drawn as a solid-color
@@ -192,6 +192,7 @@
   #splash img {
     width: 6rem;
     height: 6rem;
+    object-fit: cover;
     border-radius: 1.25rem;
     box-shadow: 0 10px 30px -10px rgba(15, 118, 110, .45);
     animation: splash-pulse 1.6s ease-in-out infinite;
@@ -551,6 +552,16 @@ app.component('Avatar', Avatar);
 app.component('VoiceMessage', VoiceMessage);
 app.component('InlineAlert', InlineAlert);
 app.mount('#app');
+
+// Non-caching kill-switch service worker (poc/sw.js): clears stale caches and
+// takes control immediately so deploys are picked up without Incognito.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js?v=2026.09.07-1')
+      .then((reg) => reg.update())
+      .catch(() => {});
+  });
+}
 </script>
 </body>
 </html>

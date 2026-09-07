@@ -22,7 +22,7 @@ const AppHeader = {
       <div class="flex items-center gap-3">
         <span class="flex items-center gap-2 font-semibold">
           <img src="assets/maskable_icon_x192.png" alt="Linka"
-               class="w-7 h-7 rounded-lg select-none" draggable="false" />
+               class="w-7 h-7 shrink-0 rounded-lg object-cover select-none" draggable="false" />
           <span class="hidden sm:inline">Linka</span>
         </span>
         <span class="flex items-center gap-1.5 text-xs text-slate-500">

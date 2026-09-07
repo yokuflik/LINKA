@@ -79,6 +79,7 @@ async def create_group_chat(
     initial_member_ids: Sequence[int] = (),
     about_text: Optional[str] = None,
     avatar_storage_key: Optional[str] = None,
+    avatar_preview: Optional[str] = None,
 ) -> Chat:
     from services import chat_service
 
@@ -116,7 +117,9 @@ async def create_group_chat(
     # bad/forged key raises here rather than silently sticking. No system
     # message - a brand-new group has nobody to notify.
     if avatar_storage_key:
-        updated = await avatar_service.set_group_avatar(session, chat_id, avatar_storage_key)
+        updated = await avatar_service.set_group_avatar(
+            session, chat_id, avatar_storage_key, avatar_preview
+        )
         if updated is not None:
             chat = updated
 

@@ -47,5 +47,42 @@ function useMediaPlaceholder(ctx) {
     return ratio;
   }
 
-  return { thumbHashToDataUrl, thumbHashToAspect };
+  // Compute a tiny inline avatar thumbnail (ADR 0016) from an image File the
+  // user just picked. Decodes it, draws into a <=64px canvas, re-encodes as a
+  // JPEG data: URI (~1-3 KB) that gets stored and rendered directly as the
+  // avatar - a real, if small, picture (no blur). Any failure returns null,
+  // and the avatar then loads eagerly like a legacy row.
+  async function encodeAvatarPreview(file) {
+    if (!file) return null;
+    const url = URL.createObjectURL(file);
+    try {
+      const img = new Image();
+      img.decoding = 'async';
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error('image decode failed'));
+        img.src = url;
+      });
+      const srcW = img.naturalWidth, srcH = img.naturalHeight;
+      if (!srcW || !srcH) return null;
+      const scale = Math.min(1, 64 / Math.max(srcW, srcH));
+      const w = Math.max(1, Math.round(srcW * scale));
+      const h = Math.max(1, Math.round(srcH * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+      // Guard against a too-big result (backend cap is 8192) or a failed encode.
+      if (!dataUrl.startsWith('data:image/') || dataUrl.length > 8000) return null;
+      return dataUrl;
+    } catch (err) {
+      ctx.logError('avatar preview encode failed', err);
+      return null;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  return { thumbHashToDataUrl, thumbHashToAspect, encodeAvatarPreview };
 }

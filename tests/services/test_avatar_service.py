@@ -63,6 +63,27 @@ async def test_set_avatar_stores_the_key(db_session, redis_db):
     assert updated.profile_pic_url == key
 
 
+async def test_set_avatar_stores_and_clears_the_preview(db_session, redis_db):
+    """Inline avatar thumbnail (ADR 0016): stored on set, dropped if it's not a
+    data:image URI, nulled on clear and on a preview-less replace."""
+    await create_user(db_session, user_id=1, phone_number="+972501")
+    good = "data:image/jpeg;base64,/9j/AAAA"
+
+    key = await _upload_avatar()
+    updated = await avatar_service.set_avatar(db_session, user_id=1, storage_key=key, preview=good)
+    assert updated.profile_pic_preview == good
+
+    # A non-data-URI value is dropped, not fatal - and a preview-less replace clears the old one.
+    key2 = await _upload_avatar()
+    updated = await avatar_service.set_avatar(db_session, user_id=1, storage_key=key2, preview="not a data uri")
+    assert updated.profile_pic_preview is None
+
+    key3 = await _upload_avatar()
+    await avatar_service.set_avatar(db_session, user_id=1, storage_key=key3, preview=good)
+    cleared = await avatar_service.clear_avatar(db_session, user_id=1)
+    assert cleared.profile_pic_preview is None
+
+
 async def test_set_avatar_for_a_nonexistent_user_returns_none(db_session, redis_db):
     key = await _upload_avatar()
     assert await avatar_service.set_avatar(db_session, user_id=999999, storage_key=key) is None

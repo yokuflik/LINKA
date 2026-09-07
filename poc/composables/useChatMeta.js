@@ -86,7 +86,7 @@ function useChatMeta(ctx) {
     return at.toLocaleDateString([], { day: '2-digit', month: '2-digit', year: '2-digit' });
   }
 
-  // Peer names come straight from the server: display_name if set, else the
+  // Peer names come straight from the server: username, else the
   // phone number. No client-side contact book.
 
   // ---------------------------------------------------------------
@@ -116,11 +116,28 @@ function useChatMeta(ctx) {
   }
   const currentUserAvatarUrl = computed(() => userAvatarUrl(ctx.currentUser.value));
 
+  // ThumbHash blur placeholders for the same avatars (ADR 0015). The <Avatar>
+  // component renders the blur only; the full image loads on tap (lightbox).
+  function chatAvatarPreview(chat) {
+    if (chat.is_group) return chat.profile_pic_preview || null;
+    const otherId = ctx.privateChatOtherUserId.value[chat.id];
+    const u = otherId ? ctx.userById.value[otherId] : null;
+    return u ? (u.profile_pic_preview || null) : null;
+  }
+  function userAvatarPreview(user) {
+    return user ? (user.profile_pic_preview || null) : null;
+  }
+  function senderAvatarPreview(senderId) {
+    return userAvatarPreview(ctx.userById.value[senderId]);
+  }
+  const currentUserAvatarPreview = computed(() => userAvatarPreview(ctx.currentUser.value));
+
   return {
     toasts, showToast,
     previewText, bumpChatPreview, refreshMessageStatuses, updateChatPreviewIfLast,
     formatChatTime,
     chatAvatarName, chatAvatarColorKey, chatAvatarUrl,
     userAvatarUrl, senderAvatarUrl, currentUserAvatarUrl,
+    chatAvatarPreview, userAvatarPreview, senderAvatarPreview, currentUserAvatarPreview,
   };
 }

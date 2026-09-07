@@ -32,6 +32,7 @@ from database.models import (  # noqa: F401
     message_receipt_log,
     participant,
     private_chat_pair,
+    reserved_username,
     user,
     user_settings,
 )
@@ -70,6 +71,11 @@ async def main(drop: bool) -> None:
                 # Blurred placeholder (ThumbHash, base64) - ADR 0014.
                 "ALTER TABLE messages ADD COLUMN IF NOT EXISTS media_blur_hash TEXT",
                 "ALTER TABLE media_blob ADD COLUMN IF NOT EXISTS blur_hash TEXT",
+                # Inline avatar thumbnail (~64px JPEG data: URI) - ADR 0016.
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_pic_preview TEXT",
+                "ALTER TABLE chats ADD COLUMN IF NOT EXISTS profile_pic_preview TEXT",
+                "ALTER TABLE users DROP COLUMN IF EXISTS profile_pic_blur_hash",
+                "ALTER TABLE chats DROP COLUMN IF EXISTS profile_pic_blur_hash",
                 # Voice-recording "played" receipt watermarks (see
                 # MessageStatus.PLAYED / crud_participant.recompute_chat_receipt_cursors).
                 "ALTER TABLE participants ADD COLUMN IF NOT EXISTS last_played_message_id BIGINT",
@@ -109,6 +115,21 @@ async def main(drop: bool) -> None:
                 ")",
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_media_blob_storage_key "
                 "ON media_blob (storage_key)",
+                # Unique lowercase username + change-cooldown timestamp (ADR 0017).
+                # Add the columns nullable, backfill existing rows with a
+                # deterministic unique handle, then enforce UNIQUE + NOT NULL.
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(32)",
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS username_changed_at TIMESTAMPTZ",
+                "UPDATE users SET username = 'user_' || id WHERE username IS NULL",
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)",
+                "ALTER TABLE users ALTER COLUMN username SET NOT NULL",
+                # Released-username grace hold (ADR 0017).
+                "CREATE TABLE IF NOT EXISTS reserved_usernames ("
+                "  username VARCHAR(32) PRIMARY KEY,"
+                "  reserved_for_user_id BIGINT NOT NULL,"
+                "  released_at TIMESTAMPTZ NOT NULL,"
+                "  expires_at TIMESTAMPTZ NOT NULL"
+                ")",
             ):
                 await conn.execute(text(ddl))
             # Real dated partitions on top of the DEFAULT safety net (ADR 0005).

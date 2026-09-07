@@ -51,9 +51,11 @@ class UserOut(BaseModel):
 
     id: IdStr
     phone_number: str
-    display_name: Optional[str]
+    username: Optional[str] = None
     about_text: Optional[str]
     profile_pic_url: Optional[str]
+    # Inline avatar thumbnail data: URI (ADR 0016) - plain passthrough.
+    profile_pic_preview: Optional[str] = None
 
     @model_validator(mode="after")
     def _resolve_avatar_url(self):
@@ -70,11 +72,16 @@ class LoginOut(BaseModel):
     user: UserOut
     access_token: str
     refresh_token: str
+    # ADR 0017: true only when this verify call just created the account, so the
+    # client opens the post-signup welcome form (username pre-filled).
+    is_new_user: bool = False
 
 
 class UserProfileUpdateIn(BaseModel):
-    display_name: Optional[str] = None
     about_text: Optional[str] = None
+    # ADR 0017: changing the handle. Format 400, taken/cooldown/grace_hold 409 -
+    # each with a machine `reason` code. Untouched field => handle unchanged.
+    username: Optional[str] = None
     # The avatar is set through the dedicated /users/me/avatar endpoints, not
     # here - a raw client-supplied URL/key can't be trusted or cleaned up.
 
@@ -126,6 +133,9 @@ class AvatarUploadTicketOut(BaseModel):
 
 class AvatarCommitIn(BaseModel):
     storage_key: str
+    # Optional inline avatar thumbnail (a ~64px JPEG data: URI) computed by the
+    # uploader's browser - ADR 0016. Validated and dropped-if-bad in avatar_service.
+    preview: Optional[str] = None
 
 
 class MediaUploadTicketIn(BaseModel):
@@ -186,6 +196,8 @@ class ChatOut(BaseModel):
     title: Optional[str]
     about_text: Optional[str]
     profile_pic_url: Optional[str]
+    # Inline group-avatar thumbnail data: URI (ADR 0016).
+    profile_pic_preview: Optional[str] = None
     last_message_at: datetime
 
     @model_validator(mode="after")
@@ -246,6 +258,8 @@ class CreateGroupChatIn(BaseModel):
     # (HEAD + limits) server-side before it's stored - a raw client key is
     # never trusted. Optional; omit for a photo-less group.
     avatar_storage_key: Optional[str] = None
+    # Inline thumbnail (a ~64px JPEG data: URI) for the avatar above - ADR 0016.
+    avatar_preview: Optional[str] = None
 
 
 class UpdateGroupDetailsIn(BaseModel):

@@ -22,7 +22,7 @@ from config import (
 )
 from database.crud.crud_user import create_user, get_user_by_phone
 from database.models.user import User
-from services import firebase_auth, rate_limit_service
+from services import firebase_auth, rate_limit_service, user_service
 from services.redis_client import redis_client
 from utils.id_client import next_id
 
@@ -65,11 +65,9 @@ async def request_otp(phone_number: str, intent: str | None = None, session: Asy
     """
     Generates a one-time login code and hands it to the SMS provider.
 
-    When ``intent`` and ``session`` are supplied, the phone number is checked
-    against the users table first: 'register' fails if the number already has
-    an account, 'login' fails if it doesn't - so the caller can't silently
-    register by "logging in", or hit "verify & create account" on a number
-    that's already taken.
+    ADR 0017: there is one flow (phone -> OTP); an unknown phone is
+    find-or-create. The legacy ``intent`` pre-check is gone - ``intent`` is
+    accepted for wire compatibility but no longer gates anything.
 
     Rate-limited per phone number - otherwise this endpoint alone is an open
     invitation to SMS-bomb any number (cost abuse against the SMS provider,
@@ -80,13 +78,6 @@ async def request_otp(phone_number: str, intent: str | None = None, session: Asy
     # skip SMS entirely - no code is stored, and verify accepts any input.
     if phone_number in DEV_AUTH_WHITELIST:
         return
-
-    if intent and session is not None:
-        existing = await get_user_by_phone(session, phone_number)
-        if intent == "register" and existing is not None:
-            raise PhoneAlreadyRegisteredError("This phone number is already registered - log in instead")
-        if intent == "login" and existing is None:
-            raise PhoneNotRegisteredError("No account found for this phone number - sign up first")
 
     allowed = await rate_limit_service.check_and_increment(
         phone_number, "otp_request", max_per_window=OTP_REQUEST_RATE_LIMIT_MAX, window_seconds=OTP_REQUEST_RATE_LIMIT_WINDOW_SECONDS
@@ -170,14 +161,17 @@ async def verify_firebase_and_login(
 
 async def _find_or_create_and_issue(
     session: AsyncSession, phone_number: str, client_ip: str | None = None
-) -> tuple[User, str, str]:
+) -> tuple[User, str, str, bool]:
     """Shared login tail: find-or-create the user, mint an access/refresh pair.
+    Returns ``(user, access, refresh, is_new_user)`` - the frontend uses the
+    flag to open the post-signup welcome form (ADR 0017).
 
     Creating a brand-new account is gated per client IP (5/day, strict) so a
     single host can't mass-register - an existing number logging back in is
     never blocked by this.
     """
     user = await get_user_by_phone(session, phone_number)
+    is_new_user = user is None
     if user is None:
         if client_ip:
             allowed = await rate_limit_service.check_and_increment(
@@ -188,18 +182,27 @@ async def _find_or_create_and_issue(
             )
             if not allowed:
                 raise AccountCreationRateLimitedError("Too many new accounts from this network - try again later")
-        user = await create_user(session, user_id=await next_id(), phone_number=phone_number)
+        # Auto-assign a free handle (ADR 0017). Retry on the unique-index race:
+        # a lost candidate comes back as None from create_user.
+        for _ in range(3):
+            handle = await user_service.generate_free_username(session)
+            user = await create_user(
+                session, user_id=await next_id(), phone_number=phone_number, username=handle
+            )
+            if user is not None:
+                break
         if user is None:
             # Two concurrent first-time logins for the same phone (e.g. a
             # retried request) can both reach here: one create_user call wins
             # the unique constraint, the other gets None back. Re-fetch
             # instead of crashing on user.id below.
             user = await get_user_by_phone(session, phone_number)
+            is_new_user = False
 
     access_token = _create_access_token(user.id)
     refresh_token = await _issue_refresh_token(user.id)
 
-    return user, access_token, refresh_token
+    return user, access_token, refresh_token, is_new_user
 
 
 def _create_access_token(user_id: int) -> str:

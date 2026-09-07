@@ -46,10 +46,12 @@ async def verify_otp(body: OTPVerifyIn, request: Request, session: AsyncSession 
     await _enforce_ip(
         ip, "otp_verify_ip", OTP_VERIFY_IP_RATE_LIMIT_MAX, OTP_VERIFY_IP_RATE_LIMIT_WINDOW_SECONDS
     )
-    user, access_token, refresh_token = await auth_service.verify_otp_and_login(
+    user, access_token, refresh_token, is_new_user = await auth_service.verify_otp_and_login(
         session, body.phone_number, body.code, client_ip=ip
     )
-    return LoginOut(user=user, access_token=access_token, refresh_token=refresh_token)
+    return LoginOut(
+        user=user, access_token=access_token, refresh_token=refresh_token, is_new_user=is_new_user
+    )
 
 
 @router.post("/firebase/verify", response_model=LoginOut)
@@ -58,10 +60,12 @@ async def firebase_verify(body: FirebaseVerifyIn, request: Request, session: Asy
     await _enforce_ip(
         ip, "otp_verify_ip", OTP_VERIFY_IP_RATE_LIMIT_MAX, OTP_VERIFY_IP_RATE_LIMIT_WINDOW_SECONDS
     )
-    user, access_token, refresh_token = await auth_service.verify_firebase_and_login(
+    user, access_token, refresh_token, is_new_user = await auth_service.verify_firebase_and_login(
         session, body.id_token, client_ip=ip
     )
-    return LoginOut(user=user, access_token=access_token, refresh_token=refresh_token)
+    return LoginOut(
+        user=user, access_token=access_token, refresh_token=refresh_token, is_new_user=is_new_user
+    )
 
 
 @router.post("/refresh", response_model=TokenPairOut)

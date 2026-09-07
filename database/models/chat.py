@@ -29,6 +29,9 @@ class Chat(Base):
     # URL pointing to the group's avatar stored in AWS S3 / MinIO
     profile_pic_url = Column(Text, nullable=True)
 
+    # Tiny inline thumbnail (~64px JPEG data: URI) for the group avatar - ADR 0016.
+    profile_pic_preview = Column(Text, nullable=True)
+
     # Audit timestamp
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

@@ -77,7 +77,7 @@ async def test_empty_subject_rejected(rsa_key):
 
 async def test_verify_firebase_and_login_creates_user(db_session, redis_db, rsa_key):
     token = _make_token(rsa_key, phone="+972500000456")
-    user, access_token, _ = await auth_service.verify_firebase_and_login(db_session, token)
+    user, access_token, _, _ = await auth_service.verify_firebase_and_login(db_session, token)
     assert user.phone_number == "+972500000456"
     assert auth_service.verify_access_token(access_token) == user.id
 

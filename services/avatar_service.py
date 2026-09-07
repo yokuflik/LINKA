@@ -15,7 +15,12 @@ from typing import Optional
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import ALLOWED_UPLOAD_MIME, MAX_UPLOAD_BYTES_AVATAR, S3_BUCKET_AVATARS
+from config import (
+    ALLOWED_UPLOAD_MIME,
+    MAX_AVATAR_PREVIEW_LENGTH,
+    MAX_UPLOAD_BYTES_AVATAR,
+    S3_BUCKET_AVATARS,
+)
 from database.crud.crud_chat import get_chat_by_id, update_chat_details
 from database.crud.crud_user import get_user_by_id, update_user_profile
 from database.models.chat import Chat
@@ -27,6 +32,17 @@ logger = logging.getLogger(__name__)
 
 _AVATAR_KIND = "avatar"
 
+def _clean_preview(raw) -> Optional[str]:
+    """Validate the client-supplied inline avatar thumbnail (ADR 0016): a tiny
+    downscaled JPEG carried as a ``data:image/...`` URI. A bad value is dropped
+    rather than fatal - the preview is cosmetic."""
+    if raw is None:
+        return None
+    value = str(raw)
+    if not value or len(value) > MAX_AVATAR_PREVIEW_LENGTH or not value.startswith("data:image/"):
+        return None
+    return value
+
 
 def request_upload(mime: str, size_bytes: int) -> media_service.UploadTicket:
     """
@@ -36,7 +52,9 @@ def request_upload(mime: str, size_bytes: int) -> media_service.UploadTicket:
     return media_service.create_upload_ticket(_AVATAR_KIND, mime, size_bytes)
 
 
-async def set_avatar(session: AsyncSession, user_id: int, storage_key: str) -> Optional[User]:
+async def set_avatar(
+    session: AsyncSession, user_id: int, storage_key: str, preview: Optional[str] = None
+) -> Optional[User]:
     """
     Commit a previously uploaded object as the user's avatar.
 
@@ -56,7 +74,13 @@ async def set_avatar(session: AsyncSession, user_id: int, storage_key: str) -> O
         return None
     previous_key = user.profile_pic_url
 
-    updated = await update_user_profile(session, user_id=user_id, profile_pic_url=storage_key)
+    updated = await update_user_profile(
+        session,
+        user_id=user_id,
+        profile_pic_url=storage_key,
+        profile_pic_preview=_clean_preview(preview),
+        write_preview=True,
+    )
 
     if previous_key and previous_key != storage_key and f"/{_AVATAR_KIND}/" in previous_key:
         await _delete_object_quietly(previous_key)
@@ -86,7 +110,7 @@ async def _force_clear(session: AsyncSession, user_id: int) -> Optional[User]:
     stmt = (
         update(User)
         .where(User.id == user_id)
-        .values(profile_pic_url=None)
+        .values(profile_pic_url=None, profile_pic_preview=None)
         .returning(User)
     )
     result = await session.execute(stmt)
@@ -111,7 +135,9 @@ async def _validate_stored_avatar_object(storage_key: str) -> None:
         raise MediaValidationError(f"stored object size {meta.size} is outside the avatar limit")
 
 
-async def set_group_avatar(session: AsyncSession, chat_id: int, storage_key: str) -> Optional[Chat]:
+async def set_group_avatar(
+    session: AsyncSession, chat_id: int, storage_key: str, preview: Optional[str] = None
+) -> Optional[Chat]:
     """
     Commit a previously uploaded object as a group's profile picture.
 
@@ -127,7 +153,13 @@ async def set_group_avatar(session: AsyncSession, chat_id: int, storage_key: str
         return None
     previous_key = chat.profile_pic_url
 
-    updated = await update_chat_details(session, chat_id=chat_id, profile_pic_url=storage_key)
+    updated = await update_chat_details(
+        session,
+        chat_id=chat_id,
+        profile_pic_url=storage_key,
+        profile_pic_preview=_clean_preview(preview),
+        write_preview=True,
+    )
 
     if previous_key and previous_key != storage_key and f"/{_AVATAR_KIND}/" in previous_key:
         await _delete_object_quietly(previous_key)
@@ -144,7 +176,12 @@ async def clear_group_avatar(session: AsyncSession, chat_id: int) -> Optional[Ch
 
     # update_chat_details ignores None (partial update), so clearing needs its
     # own explicit write - same as _force_clear for users.
-    stmt = update(Chat).where(Chat.id == chat_id).values(profile_pic_url=None).returning(Chat)
+    stmt = (
+        update(Chat)
+        .where(Chat.id == chat_id)
+        .values(profile_pic_url=None, profile_pic_preview=None)
+        .returning(Chat)
+    )
     result = await session.execute(stmt)
     await session.commit()
     updated = result.scalar_one_or_none()

@@ -12,6 +12,7 @@ const ChatHeader = {
     activeChatPresenceLabel: { type: String, required: true },
     activeChatTypingLabel: { type: String, required: true },
     avatarUrl: { default: null },
+    avatarPreview: { default: null },
     avatarName: { default: '' },
     avatarColorKey: { default: '' },
   },
@@ -21,7 +22,7 @@ const ChatHeader = {
       <button @click="$emit('back')" class="md:hidden -ml-1 p-1 text-slate-500 hover:text-slate-800" aria-label="Back">
         <svg viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
       </button>
-      <Avatar :url="avatarUrl" :name="avatarName" :colorKey="avatarColorKey" sizeClass="w-9 h-9 text-sm" />
+      <Avatar :url="avatarUrl" :preview="avatarPreview" :name="avatarName" :colorKey="avatarColorKey" sizeClass="w-9 h-9 text-sm" />
       <div class="min-w-0 flex-1">
       <div class="text-sm font-medium"
            :class="activeChatIsGroup ? 'cursor-pointer hover:underline' : ''"

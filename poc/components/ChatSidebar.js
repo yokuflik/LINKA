@@ -14,6 +14,7 @@ const ChatSidebar = {
     chatAvatarUrl: { type: Function, required: true },
     chatAvatarName: { type: Function, required: true },
     chatAvatarColorKey: { type: Function, required: true },
+    chatAvatarPreview: { type: Function, required: true },
     typingLabelForChat: { type: Function, required: true },
     unreadCountByChatId: { type: Object, required: true },
     isChatMuted: { type: Function, required: true },
@@ -55,7 +56,7 @@ const ChatSidebar = {
                 @contextmenu.prevent="$emit('chat-contextmenu', { chatId: item.chat.id, event: $event })"
                 class="w-full text-left px-3 py-2.5 border-b border-slate-100 hover:bg-slate-50 flex items-center gap-3 cursor-pointer"
                 :class="{ 'bg-teal-50': item.chat.id === activeChatId }">
-          <Avatar :url="chatAvatarUrl(item.chat)" :name="chatAvatarName(item.chat)"
+          <Avatar :url="chatAvatarUrl(item.chat)" :preview="chatAvatarPreview(item.chat)" :name="chatAvatarName(item.chat)"
                   :colorKey="chatAvatarColorKey(item.chat)" sizeClass="w-10 h-10 text-base" />
           <div class="flex-1 min-w-0">
             <div class="flex items-baseline gap-2">

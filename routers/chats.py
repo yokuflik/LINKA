@@ -143,6 +143,7 @@ async def create_group_chat(
         initial_member_ids=body.initial_member_ids,
         about_text=body.about_text,
         avatar_storage_key=body.avatar_storage_key,
+        avatar_preview=body.avatar_preview,
     )
 
 
@@ -188,7 +189,10 @@ async def set_group_avatar(
     session: AsyncSession = Depends(get_db),
 ):
     """Step 2: commit the uploaded object as the group's photo."""
-    chat = await chat_service.set_group_avatar(session, actor_id=user_id, chat_id=chat_id, storage_key=body.storage_key)
+    chat = await chat_service.set_group_avatar(
+        session, actor_id=user_id, chat_id=chat_id,
+        storage_key=body.storage_key, preview=body.preview,
+    )
     if chat is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
     return chat

@@ -61,7 +61,10 @@ async def ensure_can_manage_details(session: AsyncSession, actor_id: int, chat_i
     await _require_role(session, chat_id, actor_id, min_role=ROLE_ADMIN)
 
 
-async def set_group_avatar(session: AsyncSession, actor_id: int, chat_id: int, storage_key: str) -> Optional[Chat]:
+async def set_group_avatar(
+    session: AsyncSession, actor_id: int, chat_id: int, storage_key: str,
+    preview: Optional[str] = None,
+) -> Optional[Chat]:
     """
     Set a group's profile picture. Requires ROLE_ADMIN (same as any other
     group-detail change). The object-storage validation + old-object cleanup
@@ -69,7 +72,7 @@ async def set_group_avatar(session: AsyncSession, actor_id: int, chat_id: int, s
     "X changed the group photo" system message.
     """
     await _require_role(session, chat_id, actor_id, min_role=ROLE_ADMIN)
-    chat = await avatar_service.set_group_avatar(session, chat_id, storage_key)
+    chat = await avatar_service.set_group_avatar(session, chat_id, storage_key, preview)
     if chat is None:
         return None
     actor_name = await _display_name_for(session, actor_id)

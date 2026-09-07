@@ -8,10 +8,16 @@
 const ProfileEditModal = {
   props: {
     heading: { type: String, required: true },
-    nameLabel: { type: String, required: true },
+    // The generic name field (label + form key). Omit both for the user
+    // profile, which identifies by username instead - see showUsername.
+    nameLabel: { type: String, default: '' },
     aboutLabel: { type: String, required: true },
-    form: { type: Object, required: true },           // { display_name|title, about_text }
-    nameKey: { type: String, required: true },        // 'display_name' | 'title'
+    form: { type: Object, required: true },           // { title?, about_text, username? }
+    nameKey: { type: String, default: '' },           // 'title' for groups, '' for the user
+    // When set, a "Username" field is shown under the name (user profile only,
+    // not groups). usernameCheck: { status:''|'checking'|'ok'|'bad', reason }.
+    showUsername: { type: Boolean, default: false },
+    usernameCheck: { type: Object, default: () => ({ status: '', reason: '' }) },
     currentAvatarUrl: { default: null },
     avatarName: { default: '' },
     previewUrl: { default: null },
@@ -20,17 +26,33 @@ const ProfileEditModal = {
     busy: { type: Boolean, required: true },
     error: { type: String, default: '' },
   },
-  emits: ['update:form', 'pick-avatar', 'clear-avatar', 'save', 'close'],
+  emits: ['update:form', 'pick-avatar', 'clear-avatar', 'save', 'close', 'check-username'],
   computed: {
     shownAvatarUrl() {
       if (this.previewUrl) return this.previewUrl;
       if (this.cleared) return null;
       return this.currentAvatarUrl;
     },
+    usernameHint() {
+      const c = this.usernameCheck || {};
+      if (c.status === 'checking') return { text: 'Checking…', cls: 'text-slate-400' };
+      if (c.status === 'ok') return { text: 'Available', cls: 'text-green-600' };
+      if (c.status === 'bad') {
+        const map = {
+          too_short: 'Too short (min 3)', too_long: 'Too long (max 32)',
+          bad_chars: 'Letters, digits and _ only', must_start_letter: 'Must start with a letter',
+          reserved: 'That handle is reserved', taken: 'Already taken',
+          grace_hold: 'Recently released — not available yet', cooldown: 'On change cooldown',
+        };
+        return { text: map[c.reason] || 'Not available', cls: 'text-red-600' };
+      }
+      return { text: 'You can change this any time.', cls: 'text-slate-400' };
+    },
   },
   methods: {
     setField(key, value) {
       this.$emit('update:form', { ...this.form, [key]: value });
+      if (key === 'username') this.$emit('check-username');
     },
     onAvatarChange(event) {
       const file = event.target.files && event.target.files[0];
@@ -48,7 +70,7 @@ const ProfileEditModal = {
 
         <div class="flex flex-col items-center mb-4">
           <div class="relative">
-            <Avatar :url="shownAvatarUrl" :name="avatarName" :colorKey="avatarName" sizeClass="w-20 h-20 text-2xl" />
+            <Avatar :url="shownAvatarUrl" :enlargeable="false" :name="avatarName" :colorKey="avatarName" sizeClass="w-20 h-20 text-2xl" />
             <label class="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-teal-700 text-white flex items-center justify-center text-sm cursor-pointer">
               ✎
               <input type="file" accept="image/jpeg,image/png,image/webp" class="hidden" @change="onAvatarChange" />
@@ -59,9 +81,20 @@ const ProfileEditModal = {
           <p v-if="pickerError" class="mt-1 text-xs text-red-600">{{ pickerError }}</p>
         </div>
 
-        <label class="block text-xs font-medium text-slate-500 mb-1">{{ nameLabel }}</label>
-        <input :value="form[nameKey]" @input="setField(nameKey, $event.target.value)"
-               class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg mb-3" />
+        <template v-if="nameKey">
+          <label class="block text-xs font-medium text-slate-500 mb-1">{{ nameLabel }}</label>
+          <input :value="form[nameKey]" @input="setField(nameKey, $event.target.value)"
+                 class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg mb-3" />
+        </template>
+
+        <template v-if="showUsername">
+          <label class="block text-xs font-medium text-slate-500 mb-1">Username</label>
+          <input :value="form.username"
+                 @input="setField('username', $event.target.value.toLowerCase())"
+                 placeholder="jane_doe"
+                 class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg font-mono" />
+          <p class="mb-3 mt-1 text-xs" :class="usernameHint.cls">{{ usernameHint.text }}</p>
+        </template>
 
         <label class="block text-xs font-medium text-slate-500 mb-1">{{ aboutLabel }}</label>
         <textarea :value="form.about_text" @input="setField('about_text', $event.target.value)" rows="2"
@@ -70,7 +103,7 @@ const ProfileEditModal = {
         <p v-if="error" class="mb-2 text-xs text-red-600">{{ error }}</p>
 
         <div class="flex gap-2">
-          <button @click="$emit('save')" :disabled="busy"
+          <button @click="$emit('save')" :disabled="busy || (showUsername && usernameCheck.status === 'bad')"
                   class="flex-1 px-3 py-1.5 text-sm font-medium bg-teal-700 text-white rounded-lg disabled:opacity-50">
             {{ busy ? 'Saving…' : 'Save' }}
           </button>

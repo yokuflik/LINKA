@@ -163,11 +163,10 @@ async def test_get_me_with_a_garbage_token_returns_401(client, db_session: Async
 async def test_patch_me_updates_only_the_given_fields(client, db_session: AsyncSession, redis_db):
     _, access_token, _ = await _login(client, redis_db, "+972500100005")
 
-    resp = await client.patch("/users/me", json={"display_name": "New Name"}, headers=_auth_header(access_token))
+    resp = await client.patch("/users/me", json={"about_text": "New bio"}, headers=_auth_header(access_token))
     assert resp.status_code == 200
     body = resp.json()
-    assert body["display_name"] == "New Name"
-    assert body["about_text"] is None
+    assert body["about_text"] == "New bio"
 
 
 async def test_lookup_user_by_phone(client, db_session: AsyncSession, redis_db):

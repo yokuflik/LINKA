@@ -117,6 +117,8 @@ function useNewChat(ctx) {
       // key). A failed upload aborts creation - nothing half-made.
       if (payload.photoFile) {
         body.avatar_storage_key = await uploadAvatarBytes('/chats/groups/avatar/upload-ticket', payload.photoFile);
+        // Inline avatar thumbnail (ADR 0016) - best-effort.
+        try { body.avatar_preview = await ctx.encodeAvatarPreview(payload.photoFile); } catch (_) {}
       }
 
       const chat = await ctx.apiFetch('/chats/groups', {

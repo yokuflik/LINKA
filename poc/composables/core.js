@@ -100,10 +100,12 @@ function useCore(ctx) {
 
     if (!resp.ok) {
       let detail = resp.statusText;
-      try { detail = (await resp.json()).detail || detail; } catch (_) {}
+      let body = null;
+      try { body = await resp.json(); detail = body.detail || detail; } catch (_) {}
       logError('←', resp.status, path, detail);
       const err = new Error(detail);
       err.status = resp.status;
+      err.body = body;            // e.g. { detail, reason } for a bad username (ADR 0017)
       throw err;
     }
 

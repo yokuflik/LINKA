@@ -12,7 +12,12 @@ from routers.schemas import (
     UserSettingsOut,
     UserSettingsUpdateIn,
 )
-from config import LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+from config import (
+    LIST_READ_RATE_MAX,
+    LIST_READ_RATE_WINDOW_SECONDS,
+    USERNAME_CHECK_RATE_MAX,
+    USERNAME_CHECK_RATE_WINDOW_SECONDS,
+)
 from services import avatar_service, rate_limit_service, user_service
 from services.settings import service as settings_service
 
@@ -28,6 +33,20 @@ async def get_my_profile(user_id: int = Depends(get_current_user_id), session: A
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return user
+
+
+@router.get("/username-available")
+async def username_available(
+    username: str,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Advisory only (ADR 0017): the real authority is the unique-index write on
+    PATCH /users/me. Dedicated tight bucket so it can't enumerate the table."""
+    await rate_limit_service.enforce_sliding_window(
+        user_id, "username_check", USERNAME_CHECK_RATE_MAX, USERNAME_CHECK_RATE_WINDOW_SECONDS
+    )
+    return await user_service.check_username_available(session, user_id, username)
 
 
 @router.get("/by-phone", response_model=UserOut)
@@ -53,9 +72,11 @@ async def update_my_profile(
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
 ):
-    user = await user_service.update_profile(
-        session, user_id, display_name=body.display_name, about_text=body.about_text
-    )
+    if body.username is not None:
+        # Reason-coded (ADR 0017): format -> 400, taken/cooldown/grace_hold -> 409.
+        await user_service.set_username(session, user_id, body.username)
+
+    user = await user_service.update_profile(session, user_id, about_text=body.about_text)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     await user_service.broadcast_profile_update(session, user_id)
@@ -102,7 +123,7 @@ async def set_my_avatar(
     session: AsyncSession = Depends(get_db),
 ):
     """Step 2: commit the uploaded object as this user's avatar."""
-    user = await avatar_service.set_avatar(session, user_id, body.storage_key)
+    user = await avatar_service.set_avatar(session, user_id, body.storage_key, body.preview)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     await user_service.broadcast_profile_update(session, user_id)

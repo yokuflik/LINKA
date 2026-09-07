@@ -83,5 +83,6 @@ async def _broadcast_chat_update(session: AsyncSession, chat_id: int) -> None:
             "title": chat.title,
             "about_text": chat.about_text,
             "profile_pic_url": resolved_pic,
+            "profile_pic_preview": chat.profile_pic_preview,
         },
     )

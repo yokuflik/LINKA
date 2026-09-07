@@ -21,7 +21,7 @@ from config import (
     ROUTING_HEARTBEAT_INTERVAL_SECONDS,
     SERVER_ID,
 )
-from services import auth_service, chat_service, message_service, rate_limit_service
+from services import auth_service, chat_service, message_service, rate_limit_service, user_service
 from services.rate_limit_service import RateLimited
 from services.fanout import fanout_worker, routing
 from services.fanout import worker as send_worker
@@ -223,6 +223,11 @@ async def _handle_not_a_participant(request: Request, exc: Exception):
 @app.exception_handler(message_service.MessageTooLongError)
 async def _handle_message_too_long(request: Request, exc: Exception):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(user_service.UsernameError)
+async def _username_error_handler(_, exc: user_service.UsernameError):
+    return JSONResponse(status_code=exc.http_status, content={"detail": str(exc), "reason": exc.reason})
 
 
 @app.exception_handler(SettingsValidationError)

@@ -223,17 +223,21 @@ function useWsRouter(ctx) {
       // _broadcast_chat_update - a transient nudge alongside the persisted
       // system message). Patch the chat row in place so the sidebar + header
       // update live for every member, not just the admin who made the edit.
+      // Learned of a (possibly new) group photo - drop the previous full-res
+      // avatar from the device cache so the lightbox re-downloads the new one.
+      if (ctx.noteAvatarUrl) ctx.noteAvatarUrl('chat:' + msg.chat_id, msg.profile_pic_url || null);
       const item = ctx.chats.value.find((c) => c.chat.id === msg.chat_id);
       if (item) {
         item.chat.title = msg.title;
         item.chat.about_text = msg.about_text;
         item.chat.profile_pic_url = msg.profile_pic_url;
+        item.chat.profile_pic_preview = msg.profile_pic_preview || null;
       }
       return;
     }
 
     if (msg.event === 'profile_updated') {
-      // Someone who shares a chat with us changed their display name / about /
+      // Someone who shares a chat with us changed their username / about /
       // photo (user_service.broadcast_profile_update - a transient fan-out,
       // one copy per shared chat, so we may get several; they're identical).
       // This also reaches our own other connections for our own edit - and even
@@ -241,12 +245,16 @@ function useWsRouter(ctx) {
       // storage key / URL that any cached copy of "us" (userById, group member
       // rows, and currentUser itself) must pick up. So we do NOT skip our own
       // id here; we merge it everywhere, currentUser included.
+      // Learned of a (possibly new) avatar - drop the previous full-res image
+      // from the device cache so the lightbox re-downloads the new one.
+      if (ctx.noteAvatarUrl) ctx.noteAvatarUrl('user:' + msg.user_id, msg.profile_pic_url || null);
       const existing = ctx.userById.value[msg.user_id] || { id: msg.user_id };
       ctx.userById.value[msg.user_id] = {
         ...existing,
-        display_name: msg.display_name,
+        username: msg.username,
         about_text: msg.about_text,
         profile_pic_url: msg.profile_pic_url,
+        profile_pic_preview: msg.profile_pic_preview || null,
       };
       // A private chat's sidebar/header name+avatar are resolved off this same
       // cache, so reassigning the user object above is enough - nothing else
@@ -260,9 +268,10 @@ function useWsRouter(ctx) {
       if (currentUser.value && msg.user_id === currentUser.value.id) {
         currentUser.value = {
           ...currentUser.value,
-          display_name: msg.display_name,
+          username: msg.username,
           about_text: msg.about_text,
           profile_pic_url: msg.profile_pic_url,
+          profile_pic_preview: msg.profile_pic_preview || null,
         };
       }
       return;

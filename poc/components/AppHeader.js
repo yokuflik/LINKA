@@ -4,6 +4,7 @@ const AppHeader = {
     wsStatus: { type: String, required: true },
     currentUser: { type: Object, required: true },
     avatarUrl: { default: null },
+    avatarPreview: { default: null },
   },
   emits: ['logout', 'edit-profile', 'open-settings'],
   template: `
@@ -20,8 +21,9 @@ const AppHeader = {
         <button type="button" @click="$emit('edit-profile')"
                 class="flex items-center gap-3 hover:bg-slate-50 rounded-lg px-2 py-1 -mx-1"
                 title="Edit your profile">
-          <Avatar :url="avatarUrl" :name="currentUser.display_name || currentUser.phone_number" :colorKey="currentUser.id" sizeClass="w-7 h-7 text-xs" />
-          <span class="text-slate-500">You are <span class="font-medium text-slate-800">{{ currentUser.display_name || currentUser.phone_number }}</span></span>
+          <Avatar :url="avatarUrl" :preview="avatarPreview" :enlargeable="false"
+                  :name="currentUser.username || currentUser.phone_number" :colorKey="currentUser.id" sizeClass="w-7 h-7 text-xs" />
+          <span class="text-slate-500">You are <span class="font-medium text-slate-800">{{ currentUser.username || currentUser.phone_number }}</span></span>
         </button>
         <button type="button" @click="$emit('open-settings')"
                 class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-700"

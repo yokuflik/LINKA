@@ -78,9 +78,12 @@ function useProfileEdit(ctx) {
         body: f,
       });
       if (!putResp.ok) throw new Error('avatar upload failed (' + putResp.status + ')');
+      // Inline avatar thumbnail (ADR 0016) - best-effort.
+      let preview = null;
+      try { preview = await ctx.encodeAvatarPreview(f); } catch (_) {}
       return await ctx.apiFetch(`${base}/avatar`, {
         method: 'PUT',
-        body: JSON.stringify({ storage_key: ticket.storage_key }),
+        body: JSON.stringify({ storage_key: ticket.storage_key, preview }),
       });
     }
     if (picker.cleared.value) {
@@ -93,20 +96,48 @@ function useProfileEdit(ctx) {
   // Current-user profile
   // ---------------------------------------------------------------
   const showProfileModal = ref(false);
-  const profileForm = ref({ display_name: '', about_text: '' });
+  const profileForm = ref({ about_text: '', username: '' });
   const profileBusy = ref(false);
   const profileError = ref('');
   const profileAvatar = makeAvatarPicker();
+  // Live username availability for the edit form (same shape as the sign-up
+  // welcome form). status: '' | 'checking' | 'ok' | 'bad'.
+  const profileUsernameCheck = ref({ status: '', reason: '' });
+  let _profUsernameTimer = null;
 
   function openProfileModal() {
     const u = ctx.currentUser.value || {};
     profileForm.value = {
-      display_name: u.display_name || '',
       about_text: u.about_text || '',
+      username: u.username || '',
     };
+    profileUsernameCheck.value = { status: '', reason: '' };
+    if (_profUsernameTimer) clearTimeout(_profUsernameTimer);
     profileAvatar.reset();
     profileError.value = '';
     showProfileModal.value = true;
+  }
+
+  function checkProfileUsername() {
+    const raw = (profileForm.value.username || '').trim();
+    const current = (ctx.currentUser.value && ctx.currentUser.value.username) || '';
+    if (_profUsernameTimer) clearTimeout(_profUsernameTimer);
+    if (!raw || raw === current) {
+      profileUsernameCheck.value = { status: '', reason: '' };
+      return;
+    }
+    profileUsernameCheck.value = { status: 'checking', reason: '' };
+    _profUsernameTimer = setTimeout(async () => {
+      try {
+        const r = await ctx.apiFetch('/users/username-available?username=' + encodeURIComponent(raw));
+        if ((profileForm.value.username || '').trim() !== raw) return; // stale
+        profileUsernameCheck.value = r.available
+          ? { status: 'ok', reason: '' }
+          : { status: 'bad', reason: r.reason || '' };
+      } catch (_) {
+        profileUsernameCheck.value = { status: '', reason: '' };
+      }
+    }, 400);
   }
 
   async function saveProfile() {
@@ -115,11 +146,11 @@ function useProfileEdit(ctx) {
     try {
       const u = ctx.currentUser.value || {};
       const patch = {};
-      const name = (profileForm.value.display_name || '').trim();
       const about = (profileForm.value.about_text || '').trim();
+      const uname = (profileForm.value.username || '').trim();
       // PATCH /users/me treats null-vs-value, not "" - only send changed fields.
-      if (name !== (u.display_name || '')) patch.display_name = name;
       if (about !== (u.about_text || '')) patch.about_text = about;
+      if (uname && uname !== (u.username || '')) patch.username = uname;
       if (Object.keys(patch).length) {
         ctx.currentUser.value = await ctx.apiFetch('/users/me', {
           method: 'PATCH',
@@ -137,12 +168,15 @@ function useProfileEdit(ctx) {
       // best-effort Redis fan-out never arrives.
       const me = ctx.currentUser.value || {};
       if (me.id) {
+        // New avatar -> evict our own stale full-res image from the device cache.
+        if (ctx.noteAvatarUrl) ctx.noteAvatarUrl('user:' + me.id, me.profile_pic_url || null);
         const existing = ctx.userById.value[me.id] || { id: me.id };
         ctx.userById.value[me.id] = {
           ...existing,
-          display_name: me.display_name,
+          username: me.username,
           about_text: me.about_text,
           profile_pic_url: me.profile_pic_url,
+          profile_pic_preview: me.profile_pic_preview || null,
         };
         Object.values(ctx.groupChatMembers.value || {}).forEach((members) => {
           const row = (members || []).find((m) => m.user && m.user.id === me.id);
@@ -152,7 +186,23 @@ function useProfileEdit(ctx) {
       showProfileModal.value = false;
       ctx.showToast('Profile updated');
     } catch (err) {
-      profileError.value = err.message || String(err);
+      // Backend sends { detail, reason } for a rejected username (ADR 0017):
+      // taken / cooldown / grace_hold / format codes.
+      const reason = err && err.body && err.body.reason;
+      if (reason) {
+        const map = {
+          too_short: 'Username too short (min 3)', too_long: 'Username too long (max 32)',
+          bad_chars: 'Username: letters, digits and _ only',
+          must_start_letter: 'Username must start with a letter',
+          reserved: 'That username is reserved', taken: 'That username is already taken',
+          grace_hold: 'That username was recently released and is not available yet',
+          cooldown: 'You changed your username recently - try again later',
+        };
+        profileError.value = map[reason] || ('Username: ' + reason.replace(/_/g, ' '));
+        profileUsernameCheck.value = { status: 'bad', reason };
+      } else {
+        profileError.value = err.message || String(err);
+      }
     } finally {
       profileBusy.value = false;
     }
@@ -215,7 +265,7 @@ function useProfileEdit(ctx) {
 
   return {
     showProfileModal, profileForm, profileBusy, profileError, profileAvatar,
-    openProfileModal, saveProfile,
+    profileUsernameCheck, openProfileModal, saveProfile, checkProfileUsername,
     showGroupEditModal, groupForm, groupEditBusy, groupEditError, groupAvatar,
     openGroupEditModal, saveGroupEdit,
   };

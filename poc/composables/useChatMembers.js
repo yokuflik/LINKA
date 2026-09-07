@@ -26,7 +26,7 @@ function useChatMembers(ctx) {
       const members = await ctx.apiFetch(`/chats/${chatId}/members`);
       const other = members.find((m) => m.user.id !== ctx.currentUser.value.id);
       if (other) {
-        ctx.privateChatTitles.value[chatId] = other.user.display_name || other.user.phone_number;
+        ctx.privateChatTitles.value[chatId] = other.user.username || other.user.phone_number;
         ctx.privateChatOtherUserId.value[chatId] = other.user.id;
         // Cache the whole UserOut so the avatar URL needs no second lookup.
         ctx.userById.value[other.user.id] = other.user;
@@ -56,13 +56,13 @@ function useChatMembers(ctx) {
     if (senderId == null) return 'system';
     const user = ctx.userById.value[senderId];
     if (!user) return senderId;
-    return user.display_name || user.phone_number;
+    return user.username || user.phone_number;
   }
 
   function userLabelById(userId) {
     const user = ctx.userById.value[userId];
     if (!user) return userId;
-    return user.display_name || user.phone_number;
+    return user.username || user.phone_number;
   }
 
   // Same as senderLabel, but says "You" for the current user - matches
@@ -100,7 +100,7 @@ function useChatMembers(ctx) {
   function currentUserNameVariants() {
     const u = ctx.currentUser.value;
     if (!u) return [];
-    const variants = [u.display_name, u.phone_number];
+    const variants = [u.username, u.phone_number];
     return variants.filter((v) => typeof v === 'string' && v.length > 0);
   }
 
@@ -144,7 +144,7 @@ function useChatMembers(ctx) {
   const activeChatLabel = computed(() => {
     if (ctx.draftChat.value) {
       const u = draftUser();
-      return `Chat with ${u ? (u.display_name || u.phone_number) : ctx.draftChat.value.phone}`;
+      return `Chat with ${u ? (u.username || u.phone_number) : ctx.draftChat.value.phone}`;
     }
     return activeChatItem.value ? chatDisplayName(activeChatItem.value.chat) : '';
   });
@@ -154,12 +154,16 @@ function useChatMembers(ctx) {
     return activeChatItem.value ? ctx.chatAvatarUrl(activeChatItem.value.chat) : null;
   });
   const activeChatAvatarName = computed(() => {
-    if (ctx.draftChat.value) { const u = draftUser(); return u ? (u.display_name || u.phone_number) : ctx.draftChat.value.phone; }
+    if (ctx.draftChat.value) { const u = draftUser(); return u ? (u.username || u.phone_number) : ctx.draftChat.value.phone; }
     return activeChatItem.value ? ctx.chatAvatarName(activeChatItem.value.chat) : '';
   });
   const activeChatAvatarColorKey = computed(() => {
     if (ctx.draftChat.value) return String(ctx.draftChat.value.otherUserId);
     return activeChatItem.value ? ctx.chatAvatarColorKey(activeChatItem.value.chat) : '';
+  });
+  const activeChatAvatarPreview = computed(() => {
+    if (ctx.draftChat.value) { const u = draftUser(); return u ? ctx.userAvatarPreview(u) : null; }
+    return activeChatItem.value ? ctx.chatAvatarPreview(activeChatItem.value.chat) : null;
   });
 
   const activeChatMembers = computed(() => ctx.groupChatMembers.value[ctx.activeChatId.value] || []);
@@ -167,7 +171,7 @@ function useChatMembers(ctx) {
   const hiddenActiveChatMemberCount = computed(() => Math.max(0, activeChatMembers.value.length - ctx.MAX_VISIBLE_MEMBERS));
 
   function memberDisplayName(member) {
-    return member.user.display_name || member.user.phone_number;
+    return member.user.username || member.user.phone_number;
   }
 
   const currentUserRoleInActiveChat = computed(() => {
@@ -187,7 +191,7 @@ function useChatMembers(ctx) {
     currentUserNameVariants, personalizeSystemMessage,
     activeChatItem, activePaneVisible, draftUser,
     activeChatLabel, activeChatIsGroup,
-    activeChatAvatarUrl, activeChatAvatarName, activeChatAvatarColorKey,
+    activeChatAvatarUrl, activeChatAvatarName, activeChatAvatarColorKey, activeChatAvatarPreview,
     activeChatMembers, visibleActiveChatMembers, hiddenActiveChatMemberCount,
     memberDisplayName,
     currentUserRoleInActiveChat, canManageActiveChatMembers, canChangeActiveChatRoles,

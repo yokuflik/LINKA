@@ -23,7 +23,8 @@ async def create_chat(
     is_group: bool, 
     title: Optional[str] = None,
     about_text: Optional[str] = None,
-    profile_pic_url: Optional[str] = None
+    profile_pic_url: Optional[str] = None,
+    profile_pic_preview: Optional[str] = None,
 ) -> Optional[Chat]:
     """
     Insert a new chat into the database.
@@ -33,7 +34,8 @@ async def create_chat(
         is_group=is_group,
         title=title if is_group else None, # Enforce logic: private chats don't have titles
         about_text=about_text if is_group else None,
-        profile_pic_url=profile_pic_url
+        profile_pic_url=profile_pic_url,
+        profile_pic_preview=profile_pic_preview,
     )
     
     session.add(new_chat)
@@ -53,10 +55,15 @@ async def update_chat_details(
     chat_id: int, 
     title: Optional[str] = None, 
     about_text: Optional[str] = None,
-    profile_pic_url: Optional[str] = None
+    profile_pic_url: Optional[str] = None,
+    profile_pic_preview: Optional[str] = None,
+    write_preview: bool = False,
 ) -> Optional[Chat]:
     """
     Update chat profile fields (typically for groups).
+
+    ``write_preview=True`` forces ``profile_pic_preview`` to be written
+    even when ``None`` - a new group avatar replaces the old preview (ADR 0016).
     """
     update_data = {}
     if title is not None:
@@ -65,6 +72,8 @@ async def update_chat_details(
         update_data["about_text"] = about_text
     if profile_pic_url is not None:
         update_data["profile_pic_url"] = profile_pic_url
+    if write_preview:
+        update_data["profile_pic_preview"] = profile_pic_preview
 
     if not update_data:
         return await get_chat_by_id(session, chat_id)

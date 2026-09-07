@@ -15,8 +15,8 @@ function useAuth(ctx) {
   const currentUser = ref(null);
   const isAuthed = computed(() => !!accessToken.value && !!currentUser.value);
 
-  const authMode = ref('login'); // 'login' | 'register'
-  const authStage = ref('phone'); // 'phone' | 'otp'
+  // One flow (ADR 0017): phone -> otp -> (new accounts only) welcome.
+  const authStage = ref('phone'); // 'phone' | 'otp' | 'welcome'
   // Resolved phone value (E.164, or the raw "1".."5" dev token). Kept as a ref
   // so lifecycle code that still destructures `phoneNumber` from ctx keeps
   // working; synced from usePhoneInput's `resolvedPhone` at request time.
@@ -25,7 +25,11 @@ function useAuth(ctx) {
   // Firebase confirmationResult between requestOtp() and verifyOtp() for the
   // real-SMS path (ADR 0009). null on the dev-whitelist path.
   let firebaseConfirmation = null;
-  const profileDraft = ref({ display_name: '', about_text: '' });
+  const profileDraft = ref({ about_text: '', username: '' });
+  // Advisory username availability for the welcome form. status: '' | 'checking'
+  // | 'ok' | 'bad'; reason is the backend machine code when status==='bad'.
+  const usernameCheck = ref({ status: '', reason: '' });
+  let _usernameCheckTimer = null;
   const authError = ref('');
   const authBusy = ref(false);
 
@@ -78,9 +82,12 @@ function useAuth(ctx) {
       body: file,
     });
     if (!putResp.ok) throw new Error('avatar upload failed (' + putResp.status + ')');
+    // Inline avatar thumbnail (ADR 0016) - best-effort, omitted on failure.
+    let preview = null;
+    try { preview = await ctx.encodeAvatarPreview(file); } catch (_) {}
     currentUser.value = await apiFetch('/users/me/avatar', {
       method: 'PUT',
-      body: JSON.stringify({ storage_key: ticket.storage_key }),
+      body: JSON.stringify({ storage_key: ticket.storage_key, preview }),
     });
   }
 
@@ -106,10 +113,7 @@ function useAuth(ctx) {
         // Dev-whitelist number (1..5): legacy OTP stub, code is anything.
         await apiFetch('/auth/otp/request', {
           method: 'POST',
-          body: JSON.stringify({
-            phone_number: phoneNumber.value,
-            intent: authMode.value === 'register' ? 'register' : 'login',
-          }),
+          body: JSON.stringify({ phone_number: phoneNumber.value }),
         });
         log('OTP (dev stub) requested for', phoneNumber.value, '- any code works');
       } else {
@@ -148,7 +152,26 @@ function useAuth(ctx) {
         try { await window.firebaseAuth.signOut(); } catch (e) { /* our JWT is the truth */ }
         firebaseConfirmation = null;
       }
-      await finishLogin(body);
+
+      accessToken.value = body.access_token;
+      refreshToken.value = body.refresh_token;
+      currentUser.value = body.user;
+      localStorage.setItem('linka_access_token', accessToken.value);
+      localStorage.setItem('linka_refresh_token', refreshToken.value);
+      log('logged in as', currentUser.value);
+
+      if (body.is_new_user) {
+        // First sign-in: collect an about line / avatar and let the user keep
+        // or replace the server-assigned username (ADR 0017 §2).
+        profileDraft.value = {
+          about_text: '',
+          username: (body.user && body.user.username) || '',
+        };
+        usernameCheck.value = { status: '', reason: '' };
+        authStage.value = 'welcome';
+      } else {
+        await enterApp();
+      }
     } catch (err) {
       authError.value = err.message || 'Invalid code';
     } finally {
@@ -156,40 +179,73 @@ function useAuth(ctx) {
     }
   }
 
-  // Shared post-verify tail for both the dev-stub and Firebase paths.
-  async function finishLogin(body) {
-    accessToken.value = body.access_token;
-    refreshToken.value = body.refresh_token;
-    currentUser.value = body.user;
-    localStorage.setItem('linka_access_token', accessToken.value);
-    localStorage.setItem('linka_refresh_token', refreshToken.value);
-    log('logged in as', currentUser.value);
+  // Advisory availability check for the welcome form, debounced.
+  function checkUsername() {
+    const raw = (profileDraft.value.username || '').trim();
+    if (_usernameCheckTimer) clearTimeout(_usernameCheckTimer);
+    if (!raw || raw === ((currentUser.value && currentUser.value.username) || '')) {
+      usernameCheck.value = { status: '', reason: '' };
+      return;
+    }
+    usernameCheck.value = { status: 'checking', reason: '' };
+    _usernameCheckTimer = setTimeout(async () => {
+      try {
+        const r = await apiFetch('/users/username-available?username=' + encodeURIComponent(raw));
+        // Ignore a stale response if the field changed while in flight.
+        if ((profileDraft.value.username || '').trim() !== raw) return;
+        usernameCheck.value = r.available
+          ? { status: 'ok', reason: '' }
+          : { status: 'bad', reason: r.reason || '' };
+      } catch (err) {
+        usernameCheck.value = { status: '', reason: '' };
+      }
+    }, 400);
+  }
 
-    // On register, push the profile fields the user filled in on the
-    // sign-up form. Best-effort - a failure here shouldn't block login.
-    if (authMode.value === 'register') {
+  // Submit the welcome form: best-effort PATCH of the changed fields + avatar,
+  // then start the app. A rejected username keeps the user on the form.
+  async function submitWelcome() {
+    authError.value = '';
+    authBusy.value = true;
+    try {
       const patch = {};
-      const name = (profileDraft.value.display_name || '').trim();
       const about = (profileDraft.value.about_text || '').trim();
-      if (name) patch.display_name = name;
+      const uname = (profileDraft.value.username || '').trim();
       if (about) patch.about_text = about;
+      if (uname && uname !== ((currentUser.value && currentUser.value.username) || '')) {
+        patch.username = uname;
+      }
       if (Object.keys(patch).length) {
-        try {
-          currentUser.value = await apiFetch('/users/me', {
-            method: 'PATCH',
-            body: JSON.stringify(patch),
-          });
-        } catch (err) {
-          logError('failed to save profile on register:', err.message);
-        }
+        currentUser.value = await apiFetch('/users/me', {
+          method: 'PATCH',
+          body: JSON.stringify(patch),
+        });
       }
       try {
         await uploadPickedAvatar();
       } catch (err) {
-        logError('failed to upload avatar on register:', err.message);
+        logError('failed to upload avatar on sign-up:', err.message);
       }
+      await enterApp();
+    } catch (err) {
+      // Backend sends { detail, reason } for a bad username.
+      const reason = err && err.body && err.body.reason;
+      authError.value = reason ? ('Username: ' + reason.replace(/_/g, ' ')) : (err.message || 'Could not save your profile');
+      if (reason) usernameCheck.value = { status: 'bad', reason };
+    } finally {
+      authBusy.value = false;
     }
+  }
 
+  // Skip the welcome form - the random username and empty profile stand.
+  async function skipWelcome() {
+    authBusy.value = true;
+    try { await enterApp(); } finally { authBusy.value = false; }
+  }
+
+  async function enterApp() {
+    // Leave the 'welcome' stage so the main app view (gated on authStage) shows.
+    authStage.value = 'phone';
     ctx.connectWebSocket();
     await ctx.loadChats();
   }
@@ -211,7 +267,9 @@ function useAuth(ctx) {
     ctx.replyingToMessage.value = null;
     authStage.value = 'phone';
     otpCode.value = '';
-    profileDraft.value = { display_name: '', about_text: '' };
+    profileDraft.value = { about_text: '', username: '' };
+    usernameCheck.value = { status: '', reason: '' };
+    if (_usernameCheckTimer) clearTimeout(_usernameCheckTimer);
     clearAvatar();
     phoneNumber.value = '';
     otpCode.value = '';
@@ -219,6 +277,7 @@ function useAuth(ctx) {
     if (ctx.resetPhoneInput) ctx.resetPhoneInput();
     ctx.clearAllMessageCache();
     if (ctx.clearOutbox) ctx.clearOutbox();
+    if (ctx.clearAvatarCache) ctx.clearAvatarCache();
     localStorage.removeItem('linka_access_token');
     localStorage.removeItem('linka_refresh_token');
     log('logged out');
@@ -226,9 +285,9 @@ function useAuth(ctx) {
 
   return {
     accessToken, refreshToken, currentUser, isAuthed,
-    authMode, authStage, phoneNumber, otpCode, profileDraft, authError, authBusy,
+    authStage, phoneNumber, otpCode, profileDraft, usernameCheck, authError, authBusy,
     avatarFile, avatarPreviewUrl, avatarError,
     pickAvatar, clearAvatar, uploadPickedAvatar,
-    requestOtp, verifyOtp, logout,
+    requestOtp, verifyOtp, checkUsername, submitWelcome, skipWelcome, logout,
   };
 }

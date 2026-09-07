@@ -56,21 +56,23 @@ ROLE_MEMBER = 1
 ROLE_OWNER = 3
 TEXT_MESSAGE_TYPE = 1
 
-# Phone numbers "1".."10", matching MOCK_CONTACT_NAMES in poc/index.html key
-# for key - these are what you type into the PoC's login screen. The OTP
+# These phone numbers are what you type into the PoC's login screen. The OTP
 # still prints to the server console like any other login - seeded users
 # aren't special.
+# (phone number, username). Phone numbers "1".."10" are the shape the PoC's
+# login screen accepts. Usernames must match config.USERNAME_REGEX
+# (^[a-z][a-z0-9_]{2,31}$).
 USERS = [
-    ("1", "Daniel Cohen"),
-    ("2", "Noa Levi"),
-    ("3", "Avi Mizrahi"),
-    ("4", "Maya Gold"),
-    ("5", "Yossi Avraham"),
-    ("6", "Shira Peretz"),
-    ("7", "Omer Azulay"),
-    ("8", "Tamar Mizrahi"),
-    ("9", "Itay Ben-David"),
-    ("10", "Roni Katz"),
+    ("1", "daniel_cohen"),
+    ("2", "noa_levi"),
+    ("3", "avi_mizrahi"),
+    ("4", "maya_gold"),
+    ("5", "yossi_avraham"),
+    ("6", "shira_peretz"),
+    ("7", "omer_azulay"),
+    ("8", "tamar_mizrahi"),
+    ("9", "itay_bendavid"),
+    ("10", "roni_katz"),
 ]
 
 # Indices into USERS. Deliberately not every possible pair - a dataset where
@@ -133,21 +135,18 @@ def _random_content() -> str:
 
 async def _ensure_users(session) -> list[User]:
     """
-    Lookup-then-create, plus a backfill: these phone numbers ("1".."10") are
-    also the shape the PoC's login screen accepts, so one of them may already
-    exist from earlier manual testing with no display_name set - that would
-    otherwise leave this user's DB record permanently out of sync with
-    MOCK_CONTACT_NAMES in poc/index.html.
+    Lookup-then-create: these phone numbers ("1".."10") are also the shape the
+    PoC's login screen accepts, so one of them may already exist from earlier
+    manual testing. An existing user's auto-assigned username is left alone.
     """
     users = []
-    for phone_number, display_name in USERS:
+    for phone_number, username in USERS:
         user = await get_user_by_phone(session, phone_number)
         if user is None:
-            user = await create_user(session, user_id=next_id(), phone_number=phone_number, display_name=display_name)
-            print(f"  created user {display_name} ({phone_number})")
-        elif user.display_name != display_name:
-            user = await update_user_profile(session, user_id=user.id, display_name=display_name)
-            print(f"  backfilled display_name for {phone_number} -> {display_name}")
+            user = await create_user(
+                session, user_id=next_id(), phone_number=phone_number, username=username
+            )
+            print(f"  created user {username} ({phone_number})")
         users.append(user)
     return users
 
@@ -170,7 +169,7 @@ async def _ensure_avatars(session, users: list[User]) -> None:
                 continue
             photo = MOCK_PHOTOS_DIR / f"p{user.phone_number}.png"
             if not photo.is_file():
-                print(f"  no photo file {photo.name} for {user.display_name} - skipped")
+                print(f"  no photo file {photo.name} for {user.username} - skipped")
                 continue
             key = build_object_key("avatar", "image/png")
             await s3.put_object(
@@ -180,7 +179,7 @@ async def _ensure_avatars(session, users: list[User]) -> None:
                 ContentType="image/png",
             )
             await update_user_profile(session, user_id=user.id, profile_pic_url=key)
-            print(f"  avatar for {user.display_name} ({photo.name}) -> {key}")
+            print(f"  avatar for {user.username} ({photo.name}) -> {key}")
 
 
 _GROUP_PHOTO_MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
@@ -222,7 +221,7 @@ async def _ensure_private_chat(session, user_a: User, user_b: User) -> Chat:
     await create_pair(session, user_a.id, user_b.id, chat.id)
     await add_participant_to_chat(session, chat_id=chat.id, user_id=user_a.id, role=ROLE_MEMBER)
     await add_participant_to_chat(session, chat_id=chat.id, user_id=user_b.id, role=ROLE_MEMBER)
-    print(f"  created private chat {user_a.display_name} <-> {user_b.display_name}")
+    print(f"  created private chat {user_a.username} <-> {user_b.username}")
     return chat
 
 
@@ -412,7 +411,7 @@ async def main(messages_per_chat: int, days: int) -> None:
 
         for a, b in PRIVATE_PAIRS:
             chat = await _ensure_private_chat(session, users[a], users[b])
-            label = f"{users[a].display_name} <-> {users[b].display_name}"
+            label = f"{users[a].username} <-> {users[b].username}"
             chats.append((label, chat, [users[a].id, users[b].id], messages_per_chat))
 
         group_photo_jobs: list[tuple[Chat, str]] = []
@@ -441,8 +440,8 @@ async def main(messages_per_chat: int, days: int) -> None:
 
     print(f"\nDone: {len(users)} users, {len(chats)} chats, {total_messages} messages inserted.")
     print("Log in from the PoC with any of these numbers (OTP prints to the server console):")
-    for phone_number, display_name in USERS:
-        print(f"  {phone_number}  {display_name}")
+    for phone_number, username in USERS:
+        print(f"  {phone_number}  {username}")
 
 
 if __name__ == "__main__":

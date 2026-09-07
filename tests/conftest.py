@@ -25,6 +25,7 @@ from database.models import message_receipt_log as _message_receipt_log  # noqa:
 from database.models import user as _user  # noqa: F401
 from database.models import private_chat_pair as _private_chat_pair  # noqa: F401
 from database.models import user_settings as _user_settings  # noqa: F401
+from database.models import reserved_username as _reserved_username  # noqa: F401
 
 # Pointing to a local PostgreSQL instance dedicated ONLY for tests
 # (Usually spun up via Docker before running the tests)

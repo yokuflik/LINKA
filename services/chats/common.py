@@ -28,4 +28,4 @@ async def _display_name_for(session: AsyncSession, user_id: int) -> str:
     user = await session.get(User, user_id)
     if user is None:
         return str(user_id)
-    return user.display_name or user.phone_number
+    return user.username or user.phone_number

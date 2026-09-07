@@ -42,7 +42,7 @@ async def test_verify_otp_creates_user_on_first_login(db_session: AsyncSession, 
     await auth_service.request_otp(phone)
     code = await _get_code(redis_db, phone)
 
-    user, access_token, refresh_token = await auth_service.verify_otp_and_login(db_session, phone, code)
+    user, access_token, refresh_token, _ = await auth_service.verify_otp_and_login(db_session, phone, code)
 
     assert user.phone_number == phone
     assert auth_service.verify_access_token(access_token) == user.id
@@ -65,11 +65,11 @@ async def test_verify_otp_second_login_reuses_existing_user(db_session: AsyncSes
 
     await auth_service.request_otp(phone)
     code1 = await _get_code(redis_db, phone)
-    user1, _, _ = await auth_service.verify_otp_and_login(db_session, phone, code1)
+    user1, _, _, _ = await auth_service.verify_otp_and_login(db_session, phone, code1)
 
     await auth_service.request_otp(phone)
     code2 = await _get_code(redis_db, phone)
-    user2, _, _ = await auth_service.verify_otp_and_login(db_session, phone, code2)
+    user2, _, _, _ = await auth_service.verify_otp_and_login(db_session, phone, code2)
 
     assert user1.id == user2.id
 
@@ -225,13 +225,13 @@ async def test_account_creation_cap_ignores_existing_users(db_session: AsyncSess
 
     await auth_service.request_otp(phone)
     code = await _get_code(redis_db, phone)
-    user1, _, _ = await auth_service.verify_otp_and_login(db_session, phone, code, client_ip=ip)
+    user1, _, _, _ = await auth_service.verify_otp_and_login(db_session, phone, code, client_ip=ip)
 
     # Same phone logs in again from the same (now exhausted) IP - allowed,
     # it's not a new account.
     await auth_service.request_otp(phone)
     code = await _get_code(redis_db, phone)
-    user2, _, _ = await auth_service.verify_otp_and_login(db_session, phone, code, client_ip=ip)
+    user2, _, _, _ = await auth_service.verify_otp_and_login(db_session, phone, code, client_ip=ip)
     assert user1.id == user2.id
 
 
@@ -268,5 +268,5 @@ async def test_otp_verification_attempt_cap_is_per_phone_not_global(db_session: 
             await auth_service.verify_otp_and_login(db_session, phone_a, "000000")
 
     # phone_a is exhausted, but phone_b's budget is untouched
-    user, _, _ = await auth_service.verify_otp_and_login(db_session, phone_b, code_b)
+    user, _, _, _ = await auth_service.verify_otp_and_login(db_session, phone_b, code_b)
     assert user.phone_number == phone_b

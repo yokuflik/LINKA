@@ -11,6 +11,7 @@ const MessageList = {
     systemMessageText: { type: Function, required: true },
     senderLabel: { type: Function, required: true },
     senderAvatarUrl: { type: Function, required: true },
+    senderAvatarPreview: { type: Function, required: true },
     statusTickSymbol: { type: Function, required: true },
     statusTickClass: { type: Function, required: true },
     quotedPreviewFor: { type: Function, required: true },
@@ -235,7 +236,7 @@ const MessageList = {
            class="max-w-md w-fit flex items-end gap-2"
            :class="m.sender_id === currentUser.id ? 'ml-auto text-right' : ''">
         <Avatar v-if="m.sender_id !== currentUser.id"
-                :url="senderAvatarUrl(m.sender_id)" :name="senderLabel(m.sender_id)"
+                :url="senderAvatarUrl(m.sender_id)" :preview="senderAvatarPreview(m.sender_id)" :name="senderLabel(m.sender_id)"
                 :colorKey="m.sender_id" sizeClass="w-7 h-7 text-xs"
                 class="shrink-0 mb-[18px]" />
         <div class="min-w-0">
@@ -376,7 +377,7 @@ const MessageList = {
           <span v-if="m.content">{{ m.content }}</span>
           <span v-if="m.is_edited" class="text-[10px] opacity-60">{{ m.edited_at
             ? ' (edited ' + new Date(m.edited_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ')'
-            : ' (edited)' }}
+            : ' (edited)' }}</span>
           </template>
         </div>
         <div class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"

@@ -13,6 +13,7 @@ Sync vs async (see client.py):
 """
 
 import json
+import logging
 from dataclasses import dataclass
 
 from botocore.exceptions import ClientError
@@ -44,6 +45,8 @@ from services.storage.errors import (
     MediaValidationError,
     StorageUnavailableError,
 )
+
+logger = logging.getLogger(__name__)
 
 VALID_KINDS = frozenset(MAX_UPLOAD_BYTES_BY_KIND.keys())
 
@@ -324,6 +327,24 @@ _AVATARS_PUBLIC_READ_POLICY = {
     ],
 }
 
+# Avatars are already world-readable via <img>; a GET CORS rule additionally
+# lets a browser `fetch()` them (and use <img crossorigin>) to keep full-res
+# copies in Cache Storage (ADR 0016 device cache). GET only, no credentials.
+# MinIO returns NotImplemented for PutBucketCors and already serves
+# `Access-Control-Allow-Origin: *` at the server level, so this call only
+# matters against real AWS S3.
+_AVATARS_CORS_CONFIG = {
+    "CORSRules": [
+        {
+            "AllowedOrigins": ["*"],
+            "AllowedMethods": ["GET", "HEAD"],
+            "AllowedHeaders": ["*"],
+            "ExposeHeaders": ["ETag", "Content-Length"],
+            "MaxAgeSeconds": 3600,
+        }
+    ]
+}
+
 
 async def ensure_buckets() -> None:
     """
@@ -356,3 +377,15 @@ async def ensure_buckets() -> None:
             raise StorageUnavailableError(
                 f"could not set public-read policy on {S3_BUCKET_AVATARS}: {exc}"
             ) from exc
+
+        try:
+            await s3.put_bucket_cors(
+                Bucket=S3_BUCKET_AVATARS,
+                CORSConfiguration=_AVATARS_CORS_CONFIG,
+            )
+        except ClientError as exc:
+            # Non-fatal: <img> rendering still works without CORS; only the
+            # fetch()-based device cache degrades to re-downloading each time.
+            logger.warning(
+                "could not set CORS on %s: %s", S3_BUCKET_AVATARS, exc
+            )

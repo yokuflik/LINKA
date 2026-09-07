@@ -56,6 +56,23 @@ cp deploy/env.production.example .env
 #                         ceiling, default 1000 / 180 s - the retune knob
 ```
 
+### Avatars bucket CORS (ADR 0016 device cache)
+
+The app calls `put_bucket_cors` on the avatars bucket at startup, but a real
+AWS S3 bucket provisioned by IaC may deny that call. Ensure the avatars bucket
+carries this CORS rule so browsers can `fetch()` full-res avatars (for the
+client-side Cache Storage copy) - not just render them via `<img>`:
+
+```json
+{ "CORSRules": [ {
+  "AllowedOrigins": ["https://linka-web.com", "https://www.linka-web.com"],
+  "AllowedMethods": ["GET", "HEAD"],
+  "AllowedHeaders": ["*"],
+  "ExposeHeaders": ["ETag", "Content-Length"],
+  "MaxAgeSeconds": 3600
+} ] }
+```
+
 ### Rate-limit retune knobs (ADR 0012 / COMMS_SECURITY_PLAN)
 
 Every limit is an env var with a generous default — ship as-is, then tighten

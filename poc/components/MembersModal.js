@@ -7,6 +7,7 @@ const MembersModal = {
     activeChatMembers: { type: Array, required: true },
     memberDisplayName: { type: Function, required: true },
     userAvatarUrl: { type: Function, required: true },
+    userAvatarPreview: { type: Function, required: true },
     roleLabel: { type: Function, required: true },
     hasMemberOptions: { type: Function, required: true },
     memberOptionsFor: { default: null },
@@ -40,7 +41,7 @@ const MembersModal = {
                  :class="hasMemberOptions(member) ? 'cursor-pointer hover:bg-slate-50 -mx-1 px-1 rounded' : ''"
                  @click="$emit('open-member-options', member)">
               <span class="flex items-center gap-2 min-w-0">
-                <Avatar :url="userAvatarUrl(member.user)" :name="memberDisplayName(member)"
+                <Avatar :url="userAvatarUrl(member.user)" :preview="userAvatarPreview(member.user)" :name="memberDisplayName(member)"
                         :colorKey="member.user.id" sizeClass="w-7 h-7 text-xs" />
                 <span class="text-sm truncate">{{ memberDisplayName(member) }}</span>
               </span>

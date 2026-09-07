@@ -256,6 +256,10 @@ function useMediaUpload(ctx) {
       return;
     }
     if (isRecording.value) return;
+    // Unlock the shared AudioContext synchronously inside this tap gesture,
+    // before any await - otherwise iOS leaves it 'suspended' and the FIRST
+    // voice message's playback waveform (decodeAudioData) silently fails.
+    if (ctx.unlock) ctx.unlock();
     if (!navigator.mediaDevices || !window.MediaRecorder) {
       ctx.messagesError.value = 'Voice recording is not supported in this browser.';
       return;

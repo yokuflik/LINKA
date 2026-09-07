@@ -23,6 +23,24 @@ function useAudioWaveform(ctx) {
     return sharedCtx;
   }
 
+  // iOS only unlocks an AudioContext from inside a real user gesture. Call this
+  // synchronously from the tap handler that starts a recording - BEFORE any
+  // await - so the context is 'running' by the time decodeAudioData needs it
+  // for the first voice message's playback waveform. Playing one short silent
+  // buffer is the reliable Safari unlock trick.
+  function unlock() {
+    const ac = audioContext();
+    if (!ac) return;
+    try {
+      if (ac.state === 'suspended') ac.resume().catch(() => {});
+      const buf = ac.createBuffer(1, 1, 22050);
+      const src = ac.createBufferSource();
+      src.buffer = buf;
+      src.connect(ac.destination);
+      src.start(0);
+    } catch (e) { /* non-fatal */ }
+  }
+
   // ---------------------------------------------------------------
   // 1. Live recording meter
   // ---------------------------------------------------------------
@@ -180,7 +198,7 @@ function useAudioWaveform(ctx) {
   // Also expose the playback helper on a global singleton so the globally
   // registered <VoiceMessage> component (which has no ctx) can decode peaks
   // without threading a prop through MessageList.
-  const api = { liveMeter, peaksForUrl, LIVE_BARS, PLAYBACK_BARS };
+  const api = { liveMeter, peaksForUrl, unlock, LIVE_BARS, PLAYBACK_BARS };
   window.__linkaWaveform = api;
   return api;
 }

@@ -91,7 +91,15 @@ function useNewChat(ctx) {
       userSearchResult.value = user;
     } catch (err) {
       if (seq !== userSearchSeq) return;
-      userSearchError.value = err.status === 404 ? 'No user found — check the exact username or phone number.' : ctx.friendlyError(err, "We couldn't run that search. Please try again.");
+      if (err.status === 404) {
+        const digits = raw.replace(/[\s-]/g, '').replace(/^\+/, '');
+        const looksLikeFullPhone = /^\+?\d[\d\s-]*$/.test(raw) && digits.length >= 8 && digits.length <= 15;
+        userSearchError.value = looksLikeFullPhone
+          ? 'This number is not registered with the service yet.'
+          : 'No user found — check the exact username or phone number.';
+      } else {
+        userSearchError.value = ctx.friendlyError(err, "We couldn't run that search. Please try again.");
+      }
     } finally {
       if (seq === userSearchSeq) userSearchBusy.value = false;
     }
@@ -162,7 +170,15 @@ function useNewChat(ctx) {
       groupSearchResult.value = user;
     } catch (err) {
       if (seq !== groupSearchSeq) return;
-      groupSearchError.value = err.status === 404 ? 'No user found — check the exact username or phone number.' : ctx.friendlyError(err, "We couldn't run that search. Please try again.");
+      if (err.status === 404) {
+        const digits = raw.replace(/[\s-]/g, '').replace(/^\+/, '');
+        const looksLikeFullPhone = /^\+?\d[\d\s-]*$/.test(raw) && digits.length >= 8 && digits.length <= 15;
+        groupSearchError.value = looksLikeFullPhone
+          ? 'This number is not registered with the service yet.'
+          : 'No user found — check the exact username or phone number.';
+      } else {
+        groupSearchError.value = ctx.friendlyError(err, "We couldn't run that search. Please try again.");
+      }
     } finally {
       if (seq === groupSearchSeq) groupSearchBusy.value = false;
     }

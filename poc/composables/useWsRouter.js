@@ -191,9 +191,12 @@ function useWsRouter(ctx) {
         // The message just reached this device over a live connection -
         // that's "delivered", regardless of which chat is open right now.
         sendReceipt('mark_delivered', msg.chat_id, msg.message_id);
-        // "Read" only for the chat actually on screen - opening a chat
-        // separately catches up on anything sent while it wasn't (see selectChat).
-        if (msg.chat_id === ctx.activeChatId.value) sendReceipt('mark_read', msg.chat_id, msg.message_id);
+        // "Read" only for the chat actually on screen AND only while the
+        // window is really being looked at (foreground tab, screen on). If it
+        // arrives while hidden, flushReadOnActivate() marks it on return.
+        if (msg.chat_id === ctx.activeChatId.value) {
+          ctx.markActiveChatReadIfVisible(msg.chat_id, msg.message_id);
+        }
       }
 
       // Unread badge: only real messages from someone else, and only for a

@@ -126,27 +126,50 @@ function useAudioWaveform(ctx) {
   // requests hanging and stalling the chat while a chat's messages load.
   const WAVEFORM_FETCH_TIMEOUT_MS = 4000;
 
+  const FLAT_PEAKS = () => new Array(PLAYBACK_BARS).fill(0.3);
+
+  async function decodeOnce(url) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), WAVEFORM_FETCH_TIMEOUT_MS);
+    try {
+      const ac = audioContext();
+      if (!ac) throw new Error('no AudioContext');
+      // iOS starts the shared context suspended; decodeAudioData on a
+      // freshly-recorded blob quietly yields nothing until it's running.
+      if (ac.state === 'suspended') { try { await ac.resume(); } catch (e) { /* */ } }
+      const resp = await fetch(url, { signal: controller.signal });
+      const arrayBuf = await resp.arrayBuffer();
+      // Safari's callback-style decodeAudioData is the only reliable form on iOS.
+      const audioBuf = await new Promise((resolve, reject) => {
+        const p = ac.decodeAudioData(arrayBuf, resolve, reject);
+        if (p && p.then) p.then(resolve, reject);
+      });
+      return reducePeaks(audioBuf.getChannelData(0), PLAYBACK_BARS);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   function peaksForUrl(url) {
-    if (!url) return Promise.resolve(new Array(PLAYBACK_BARS).fill(0.3));
+    if (!url) return Promise.resolve(FLAT_PEAKS());
     if (peaksCache.has(url)) return peaksCache.get(url);
 
     const promise = (async () => {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), WAVEFORM_FETCH_TIMEOUT_MS);
+      // One immediate try, then one retry ~350ms later: on iOS a blob recorded
+      // milliseconds ago often isn't decodable yet right after send.
       try {
-        const ac = audioContext();
-        if (!ac) throw new Error('no AudioContext');
-        const resp = await fetch(url, { signal: controller.signal });
-        const arrayBuf = await resp.arrayBuffer();
-        const audioBuf = await ac.decodeAudioData(arrayBuf);
-        return reducePeaks(audioBuf.getChannelData(0), PLAYBACK_BARS);
-      } catch (err) {
-        // Expected on a cross-origin media host without CORS headers - not an
-        // error worth a red console line, just a note.
-        if (ctx && ctx.log) ctx.log('waveform decode skipped:', err && err.message);
-        return new Array(PLAYBACK_BARS).fill(0.3);
-      } finally {
-        clearTimeout(timer);
+        return await decodeOnce(url);
+      } catch (err1) {
+        await new Promise((r) => setTimeout(r, 350));
+        try {
+          return await decodeOnce(url);
+        } catch (err2) {
+          if (ctx && ctx.log) ctx.log('waveform decode skipped:', err2 && err2.message);
+          // Do NOT cache the failure - drop it so a later render (or the real
+          // presigned URL once the send reconciles) can decode successfully.
+          peaksCache.delete(url);
+          return FLAT_PEAKS();
+        }
       }
     })();
 

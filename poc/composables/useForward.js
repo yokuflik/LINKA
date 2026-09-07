@@ -161,9 +161,15 @@ function useForward(ctx) {
       forwardUserResult.value = user;
     } catch (err) {
       if (seq !== forwardUserSeq) return;
-      forwardError.value = err.status === 404
-        ? 'No user found — check the exact username or phone number.'
-        : ctx.friendlyError(err, "We couldn't run that search. Please try again.");
+      if (err.status === 404) {
+        const digits = raw.replace(/[\s-]/g, '').replace(/^\+/, '');
+        const looksLikeFullPhone = /^\+?\d[\d\s-]*$/.test(raw) && digits.length >= 8 && digits.length <= 15;
+        forwardError.value = looksLikeFullPhone
+          ? 'This number is not registered with the service yet.'
+          : 'No user found — check the exact username or phone number.';
+      } else {
+        forwardError.value = ctx.friendlyError(err, "We couldn't run that search. Please try again.");
+      }
     } finally {
       if (seq === forwardUserSeq) forwardUserBusy.value = false;
     }

@@ -47,11 +47,21 @@ const VoiceMessage = {
       s = Math.max(0, Math.round(s || 0));
       return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
     },
-    async decodeWaveform() {
+    async decodeWaveform(attempt = 0) {
       const helper = window.__linkaWaveform;
       if (!helper || !helper.peaksForUrl) return;
+      const wantSrc = this.src;
       try {
-        this.peaks = await helper.peaksForUrl(this.src);
+        const peaks = await helper.peaksForUrl(wantSrc);
+        if (wantSrc !== this.src) return; // src changed mid-decode
+        this.peaks = peaks;
+        // A flat result means the decode failed (not cached). On iOS a
+        // just-recorded blob often needs a beat - retry a couple of times
+        // before giving up on the placeholder.
+        const isFlat = peaks.every((p) => Math.abs(p - 0.3) < 1e-6);
+        if (isFlat && attempt < 3) {
+          setTimeout(() => this.decodeWaveform(attempt + 1), 700 * (attempt + 1));
+        }
       } catch (e) {
         /* keep the placeholder */
       }

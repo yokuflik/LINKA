@@ -218,7 +218,7 @@ function useChatOpen(ctx) {
       scrollMessagesToBottom();
       markInitialScrollSettled();
       ctx.sendReceipt('mark_delivered', chatId, newestId);
-      ctx.sendReceipt('mark_read', chatId, newestId);
+      markActiveChatReadIfVisible(chatId, newestId);
       return;
     }
 
@@ -261,7 +261,7 @@ function useChatOpen(ctx) {
         const newestId = ctx.messages.value[ctx.messages.value.length - 1].id;
         if (newestId != null) {
           ctx.sendReceipt('mark_delivered', chatId, newestId);
-          ctx.sendReceipt('mark_read', chatId, newestId);
+          markActiveChatReadIfVisible(chatId, newestId);
         }
       }
     } catch (err) {
@@ -283,6 +283,52 @@ function useChatOpen(ctx) {
       selectChat(ctx.activeChatId.value);
     }
   }
+
+  // ---------------------------------------------------------------
+  // Read receipts only count when the window is actually on screen
+  //   `document.visibilityState === 'visible'` is true only when this tab is
+  //   the foreground tab AND the window isn't minimised AND (on mobile) the
+  //   screen is on and the browser is in front. A backgrounded tab, another
+  //   tab, a minimised window or a locked phone all read as 'hidden'.
+  //   We additionally require window focus so a visible-but-unfocused window
+  //   (split screen, another app on top on desktop) doesn't mark as read.
+  // ---------------------------------------------------------------
+  // Coarse "is a touch device" check - on mobile there's only ever one visible
+  // window, and document.hasFocus() is unreliable (often false in iOS Safari
+  // even when the page is clearly in front), so visibility alone is the signal.
+  const IS_TOUCH = (('ontouchstart' in window) || navigator.maxTouchPoints > 0);
+  function windowIsActive() {
+    if (document.visibilityState !== 'visible') return false;
+    if (IS_TOUCH) return true;
+    // Desktop: also require focus so a background window (another app on top,
+    // split screen) doesn't mark messages as read.
+    return document.hasFocus();
+  }
+
+  // Send `mark_read` for the newest message of the open chat, but only if the
+  // window is actually being looked at. Safe to call often (server watermark).
+  function markActiveChatReadIfVisible(chatId, newestId) {
+    const id = chatId || ctx.activeChatId.value;
+    if (!id) return;
+    let msgId = newestId;
+    if (msgId == null) {
+      const last = ctx.messages.value[ctx.messages.value.length - 1];
+      msgId = last && last.id;
+    }
+    if (msgId == null) return;
+    if (!windowIsActive()) return;
+    ctx.sendReceipt('mark_read', id, msgId);
+  }
+
+  // When the tab/window comes back to the foreground with a chat open, flush a
+  // read receipt for whatever is now on screen (messages that arrived while it
+  // was hidden were delivered-only).
+  function flushReadOnActivate() {
+    if (!windowIsActive() || !ctx.activeChatId.value) return;
+    markActiveChatReadIfVisible(ctx.activeChatId.value);
+  }
+  document.addEventListener('visibilitychange', flushReadOnActivate);
+  window.addEventListener('focus', flushReadOnActivate);
 
   // A profile edit (name / photo) has no server push - the other clients only
   // learn about it by re-pulling. Refresh the open chat's cached users when the
@@ -309,5 +355,6 @@ function useChatOpen(ctx) {
     loadOlderMessages, onMessagesScroll,
     openDraftChat, discardDraftChat, closeActiveChat,
     selectChat, reloadActiveChatIfUnloaded, refreshActiveChatUsers,
+    markActiveChatReadIfVisible, windowIsActive,
   };
 }

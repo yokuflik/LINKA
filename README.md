@@ -3,7 +3,7 @@
 A real-time messaging platform (WhatsApp / Telegram style) engineered for a **tens-of-billions-of-messages** scale.
 Backend-first: the repository ships a complete FastAPI backend plus a single-file Vue 3 proof-of-concept client used for manual testing — there is no production mobile/desktop app.
 
-**Live demo:** https://16-171-249-95.sslip.io/ (a single `t3.micro` EC2 instance — please be gentle).
+**Live demo:** https://linka-web.com (a single `t3.micro` EC2 instance — please be gentle).
 
 ---
 

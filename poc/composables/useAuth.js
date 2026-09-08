@@ -298,12 +298,14 @@ function useAuth(ctx) {
   async function enterApp() {
     // Leave the 'welcome' stage so the main app view (gated on authStage) shows.
     authStage.value = 'phone';
+    if (ctx.scheduleTokenRefresh) ctx.scheduleTokenRefresh();
     ctx.connectWebSocket();
     await ctx.loadChats();
   }
 
   function logout() {
     ctx.disconnectWebSocket();
+    if (ctx.clearTokenRefresh) ctx.clearTokenRefresh();
     accessToken.value = '';
     refreshToken.value = '';
     currentUser.value = null;

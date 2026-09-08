@@ -195,31 +195,87 @@ function useCore(ctx) {
     return generic;
   }
 
+  // De-dupes concurrent refreshes (a burst of 401s, or a 401 racing the
+  // proactive timer) onto one in-flight /auth/refresh call.
+  let refreshInFlight = null;
+
   async function tryRefresh() {
+    if (refreshInFlight) return refreshInFlight;
+    refreshInFlight = (async () => {
+      try {
+        const resp = await fetch(`${apiBase.value}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: ctx.refreshToken.value }),
+        });
+        if (!resp.ok) throw new Error(`refresh rejected (${resp.status})`);
+        const body = await resp.json();
+        ctx.accessToken.value = body.access_token;
+        ctx.refreshToken.value = body.refresh_token;
+        localStorage.setItem('linka_access_token', ctx.accessToken.value);
+        localStorage.setItem('linka_refresh_token', ctx.refreshToken.value);
+        log('access token refreshed');
+        scheduleTokenRefresh(); // re-arm the proactive timer off the new exp
+        return true;
+      } catch (err) {
+        logError('refresh failed, logging out:', err.message);
+        ctx.logout();
+        return false;
+      } finally {
+        refreshInFlight = null;
+      }
+    })();
+    return refreshInFlight;
+  }
+
+  // --- Proactive token refresh -----------------------------------------
+  // The access token lives ~15 min. Rather than wait for a 401 (which
+  // bounces WS reconnects and stalls in-flight requests), decode its `exp`
+  // and refresh ~60s early, re-arming after each success. Keeps a tab that
+  // sat idle for hours from ever being logged out.
+  let proactiveRefreshTimer = null;
+  const REFRESH_SKEW_MS = 60 * 1000;
+
+  function decodeJwtExpMs(token) {
     try {
-      const resp = await fetch(`${apiBase.value}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: ctx.refreshToken.value }),
-      });
-      if (!resp.ok) throw new Error(`refresh rejected (${resp.status})`);
-      const body = await resp.json();
-      ctx.accessToken.value = body.access_token;
-      ctx.refreshToken.value = body.refresh_token;
-      localStorage.setItem('linka_access_token', ctx.accessToken.value);
-      localStorage.setItem('linka_refresh_token', ctx.refreshToken.value);
-      log('access token refreshed');
-      return true;
-    } catch (err) {
-      logError('refresh failed, logging out:', err.message);
-      ctx.logout();
-      return false;
+      const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+    } catch (_) {
+      return null;
     }
   }
+
+  function clearTokenRefresh() {
+    if (proactiveRefreshTimer) { clearTimeout(proactiveRefreshTimer); proactiveRefreshTimer = null; }
+  }
+
+  function scheduleTokenRefresh() {
+    clearTokenRefresh();
+    const token = ctx.accessToken.value;
+    if (!token || !ctx.refreshToken.value) return;
+    const expMs = decodeJwtExpMs(token);
+    // Unknown exp → conservative 10-min poll; otherwise 60s before expiry,
+    // clamped so a near-expired token refreshes almost immediately.
+    const delay = expMs == null
+      ? 10 * 60 * 1000
+      : Math.max(1000, expMs - Date.now() - REFRESH_SKEW_MS);
+    log(`token refresh scheduled in ${Math.round(delay / 1000)}s`);
+    proactiveRefreshTimer = setTimeout(() => { tryRefresh(); }, delay);
+  }
+
+  // A tab woken from background/sleep may have blown past the scheduled
+  // fire time; check freshness on return to the foreground.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || !ctx.accessToken.value) return;
+    const expMs = decodeJwtExpMs(ctx.accessToken.value);
+    if (expMs != null && expMs - Date.now() <= REFRESH_SKEW_MS) tryRefresh();
+    else scheduleTokenRefresh();
+  });
 
   return {
     apiBase, wsBase, log, logError,
     AVATAR_MAX_BYTES, MEDIA_MAX_BYTES, AVATAR_MIME,
     apiFetch, tryRefresh, shrinkImageToFit, friendlyError,
+    scheduleTokenRefresh, clearTokenRefresh,
   };
 }

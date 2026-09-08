@@ -79,17 +79,29 @@ function useWebsocket(ctx) {
       wsStatus.value = 'disconnected';
       if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
       ws = null;
-      if (ctx.accessToken.value) {
-        // A single reconnect (e.g. uvicorn --reload) is normal and silent.
-        // Only warn once the outage has persisted across a few attempts.
-        reconnectFailures += 1;
-        if (reconnectFailures >= 3 && !sustainedOutageToasted && ctx.showErrorToast) {
-          sustainedOutageToasted = true;
-          ctx.showErrorToast("You're offline. We'll keep trying to reconnect.");
-        }
-        log('reconnecting in 3s…');
-        wsReconnectTimer = setTimeout(connectWebSocket, 3000);
+      if (!ctx.accessToken.value) return;
+
+      // 4401 = the server rejected the token (expired mid-session, e.g. tab
+      // idle > 15 min). Refresh it and reconnect at once instead of looping
+      // the handshake with a dead token or bouncing to the login screen.
+      if (evt.code === 4401 && ctx.tryRefresh) {
+        log('WS closed 4401 - refreshing token before reconnect');
+        ctx.tryRefresh().then((ok) => {
+          if (ok && ctx.accessToken.value) connectWebSocket();
+          // tryRefresh() calls ctx.logout() on failure - nothing to do here.
+        });
+        return;
       }
+
+      // A single reconnect (e.g. uvicorn --reload) is normal and silent.
+      // Only warn once the outage has persisted across a few attempts.
+      reconnectFailures += 1;
+      if (reconnectFailures >= 3 && !sustainedOutageToasted && ctx.showErrorToast) {
+        sustainedOutageToasted = true;
+        ctx.showErrorToast("You're offline. We'll keep trying to reconnect.");
+      }
+      log('reconnecting in 3s…');
+      wsReconnectTimer = setTimeout(connectWebSocket, 3000);
     };
   }
 

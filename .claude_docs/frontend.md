@@ -81,6 +81,17 @@ There is **no real client app** — only a single-file HTML/Vue PoC (`poc/`) for
 - `AuthScreen.js` takes the `phone*` props + `usernameCheck` + `profileDraft` ({about_text, username}); emits `request-otp`/`verify-otp`/`back-to-phone`/`check-username`/`submit-welcome`/`skip-welcome`. No `authMode`/`phoneNumber` prop, no Sign up/Log in link. Stub vs Firebase still decided purely by the `1`–`5` whitelist check.
 - `useAuth` still exposes a `phoneNumber` ref (synced from `resolvedPhone` at request time) for lifecycle code that destructures it.
 
+## Token refresh — no logout after 15 min (frontend-only)
+- Access token TTL is 15 min (`config.ACCESS_TOKEN_EXPIRE_MINUTES`); refresh token 30 days. Backend `POST /auth/refresh` rotates both. **No backend change** was needed — the PoC just wasn't renewing proactively.
+- **`core.js`**:
+  - `tryRefresh()` is now **single-flight** (`refreshInFlight` promise) so a 401 burst / a 401 racing the timer collapse to one `/auth/refresh` call. On success it re-arms the proactive timer; on failure it calls `ctx.logout()` (unchanged).
+  - `scheduleTokenRefresh()` — decodes the access-token JWT `exp` and sets a `setTimeout` to refresh **60 s before expiry** (`REFRESH_SKEW_MS`), clamped to ≥1 s; unknown `exp` → 10-min poll. Re-arms itself after every successful refresh. `clearTokenRefresh()` cancels it.
+  - `visibilitychange` listener: a tab woken from background/sleep that blew past the fire time refreshes immediately if within the skew, else re-schedules.
+  - Both exported on `ctx`.
+- **`useWebsocket.js`** — `ws.onclose` with `evt.code === 4401` (server rejected an expired token mid-session) now `await ctx.tryRefresh()` then reconnects **immediately** with the fresh token, instead of looping the handshake with a dead token or bouncing to login. Other close codes keep the 3 s backoff + 3-strike outage toast.
+- **Wiring:** `useAuth.enterApp()` and `index.html` `onMounted` (resumed session) call `ctx.scheduleTokenRefresh()`; `useAuth.logout()` calls `ctx.clearTokenRefresh()`.
+- Net effect: an idle tab stays logged in indefinitely; REST calls never surface a 401; WS reconnects transparently across a token expiry.
+
 ## Settings (privacy)
 - `composables/useSettings.js` — `GET`/`PATCH /users/me/settings`, `userSettings` ref, `ONLINE_VISIBILITY_OPTIONS`, `loadSettings`/`saveSettings`/`resetSettings`, **plus the ⚙ Settings-modal state**: `showSettingsModal`, `settingsForm` (`{privacy_online, privacy_read_receipts}`), `settingsBusy`, `settingsError`, `openSettingsModal`, `submitSettings` (PATCHes a partial `{privacy:{...}}` with only changed keys).
 - **Two separate top-bar entry points** (`AppHeader.js`): the name/avatar button `@edit-profile` → `openProfileModal` (**ProfileEditModal**: **username** / about / avatar, no generic name field — pass no `nameKey`; **no settings**); the ⚙ gear button (outline SVG, WhatsApp-style, matches the mic icon) `@open-settings` → `openSettingsModal` (**SettingsModal**: privacy only).

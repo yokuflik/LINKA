@@ -6,30 +6,28 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_chat import get_chat_by_id
-from database.crud.crud_message import get_message_by_id
-from database.crud.crud_participant import (
-    get_chat_participants,
-    is_participant,
-    update_last_delivered_message,
-    update_last_played_message,
-    update_last_read_message,
-)
-from database.models.message import AUDIO_MESSAGE_TYPE
+from modules.chats.crud.crud_chat import get_chat_by_id
+from modules.messaging.crud import get_message_by_id
+from modules.chats.crud.crud_participant import get_chat_participants
+from modules.chats.crud.crud_participant import is_participant
+from modules.chats.crud.crud_participant import update_last_delivered_message
+from modules.chats.crud.crud_participant import update_last_played_message
+from modules.chats.crud.crud_participant import update_last_read_message
+from modules.messaging.models import AUDIO_MESSAGE_TYPE
 from config import (
     RECEIPT_KIND_DELIVERED,
     RECEIPT_KIND_PLAYED,
     RECEIPT_KIND_READ,
 )
-from database.crud import crud_receipt
-from services import realtime_service
-from services.messaging.errors import MessageNotFoundError, NotAParticipantError, NotAVoiceMessageError
-from services.messaging.receipt_privacy import (
-    read_receipts_hidden_for_message,
-    reader_hides_read_receipts,
-)
-from services.receipts import receipt_log
-from services.redis_client import redis_client
+from modules.receipts import crud as crud_receipt
+from realtime import realtime_service
+from modules.messaging.errors import MessageNotFoundError
+from modules.messaging.errors import NotAParticipantError
+from modules.messaging.errors import NotAVoiceMessageError
+from modules.messaging.receipt_privacy import read_receipts_hidden_for_message
+from modules.messaging.receipt_privacy import reader_hides_read_receipts
+from modules.receipts import receipt_log
+from infra.redis.client import redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +190,7 @@ async def get_message_receipts(
     # Read off the facade module at call time so a test that does
     # monkeypatch.setattr(message_service, "RECEIPT_NAMED_LIST_MAX_MEMBERS", ...)
     # still takes effect after the split into services/messaging/.
-    from services import message_service
+    from modules.messaging import service as message_service
 
     truncated = len(eligible) > message_service.RECEIPT_NAMED_LIST_MAX_MEMBERS
 

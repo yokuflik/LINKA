@@ -8,9 +8,13 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_user_settings import get_settings_blob, upsert_settings_blob
-from services.settings.schema import apply_patch, merge_with_defaults, validate_patch
-from services.settings.errors import SettingsError, SettingsValidationError  # noqa: F401 (re-export)
+from modules.settings.crud import get_settings_blob
+from modules.settings.crud import upsert_settings_blob
+from modules.settings.schema import apply_patch
+from modules.settings.schema import merge_with_defaults
+from modules.settings.schema import validate_patch
+from modules.settings.errors import SettingsError
+from modules.settings.errors import SettingsValidationError  # noqa: F401 (re-export)
 
 
 async def get_user_settings(session: AsyncSession, user_id: int) -> dict[str, Any]:

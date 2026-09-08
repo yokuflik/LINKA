@@ -6,19 +6,17 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import config
-from database.crud.crud_participant import get_all_chat_ids_for_user
-from database.crud import crud_user
-from database.crud.crud_user import (
-    UsernameTakenError,
-    get_user_by_id,
-    get_user_by_phone,
-    set_username as _crud_set_username,
-    update_user_profile,
-    username_is_free,
-)
-from database.models.user import User
-from services import realtime_service
-from services.storage.media_service import public_avatar_url
+from modules.chats.crud.crud_participant import get_all_chat_ids_for_user
+from modules.users import crud as crud_user
+from modules.users.crud import UsernameTakenError
+from modules.users.crud import get_user_by_id
+from modules.users.crud import get_user_by_phone
+from modules.users.crud import set_username as _crud_set_username
+from modules.users.crud import update_user_profile
+from modules.users.crud import username_is_free
+from modules.users.models import User
+from realtime import realtime_service
+from modules.media.media_service import public_avatar_url
 
 
 class UsernameError(Exception):

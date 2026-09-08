@@ -3,14 +3,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-import utils.snowflake as sf
-from utils.snowflake import (
-    SnowflakeGenerator,
-    id_to_datetime,
-    id_to_datetime_range,
-    id_to_timestamp_ms,
-    next_id,
-)
+import infra.ids.snowflake as sf
+from infra.ids.snowflake import SnowflakeGenerator
+from infra.ids.snowflake import id_to_datetime
+from infra.ids.snowflake import id_to_datetime_range
+from infra.ids.snowflake import id_to_timestamp_ms
+from infra.ids.snowflake import next_id
 
 
 def test_ids_are_unique_and_monotonic_single_threaded():

@@ -4,7 +4,7 @@ from sqlalchemy.exc import IntegrityError
 from typing import Optional
 import logging
 
-from database.models.chat import Chat
+from modules.chats.models.chat import Chat
 
 logger = logging.getLogger(__name__)
 

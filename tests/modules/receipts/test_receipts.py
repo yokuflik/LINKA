@@ -14,9 +14,10 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import RECEIPT_KIND_READ
-from database.crud.crud_user import create_user
-from services import chat_service, message_service
-from services.receipts import receipt_log
+from modules.users.crud import create_user
+from modules.chats import service as chat_service
+from modules.messaging import service as message_service
+from modules.receipts import receipt_log
 
 pytestmark = pytest.mark.asyncio
 
@@ -157,7 +158,7 @@ async def test_played_only_populated_for_a_voice_message(db_session, redis_db):
 async def _read_rows(session, chat_id, user_id, kind):
     from sqlalchemy import select
 
-    from database.models.message_receipt_log import MessageReceiptLog
+    from modules.receipts.models import MessageReceiptLog
 
     stmt = (
         select(MessageReceiptLog)

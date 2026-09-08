@@ -6,7 +6,7 @@ Authoritative runbook: `deploy/README.md`. Decision record: ADR 0007
 ## `id_service/` — Rust Snowflake ID service (ADR 0011)
 
 Standalone Rust + `tonic` gRPC service that mints Snowflake IDs, replacing the
-in-process `utils/snowflake.py` generator under load. Same bit layout (epoch
+in-process `infra/ids/snowflake.py` generator under load. Same bit layout (epoch
 2024-01-01Z, 41-bit ms / 10-bit node / 12-bit sequence), so `id_to_datetime*`
 decoders are unchanged. Lock-free `AtomicU64` CAS loop. Contract:
 `proto/snowflake.proto` — `SnowflakeService.NextId() → { string id }`.
@@ -15,12 +15,12 @@ uses as the `created_at` partition-routing key). `NODE_ID` env (0..=1023,
 required, process exits if missing/invalid) — unique per replica. Serves
 `grpc.health.v1.Health` (SnowflakeService = SERVING) on the same port `50051`.
 `id_service/Dockerfile` = multi-stage rust-slim → debian-slim. Python side:
-`utils/id_client.py` (`async next_id()`), enabled by setting app env
+`infra/ids/client.py` (`async next_id()`), enabled by setting app env
 `ID_SERVICE_ADDR` (e.g. `id_service:50051`; empty → in-process generator).
 `ID_SERVICE_TIMEOUT_SECONDS` (default 0.5) bounds each call; failure → local
 fallback. Wired at the async call sites (auth/chat/message ids); `receipt_log` +
 `storage/client` stay on the local sync generator by design. `scripts/gen_proto.sh`
-regenerates the checked-in `utils/snowflake_pb2*.py` stubs.
+regenerates the checked-in `infra/ids/_generated/snowflake_pb2*.py` stubs.
 `docker-compose.prod.yml` runs it as service `id_service` (`id_service/Dockerfile`,
 `NODE_ID=2`, `mem_limit: 32m`, `grpc_health_probe` healthcheck) and sets
 `ID_SERVICE_ADDR=id_service:50051` + `depends_on` on the `app`.
@@ -99,7 +99,7 @@ now also gates the WS handshake. Full detail:
 ## Known demo compromises
 
 - **OTP is an open stub**: any 6-digit code verifies once one has been
-  requested (`services/auth_service.py` `verify_otp_and_login`, the
+  requested (`modules/auth/service.py` `verify_otp_and_login`, the
   `# or stored_code != code` line). No SMS. Close this before any real users.
 - MinIO on the app box (no S3 budget). Switch = blank `S3_ENDPOINT_URL` +
   real keys/region; frees ~120 MB. App→MinIO calls hairpin through Caddy

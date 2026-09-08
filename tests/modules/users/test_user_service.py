@@ -5,9 +5,10 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_user import create_user
-from database.models.user import User
-from services import chat_service, user_service
+from modules.users.crud import create_user
+from modules.users.models import User
+from modules.chats import service as chat_service
+from modules.users import service as user_service
 
 pytestmark = pytest.mark.asyncio
 

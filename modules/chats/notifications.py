@@ -9,8 +9,8 @@ events and the transient chat_updated broadcast for group-detail changes.
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_chat import get_chat_by_id
-from services.storage.media_service import public_avatar_url
+from modules.chats.crud.crud_chat import get_chat_by_id
+from modules.media.media_service import public_avatar_url
 
 
 async def _notify_added_to_chat(user_id: int, chat_id: int) -> None:
@@ -21,7 +21,7 @@ async def _notify_added_to_chat(user_id: int, chat_id: int) -> None:
     ConnectionManager._handle_user_channel_event. Also reaches the client
     itself, to refresh its chat list / show a notification.
     """
-    from services import chat_service
+    from modules.chats import service as chat_service
 
     await chat_service.realtime_service.publish_user_event(
         user_id, {"event": "added_to_chat", "chat_id": str(chat_id)}
@@ -43,7 +43,7 @@ async def _notify_removed_from_chat(user_id: int, chat_id: int, actor_id: int, c
     chat_title so that toast can name the group instead of just saying "a
     group" (the client's own list entry for it is about to disappear too).
     """
-    from services import chat_service
+    from modules.chats import service as chat_service
 
     await chat_service.realtime_service.publish_user_event(
         user_id,
@@ -67,7 +67,7 @@ async def _broadcast_chat_update(session: AsyncSession, chat_id: int) -> None:
     is the persisted record; this is only the live nudge that carries the new
     values so clients don't each have to re-fetch. Best-effort.
     """
-    from services import chat_service
+    from modules.chats import service as chat_service
 
     chat = await get_chat_by_id(session, chat_id)
     if chat is None:

@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from services import rate_limit_service
+from infra.ratelimit import service as rate_limit_service
 
 pytestmark = pytest.mark.asyncio
 

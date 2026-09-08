@@ -22,7 +22,7 @@ from config import (
     MESSAGE_SEND_STREAM_MAXLEN,
     SEND_STREAM_SHARDS,
 )
-from services.redis_client import redis_client
+from infra.redis.client import redis_client
 
 logger = logging.getLogger(__name__)
 

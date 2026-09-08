@@ -18,24 +18,22 @@ load_dotenv()
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from database.base import Base
-from database.connection import DATABASE_URL
+from infra.db.base import Base
+from infra.db.connection import DATABASE_URL
 # Time-partition manager (ADR 0005). The DEFAULT partitions below stay as a
 # safety net; this additionally pre-creates the real dated partitions.
 from scripts.manage_partitions import ensure_partitions
 # Registers every model on Base.metadata - importing database.connection alone
 # doesn't import the model modules themselves.
-from database.models import (  # noqa: F401
-    chat,
-    media_blob,
-    message,
-    message_receipt_log,
-    participant,
-    private_chat_pair,
-    reserved_username,
-    user,
-    user_settings,
-)
+from modules.chats.models import chat
+from modules.media import models as media_blob
+from modules.messaging import models as message
+from modules.receipts import models as message_receipt_log
+from modules.chats.models import participant
+from modules.chats.models import private_chat_pair
+from modules.auth import models as reserved_username
+from modules.users import models as user
+from modules.settings import models as user_settings
 
 
 async def main(drop: bool) -> None:

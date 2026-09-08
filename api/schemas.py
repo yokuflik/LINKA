@@ -4,7 +4,7 @@ from typing import Annotated, Optional
 from pydantic import BaseModel, BeforeValidator, ConfigDict, field_validator, model_validator
 
 from config import ALLOWED_UPLOAD_MIME, MAX_UPLOAD_BYTES_BY_KIND, MIN_UPLOAD_BYTES_BY_KIND
-from services.storage.media_service import public_avatar_url
+from modules.media.media_service import public_avatar_url
 
 # Every id in this codebase is a 64-bit Snowflake. JavaScript's JSON.parse
 # (and fetch().json(), and JSON.parse on a WebSocket message) decodes JSON

@@ -12,7 +12,7 @@ from typing import Optional, Sequence
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models.message_receipt_log import MessageReceiptLog
+from modules.receipts.models import MessageReceiptLog
 
 
 async def crossers_for_message(

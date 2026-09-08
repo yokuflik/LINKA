@@ -11,10 +11,12 @@ import urllib.request
 import pytest
 import pytest_asyncio
 
-from database.crud.crud_user import create_user
-from services import avatar_service, chat_service
-from services.storage import media_service as media
-from services.storage.errors import MediaNotFoundError, MediaValidationError
+from modules.users.crud import create_user
+from modules.users import avatar_service
+from modules.chats import service as chat_service
+from modules.media import media_service as media
+from modules.media.errors import MediaNotFoundError
+from modules.media.errors import MediaValidationError
 
 pytestmark = pytest.mark.asyncio
 

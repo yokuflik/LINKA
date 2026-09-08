@@ -7,7 +7,9 @@ from httpx import ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import main as main_module
-from services import auth_service, chat_service, message_service
+from modules.auth import service as auth_service
+from modules.chats import service as chat_service
+from modules.messaging import service as message_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -80,7 +82,7 @@ async def test_otp_request_is_rate_limited(client, redis_db, monkeypatch):
 async def test_otp_request_is_rate_limited_per_ip(client, redis_db, monkeypatch):
     # The per-IP ceiling bites regardless of which number is targeted - one
     # host must not be able to spray OTPs across many numbers.
-    from routers import auth as auth_router
+    from modules.auth import router as auth_router
 
     monkeypatch.setattr(auth_router, "OTP_REQUEST_IP_RATE_LIMIT_MAX", 3)
 
@@ -391,7 +393,7 @@ async def test_message_history_returns_messages_sent_over_the_service_layer(clie
 
 
 async def test_message_history_limit_is_clamped_server_side(client, db_session: AsyncSession, redis_db):
-    from routers import messages as messages_router
+    from modules.messaging import router as messages_router
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(messages_router, "MSG_HISTORY_MAX_LIMIT", 5)
@@ -412,7 +414,7 @@ async def test_message_history_limit_is_clamped_server_side(client, db_session: 
 
 
 async def test_message_history_is_rate_limited_per_user(client, db_session: AsyncSession, redis_db):
-    from routers import messages as messages_router
+    from modules.messaging import router as messages_router
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(messages_router, "MSG_HISTORY_RATE_MAX", 3)
@@ -430,7 +432,7 @@ async def test_message_history_is_rate_limited_per_user(client, db_session: Asyn
 
 
 async def test_upload_ticket_is_rate_limited_per_ip(client, db_session: AsyncSession, redis_db):
-    from routers import messages as messages_router
+    from modules.messaging import router as messages_router
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(messages_router, "UPLOAD_TICKET_IP_RATE_LIMIT_MAX", 2)

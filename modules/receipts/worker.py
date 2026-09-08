@@ -7,8 +7,8 @@ import asyncio
 import logging
 
 from config import RECEIPT_WORKER_BLOCK_MS
-from database.connection import session_scope
-from services.receipts import receipt_log
+from infra.db.connection import session_scope
+from modules.receipts import receipt_log
 
 logger = logging.getLogger(__name__)
 

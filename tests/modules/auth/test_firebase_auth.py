@@ -4,7 +4,8 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from services import auth_service, firebase_auth
+from modules.auth import service as auth_service
+from modules.auth import firebase as firebase_auth
 
 pytestmark = pytest.mark.asyncio
 

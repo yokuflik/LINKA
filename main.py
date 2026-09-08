@@ -7,12 +7,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from database.connection import check_database_connection, dispose_engine
-from routers.auth import router as auth_router
-from routers.chats import router as chats_router
-from routers.messages import router as messages_router
-from routers.users import router as users_router
-from routers.websocket import router as websocket_router
+from infra.db.connection import check_database_connection
+from infra.db.connection import dispose_engine
+from modules.auth.router import router as auth_router
+from modules.chats.router import router as chats_router
+from modules.messaging.router import router as messages_router
+from modules.users.router import router as users_router
+from realtime.ws_router import router as websocket_router
 from config import (
     ALLOWED_HOSTS,
     API_IP_BACKSTOP_MAX,
@@ -21,19 +22,22 @@ from config import (
     ROUTING_HEARTBEAT_INTERVAL_SECONDS,
     SERVER_ID,
 )
-from services import auth_service, chat_service, message_service, rate_limit_service, user_service
-from services.rate_limit_service import RateLimited
-from services.fanout import fanout_worker, routing
-from services.fanout import worker as send_worker
-from services.receipts import worker as receipt_worker
-from services.redis_client import close_redis
-from services.settings.errors import SettingsValidationError
-from services.storage import media_service
-from services.storage.errors import (
-    MediaNotFoundError,
-    MediaValidationError,
-    StorageUnavailableError,
-)
+from modules.auth import service as auth_service
+from modules.chats import service as chat_service
+from modules.messaging import service as message_service
+from infra.ratelimit import service as rate_limit_service
+from modules.users import service as user_service
+from infra.ratelimit.service import RateLimited
+from realtime.fanout import fanout_worker
+from realtime.fanout import routing
+from realtime.fanout import worker as send_worker
+from modules.receipts import worker as receipt_worker
+from infra.redis.client import close_redis
+from modules.settings.errors import SettingsValidationError
+from modules.media import media_service
+from modules.media.errors import MediaNotFoundError
+from modules.media.errors import MediaValidationError
+from modules.media.errors import StorageUnavailableError
 
 
 @asynccontextmanager
@@ -92,7 +96,7 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).warning("routing unregister failed at shutdown")
     await dispose_engine()
     await close_redis()
-    from utils import id_client
+    from infra.ids import client as id_client
 
     await id_client.close()  # no-op unless ID_SERVICE_ADDR is set (ADR 0011)
 

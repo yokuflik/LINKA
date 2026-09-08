@@ -3,13 +3,15 @@
 from typing import Optional, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_chat import get_chat_by_id
-from database.crud.crud_message import compute_message_status, get_chat_messages
-from database.crud.crud_participant import is_participant
-from database.models.message import Message
-from services.messaging.errors import NotAParticipantError
-from services.messaging.receipt_privacy import mask_status, read_receipts_hidden_for_message
-from services.storage import media_service
+from modules.chats.crud.crud_chat import get_chat_by_id
+from modules.messaging.crud import compute_message_status
+from modules.messaging.crud import get_chat_messages
+from modules.chats.crud.crud_participant import is_participant
+from modules.messaging.models import Message
+from modules.messaging.errors import NotAParticipantError
+from modules.messaging.receipt_privacy import mask_status
+from modules.messaging.receipt_privacy import read_receipts_hidden_for_message
+from modules.media import media_service
 
 
 async def get_message_history(

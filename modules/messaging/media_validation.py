@@ -14,9 +14,10 @@ from config import (
 
 # base64 alphabet only - the client sends a ThumbHash as standard base64.
 _BLUR_HASH_RE = re.compile(r"^[A-Za-z0-9+/=]*$")
-from database.crud.crud_media_blob import confirm_and_ref, get_blob_by_key
-from services.storage import media_service
-from services.storage.errors import MediaValidationError
+from modules.media.crud import confirm_and_ref
+from modules.media.crud import get_blob_by_key
+from modules.media import media_service
+from modules.media.errors import MediaValidationError
 
 
 class MediaAttachment:

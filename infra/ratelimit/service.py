@@ -3,7 +3,7 @@ import time
 from typing import Optional, Union
 
 from config import TRUSTED_PROXY_IPS
-from services.redis_client import redis_client
+from infra.redis.client import redis_client
 
 _KEY_PREFIX = "ratelimit:"
 _SLIDING_KEY_PREFIX = "rlsw:"

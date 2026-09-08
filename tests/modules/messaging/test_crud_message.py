@@ -2,24 +2,25 @@ import asyncio
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_user import create_user
-from database.crud.crud_chat import create_chat, get_chat_by_id
-from database.crud.crud_message import (
-    create_message,
-    get_message_by_id,
-    get_chat_messages,
-    edit_message_content,
-    soft_delete_message,
-    compute_message_status,
-    count_unread_messages,
-    build_last_message_preview,
-    DELETED_MESSAGE_PREVIEW,
-    MAX_PAGE_SIZE,
-)
-from database.crud.crud_participant import add_participant_to_chat, update_last_delivered_message, update_last_read_message
-from database.models.message import MessageStatus
-from database.models.participant import Participant
-from utils.snowflake import next_id
+from modules.users.crud import create_user
+from modules.chats.crud.crud_chat import create_chat
+from modules.chats.crud.crud_chat import get_chat_by_id
+from modules.messaging.crud import create_message
+from modules.messaging.crud import get_message_by_id
+from modules.messaging.crud import get_chat_messages
+from modules.messaging.crud import edit_message_content
+from modules.messaging.crud import soft_delete_message
+from modules.messaging.crud import compute_message_status
+from modules.messaging.crud import count_unread_messages
+from modules.messaging.crud import build_last_message_preview
+from modules.messaging.crud import DELETED_MESSAGE_PREVIEW
+from modules.messaging.crud import MAX_PAGE_SIZE
+from modules.chats.crud.crud_participant import add_participant_to_chat
+from modules.chats.crud.crud_participant import update_last_delivered_message
+from modules.chats.crud.crud_participant import update_last_read_message
+from modules.messaging.models import MessageStatus
+from modules.chats.models.participant import Participant
+from infra.ids.snowflake import next_id
 
 # Tells pytest to run all tests in this file asynchronously
 pytestmark = pytest.mark.asyncio
@@ -330,7 +331,7 @@ async def test_compute_message_status_played_only_for_audio(db_session: AsyncSes
     text_msg = await create_message(db_session, message_id=90230, chat_id=chat_id, sender_id=sender_id, content="hi")
     audio_msg = await create_message(db_session, message_id=90231, chat_id=chat_id, sender_id=sender_id, type=4)
 
-    from database.crud.crud_participant import update_last_played_message
+    from modules.chats.crud.crud_participant import update_last_played_message
     await update_last_delivered_message(db_session, chat_id=chat_id, user_id=recipient_id, message_id=audio_msg.id)
     await update_last_read_message(db_session, chat_id=chat_id, user_id=recipient_id, message_id=audio_msg.id)
     await update_last_played_message(db_session, chat_id=chat_id, user_id=recipient_id, message_id=audio_msg.id)

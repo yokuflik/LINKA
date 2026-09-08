@@ -2,12 +2,10 @@ import asyncio
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_chat import (
-    create_chat,
-    get_chat_by_id,
-    update_chat_details,
-    delete_chat
-)
+from modules.chats.crud.crud_chat import create_chat
+from modules.chats.crud.crud_chat import get_chat_by_id
+from modules.chats.crud.crud_chat import update_chat_details
+from modules.chats.crud.crud_chat import delete_chat
 
 # Tells pytest to run all tests in this file asynchronously
 pytestmark = pytest.mark.asyncio
@@ -121,9 +119,11 @@ async def test_delete_chat(db_session: AsyncSession):
 
 async def test_delete_chat_cascades_to_participants_and_messages(db_session: AsyncSession):
     # Arrange: a chat with a member and a message.
-    from database.crud.crud_user import create_user
-    from database.crud.crud_message import create_message, get_message_by_id
-    from database.crud.crud_participant import add_participant_to_chat, is_participant
+    from modules.users.crud import create_user
+    from modules.messaging.crud import create_message
+    from modules.messaging.crud import get_message_by_id
+    from modules.chats.crud.crud_participant import add_participant_to_chat
+    from modules.chats.crud.crud_participant import is_participant
 
     chat_id, user_id, message_id = 10008, 20008, 30008
     await create_user(db_session, user_id=user_id, phone_number="+972500010008")

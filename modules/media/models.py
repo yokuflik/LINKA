@@ -13,7 +13,7 @@ unique file, not per message).
 from sqlalchemy import Column, BigInteger, Text, DateTime
 from sqlalchemy.sql import func
 
-from database.base import Base
+from infra.db.base import Base
 
 
 class MediaBlob(Base):

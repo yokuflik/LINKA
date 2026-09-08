@@ -33,7 +33,7 @@ from config import (
 # Local generator on purpose: build_object_key() is sync (called from the sync
 # create_upload_ticket path) and the id here is only an object-key nonce, not a
 # created_at partition-routing key - see ADR 0011.
-from utils.snowflake import next_id
+from infra.ids.snowflake import next_id
 
 # MinIO needs path-style addressing (``endpoint/bucket/key``); the default
 # virtual-host style (``bucket.endpoint/key``) doesn't resolve against a local

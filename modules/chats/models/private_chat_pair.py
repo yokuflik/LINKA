@@ -1,6 +1,6 @@
 from sqlalchemy import Column, BigInteger, ForeignKey
 
-from database.base import Base
+from infra.db.base import Base
 
 class PrivateChatPair(Base):
     __tablename__ = "private_chat_pairs"

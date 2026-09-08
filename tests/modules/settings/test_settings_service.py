@@ -1,9 +1,9 @@
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_user import create_user
-from services.settings import service as settings_service
-from services.settings.errors import SettingsValidationError
+from modules.users.crud import create_user
+from modules.settings import service as settings_service
+from modules.settings.errors import SettingsValidationError
 
 pytestmark = pytest.mark.asyncio
 
@@ -34,7 +34,7 @@ async def test_partial_patch_merges_over_defaults_and_persists(db_session: Async
 
 async def test_retired_key_in_a_stored_blob_is_pruned_on_read(db_session: AsyncSession):
     # A blob written before privacy.last_seen was removed must not leak it back.
-    from database.crud.crud_user_settings import upsert_settings_blob
+    from modules.settings.crud import upsert_settings_blob
     uid = await _user(db_session)
     await upsert_settings_blob(db_session, uid, {"privacy": {"last_seen": "nobody", "online": "contacts"}})
 

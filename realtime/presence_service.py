@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from services import realtime_service
-from services.redis_client import redis_client
+from realtime import realtime_service
+from infra.redis.client import redis_client
 
 # "Online" means an open, foreground WebSocket connection - exactly like
 # WhatsApp: having the app installed, or even backgrounded, is not enough.

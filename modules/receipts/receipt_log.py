@@ -32,12 +32,12 @@ from config import (
     RECEIPT_WORKER_BATCH,
     SERVER_ID,
 )
-from database.models.message_receipt_log import MessageReceiptLog
-from services.redis_client import redis_client
+from modules.receipts.models import MessageReceiptLog
+from infra.redis.client import redis_client
 # Local generator on purpose: _rows_from_entries() is sync and these ids are
 # message_receipt_log PKs, whose row is placed by occurred_at (carried in the
 # stream entry), not by the id timestamp - see ADR 0011.
-from utils.snowflake import next_id
+from infra.ids.snowflake import next_id
 
 logger = logging.getLogger(__name__)
 

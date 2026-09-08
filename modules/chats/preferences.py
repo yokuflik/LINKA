@@ -6,10 +6,8 @@ from datetime import datetime
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_participant import (
-    set_chat_muted as _crud_set_chat_muted,
-    set_chat_pinned as _crud_set_chat_pinned,
-)
+from modules.chats.crud.crud_participant import set_chat_muted as _crud_set_chat_muted
+from modules.chats.crud.crud_participant import set_chat_pinned as _crud_set_chat_pinned
 
 
 async def set_chat_pinned(session: AsyncSession, user_id: int, chat_id: int, pinned: bool) -> bool:
@@ -19,7 +17,7 @@ async def set_chat_pinned(session: AsyncSession, user_id: int, chat_id: int, pin
     ordering preference with no cap. Returns False if the user isn't a
     participant of the chat.
     """
-    from services import chat_service
+    from modules.chats import service as chat_service
 
     participant = await _crud_set_chat_pinned(session, chat_id=chat_id, user_id=user_id, pinned=pinned)
     if participant is None:
@@ -52,7 +50,7 @@ async def set_chat_muted(
     client does the rest. The mute state is pushed to the user's *other*
     connections so every device updates live (same pattern as pinning).
     """
-    from services import chat_service
+    from modules.chats import service as chat_service
 
     participant = await _crud_set_chat_muted(
         session, chat_id=chat_id, user_id=user_id, muted_until=muted_until

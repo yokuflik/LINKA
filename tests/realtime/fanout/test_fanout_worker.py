@@ -11,11 +11,15 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_message import create_message
-from database.crud.crud_user import create_user
-from services import chat_service, presence_service, realtime_service
-from services.fanout import fanout_worker, routing, send_queue
-from utils.snowflake import next_id
+from modules.messaging.crud import create_message
+from modules.users.crud import create_user
+from modules.chats import service as chat_service
+from realtime import presence_service
+from realtime import realtime_service
+from realtime.fanout import fanout_worker
+from realtime.fanout import routing
+from realtime.fanout import send_queue
+from infra.ids.snowflake import next_id
 
 pytestmark = pytest.mark.asyncio
 
@@ -76,7 +80,7 @@ async def test_fanout_pushes_only_to_offline_members(db_session: AsyncSession, r
     async def fake_send_push(user_id, title, body, data=None):
         pushed_to.append(user_id)
 
-    from services import notification_service
+    from realtime import notification_service
     monkeypatch.setattr(notification_service, "send_push", fake_send_push)
 
     chat_id = await _group(db_session, 1, [2, 3])

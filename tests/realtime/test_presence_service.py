@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from services import presence_service
+from realtime import presence_service
 
 pytestmark = pytest.mark.asyncio
 

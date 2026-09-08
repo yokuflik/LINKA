@@ -3,9 +3,9 @@
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models.participant import Participant
-from database.models.user import User
-from services.chats.errors import PermissionDeniedError
+from modules.chats.models.participant import Participant
+from modules.users.models import User
+from modules.chats.errors import PermissionDeniedError
 
 ROLE_MEMBER = 1
 ROLE_ADMIN = 2

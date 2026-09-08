@@ -16,11 +16,11 @@ a presentation-layer mask only, so the reader's own unread_count clears.
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_chat import get_chat_by_id
-from database.crud.crud_participant import get_chat_participants
-from database.models.chat import Chat
-from database.models.message import MessageStatus
-from services.settings import service as settings_service
+from modules.chats.crud.crud_chat import get_chat_by_id
+from modules.chats.crud.crud_participant import get_chat_participants
+from modules.chats.models.chat import Chat
+from modules.messaging.models import MessageStatus
+from modules.settings import service as settings_service
 
 
 async def _is_one_to_one(

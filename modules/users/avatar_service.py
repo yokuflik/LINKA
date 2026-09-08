@@ -21,12 +21,15 @@ from config import (
     MAX_UPLOAD_BYTES_AVATAR,
     S3_BUCKET_AVATARS,
 )
-from database.crud.crud_chat import get_chat_by_id, update_chat_details
-from database.crud.crud_user import get_user_by_id, update_user_profile
-from database.models.chat import Chat
-from database.models.user import User
-from services.storage import media_service
-from services.storage.errors import MediaValidationError, StorageError
+from modules.chats.crud.crud_chat import get_chat_by_id
+from modules.chats.crud.crud_chat import update_chat_details
+from modules.users.crud import get_user_by_id
+from modules.users.crud import update_user_profile
+from modules.chats.models.chat import Chat
+from modules.users.models import User
+from modules.media import media_service
+from modules.media.errors import MediaValidationError
+from modules.media.errors import StorageError
 
 logger = logging.getLogger(__name__)
 

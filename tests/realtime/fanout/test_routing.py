@@ -11,9 +11,9 @@ import json
 import pytest
 
 from config import CHAT_INSTANCE_TTL_SECONDS
-from services import realtime_service
-from services.fanout import routing
-from services.redis_client import redis_client
+from realtime import realtime_service
+from realtime.fanout import routing
+from infra.redis.client import redis_client
 
 pytestmark = pytest.mark.asyncio
 

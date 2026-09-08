@@ -6,9 +6,9 @@ from typing import Sequence, Optional, Tuple
 from datetime import datetime
 import logging
 
-from database.models.participant import Participant
-from database.models.chat import Chat
-from database.models.user import User
+from modules.chats.models.participant import Participant
+from modules.chats.models.chat import Chat
+from modules.users.models import User
 
 logger = logging.getLogger(__name__)
 

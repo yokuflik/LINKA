@@ -1,7 +1,7 @@
 import logging
 from typing import Any, Optional
 
-from services.redis_client import redis_client
+from infra.redis.client import redis_client
 
 logger = logging.getLogger(__name__)
 

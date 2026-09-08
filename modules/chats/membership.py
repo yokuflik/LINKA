@@ -5,23 +5,24 @@ import json
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_chat import delete_chat
-from database.crud.crud_participant import (
-    add_participant_to_chat,
-    get_chat_participants,
-    remove_participant,
-    update_participant_role,
-)
-from database.models.chat import Chat
-from database.models.participant import Participant
-from services import message_service
-from services.chats.common import ROLE_ADMIN, ROLE_MEMBER, ROLE_OWNER, _display_name_for, _require_role
-from services.chats.errors import (
-    OwnershipTransferRequiredError,
-    PermissionDeniedError,
-    UserNotFoundError,
-)
-from services.chats.notifications import _notify_added_to_chat, _notify_removed_from_chat
+from modules.chats.crud.crud_chat import delete_chat
+from modules.chats.crud.crud_participant import add_participant_to_chat
+from modules.chats.crud.crud_participant import get_chat_participants
+from modules.chats.crud.crud_participant import remove_participant
+from modules.chats.crud.crud_participant import update_participant_role
+from modules.chats.models.chat import Chat
+from modules.chats.models.participant import Participant
+from modules.messaging import service as message_service
+from modules.chats.common import ROLE_ADMIN
+from modules.chats.common import ROLE_MEMBER
+from modules.chats.common import ROLE_OWNER
+from modules.chats.common import _display_name_for
+from modules.chats.common import _require_role
+from modules.chats.errors import OwnershipTransferRequiredError
+from modules.chats.errors import PermissionDeniedError
+from modules.chats.errors import UserNotFoundError
+from modules.chats.notifications import _notify_added_to_chat
+from modules.chats.notifications import _notify_removed_from_chat
 
 
 async def add_member(session: AsyncSession, actor_id: int, chat_id: int, new_user_id: int) -> Optional[Participant]:

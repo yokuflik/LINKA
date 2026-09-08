@@ -28,21 +28,22 @@ from config import (
     WS_UPGRADE_USER_RATE_LIMIT_MAX,
     WS_UPGRADE_USER_RATE_LIMIT_WINDOW_SECONDS,
 )
-from database.connection import session_scope
-from database.crud.crud_participant import get_all_chat_ids_for_user, get_chat_participants, is_participant
-from database.crud.crud_private_chat_pair import get_pair_chat_id
-from services import (
-    auth_service,
-    message_service,
-    presence_service,
-    rate_limit_service,
-    realtime_service,
-    ws_connection_registry,
-)
-from services.settings import service as settings_service
-from services.connection_manager import connection_manager
-from services.fanout import send_queue
-from services.storage.errors import MediaNotFoundError, MediaValidationError
+from infra.db.connection import session_scope
+from modules.chats.crud.crud_participant import get_all_chat_ids_for_user
+from modules.chats.crud.crud_participant import get_chat_participants
+from modules.chats.crud.crud_participant import is_participant
+from modules.chats.crud.crud_private_chat_pair import get_pair_chat_id
+from modules.auth import service as auth_service
+from modules.messaging import service as message_service
+from realtime import presence_service
+from infra.ratelimit import service as rate_limit_service
+from realtime import realtime_service
+from realtime import ws_connection_registry
+from modules.settings import service as settings_service
+from realtime.connection_manager import connection_manager
+from realtime.fanout import send_queue
+from modules.media.errors import MediaNotFoundError
+from modules.media.errors import MediaValidationError
 
 logger = logging.getLogger(__name__)
 

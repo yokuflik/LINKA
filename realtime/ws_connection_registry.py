@@ -23,7 +23,7 @@ business answer 4, 2026-09-06).
 import logging
 
 from config import WS_CONN_MAX_AGE_SECONDS, WS_CONN_MAX_CONNECTIONS
-from services.redis_client import redis_client
+from infra.redis.client import redis_client
 
 logger = logging.getLogger(__name__)
 

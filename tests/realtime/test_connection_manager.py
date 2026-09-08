@@ -2,9 +2,9 @@ import asyncio
 
 import pytest
 
-from services import realtime_service
-from services.connection_manager import ConnectionManager
-from services.fanout import routing
+from realtime import realtime_service
+from realtime.connection_manager import ConnectionManager
+from realtime.fanout import routing
 
 pytestmark = pytest.mark.asyncio
 

@@ -14,7 +14,7 @@ scripts/partition_maintenance.py later but is not required for correctness.
 
 from sqlalchemy import Column, BigInteger, String, DateTime
 
-from database.base import Base
+from infra.db.base import Base
 
 
 class ReservedUsername(Base):

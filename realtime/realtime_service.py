@@ -1,7 +1,7 @@
 import json
 from typing import Any, AsyncIterator
 
-from services.redis_client import redis_client
+from infra.redis.client import redis_client
 
 _USER_CHANNEL_PREFIX = "user_events:"
 _PRESENCE_CHANNEL_PREFIX = "presence_events:"
@@ -38,7 +38,7 @@ async def publish_event(chat_id: int, event: dict[str, Any]) -> None:
     # Imported here, not at module load, to avoid a circular import
     # (routing -> redis_client is fine, but keep the dependency direction of
     # services/fanout -> realtime_service one-way).
-    from services.fanout import routing
+    from realtime.fanout import routing
 
     event = {**event, "chat_id": str(chat_id)}
     payload = json.dumps(event)

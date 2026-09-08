@@ -11,13 +11,14 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_message import get_chat_messages
-from database.crud.crud_user import create_user
-from services import chat_service, realtime_service
-from services.fanout import fanout_worker
-from services.fanout import routing
-from services.fanout import send_queue
-from services.fanout import worker as send_worker
+from modules.messaging.crud import get_chat_messages
+from modules.users.crud import create_user
+from modules.chats import service as chat_service
+from realtime import realtime_service
+from realtime.fanout import fanout_worker
+from realtime.fanout import routing
+from realtime.fanout import send_queue
+from realtime.fanout import worker as send_worker
 
 pytestmark = pytest.mark.asyncio
 
@@ -156,7 +157,7 @@ async def test_bad_media_key_fails_the_message_and_notifies_sender(db_session: A
 
 async def test_messages_land_on_the_chats_shard(db_session: AsyncSession, redis_db):
     from config import SEND_STREAM_SHARDS
-    from services.redis_client import redis_client
+    from infra.redis.client import redis_client
 
     chat_id = await _group(db_session, 1, [2])
     await send_queue.enqueue_outgoing_message(

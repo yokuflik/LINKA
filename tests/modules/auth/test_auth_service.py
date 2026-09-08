@@ -4,7 +4,7 @@ import jwt
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services import auth_service
+from modules.auth import service as auth_service
 
 pytestmark = pytest.mark.asyncio
 

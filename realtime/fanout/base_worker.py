@@ -19,8 +19,8 @@ from typing import Optional
 from redis.exceptions import ResponseError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.connection import session_scope
-from services.redis_client import redis_client
+from infra.db.connection import session_scope
+from infra.redis.client import redis_client
 
 logger = logging.getLogger(__name__)
 

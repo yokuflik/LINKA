@@ -4,14 +4,13 @@ and the per-chat member list."""
 from typing import Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_message import compute_message_status, count_unread_messages
-from database.crud.crud_participant import (
-    get_chat_participants_with_users,
-    get_user_chats,
-    is_participant,
-)
-from database.models.participant import Participant
-from services.chats.errors import PermissionDeniedError
+from modules.messaging.crud import compute_message_status
+from modules.messaging.crud import count_unread_messages
+from modules.chats.crud.crud_participant import get_chat_participants_with_users
+from modules.chats.crud.crud_participant import get_user_chats
+from modules.chats.crud.crud_participant import is_participant
+from modules.chats.models.participant import Participant
+from modules.chats.errors import PermissionDeniedError
 
 
 async def get_chat_list(
@@ -41,7 +40,8 @@ async def get_chat_list(
         # READ/PLAYED -> DELIVERED when the *other* participant keeps their
         # own read receipts off. Only 1:1 chats pay the settings lookup.
         if chat.last_message_status is not None and not chat.is_group:
-            from services.messaging.receipt_privacy import mask_status, read_receipts_hidden_for_message
+            from modules.messaging.receipt_privacy import mask_status
+            from modules.messaging.receipt_privacy import read_receipts_hidden_for_message
 
             if await read_receipts_hidden_for_message(session, chat.id, sender_id=user_id, chat=chat):
                 chat.last_message_status = mask_status(chat.last_message_status)

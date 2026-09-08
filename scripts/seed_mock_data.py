@@ -27,26 +27,33 @@ load_dotenv()
 
 from sqlalchemy import insert, select, update
 
-from database.connection import dispose_engine, session_scope
-from database.crud.crud_chat import create_chat
-from database.crud.crud_message import build_last_message_preview
-from database.crud.crud_participant import add_participant_to_chat, recompute_chat_receipt_cursors
-from database.crud.crud_private_chat_pair import create_pair, get_pair_chat_id
-from database.crud.crud_user import create_user, get_user_by_phone, update_user_profile
-from database.models.chat import Chat
-from database.models.message import Message
-from database.models.message_receipt_log import MessageReceiptLog
-from database.models.participant import Participant
-from database.models.user import User
+from infra.db.connection import dispose_engine
+from infra.db.connection import session_scope
+from modules.chats.crud.crud_chat import create_chat
+from modules.messaging.crud import build_last_message_preview
+from modules.chats.crud.crud_participant import add_participant_to_chat
+from modules.chats.crud.crud_participant import recompute_chat_receipt_cursors
+from modules.chats.crud.crud_private_chat_pair import create_pair
+from modules.chats.crud.crud_private_chat_pair import get_pair_chat_id
+from modules.users.crud import create_user
+from modules.users.crud import get_user_by_phone
+from modules.users.crud import update_user_profile
+from modules.chats.models.chat import Chat
+from modules.messaging.models import Message
+from modules.receipts.models import MessageReceiptLog
+from modules.chats.models.participant import Participant
+from modules.users.models import User
 from config import (
     RECEIPT_KIND_DELIVERED,
     RECEIPT_KIND_PLAYED,
     RECEIPT_KIND_READ,
     S3_BUCKET_AVATARS,
 )
-from services.storage.client import async_session as s3_async_session, build_object_key, client_kwargs
-from services.storage.media_service import ensure_buckets
-from utils.snowflake import next_id
+from modules.media.client import async_session as s3_async_session
+from modules.media.client import build_object_key
+from modules.media.client import client_kwargs
+from modules.media.media_service import ensure_buckets
+from infra.ids.snowflake import next_id
 
 # mock_photos/p{N}.png (N = user's phone number "1".."10") for user avatars,
 # mock_photos/g{N}.jpg for group photos (mapped per group in GROUP_CHATS).

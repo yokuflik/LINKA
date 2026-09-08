@@ -1,6 +1,6 @@
 # Linka 🚀
 
-A real-time messaging platform (WhatsApp / Telegram style) engineered for tens-of-billions-of-messages scale. 
+A real-time messaging platform (WhatsApp / Telegram style) designed around the architectural challenges of tens-of-billions-of-messages workloads. 
 
 **Linka** is a backend-first project demonstrating advanced system design, asynchronous message processing, and time-partitioned data storage. While it includes a Vue 3 proof-of-concept client for manual testing, the core focus is a production-ready, highly concurrent backend architecture.
 

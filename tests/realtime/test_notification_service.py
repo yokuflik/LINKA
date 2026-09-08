@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from services import notification_service
+from realtime import notification_service
 
 pytestmark = pytest.mark.asyncio
 

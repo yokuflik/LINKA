@@ -1,7 +1,7 @@
 from sqlalchemy import BigInteger, Column, DateTime, Index, PrimaryKeyConstraint, SMALLINT
 from sqlalchemy.sql import func
 
-from database.base import Base
+from infra.db.base import Base
 
 
 class MessageReceiptLog(Base):

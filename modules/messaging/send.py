@@ -5,17 +5,23 @@ from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_message import create_message
-from database.crud.crud_participant import get_chat_participants, is_participant
-from database.models.message import Message, MessageStatus
-from services import notification_service, presence_service, realtime_service
-from services.fanout import send_queue
-from services.messaging.common import SYSTEM_MESSAGE_TYPE, _check_content_length
-from services.messaging.errors import MessageAlreadySentError, NotAParticipantError
-from services.messaging.media_validation import _validate_media
-from services.storage import media_service
-from services.redis_client import redis_client
-from utils.id_client import next_id
+from modules.messaging.crud import create_message
+from modules.chats.crud.crud_participant import get_chat_participants
+from modules.chats.crud.crud_participant import is_participant
+from modules.messaging.models import Message
+from modules.messaging.models import MessageStatus
+from realtime import notification_service
+from realtime import presence_service
+from realtime import realtime_service
+from realtime.fanout import send_queue
+from modules.messaging.common import SYSTEM_MESSAGE_TYPE
+from modules.messaging.common import _check_content_length
+from modules.messaging.errors import MessageAlreadySentError
+from modules.messaging.errors import NotAParticipantError
+from modules.messaging.media_validation import _validate_media
+from modules.media import media_service
+from infra.redis.client import redis_client
+from infra.ids.client import next_id
 
 # How long a client_message_id is remembered for idempotency - long enough to
 # cover any realistic client retry window (a flaky connection retrying a send).

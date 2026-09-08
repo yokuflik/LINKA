@@ -4,11 +4,15 @@ all emit a persisted system message + a transient chat_updated broadcast."""
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_chat import get_chat_by_id, update_chat_details
-from database.models.chat import Chat
-from services import avatar_service, message_service
-from services.chats.common import ROLE_ADMIN, _display_name_for, _require_role
-from services.chats.notifications import _broadcast_chat_update
+from modules.chats.crud.crud_chat import get_chat_by_id
+from modules.chats.crud.crud_chat import update_chat_details
+from modules.chats.models.chat import Chat
+from modules.users import avatar_service
+from modules.messaging import service as message_service
+from modules.chats.common import ROLE_ADMIN
+from modules.chats.common import _display_name_for
+from modules.chats.common import _require_role
+from modules.chats.notifications import _broadcast_chat_update
 
 
 async def update_group_details(

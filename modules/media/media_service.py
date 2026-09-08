@@ -33,18 +33,14 @@ from config import (
     UPLOAD_BUCKET_BY_KIND,
     UPLOAD_URL_EXPIRY_SECONDS,
 )
-from services.storage.client import (
-    async_session,
-    build_media_blob_key,
-    build_object_key,
-    client_kwargs,
-    signing_client,
-)
-from services.storage.errors import (
-    MediaNotFoundError,
-    MediaValidationError,
-    StorageUnavailableError,
-)
+from modules.media.client import async_session
+from modules.media.client import build_media_blob_key
+from modules.media.client import build_object_key
+from modules.media.client import client_kwargs
+from modules.media.client import signing_client
+from modules.media.errors import MediaNotFoundError
+from modules.media.errors import MediaValidationError
+from modules.media.errors import StorageUnavailableError
 
 logger = logging.getLogger(__name__)
 

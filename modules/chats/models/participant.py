@@ -2,7 +2,7 @@ from sqlalchemy import Column, BigInteger, ForeignKey, DateTime, SMALLINT
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
-from database.base import Base
+from infra.db.base import Base
 
 class Participant(Base):
     __tablename__ = "participants"

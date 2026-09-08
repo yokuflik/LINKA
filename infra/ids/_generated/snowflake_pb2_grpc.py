@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from utils import snowflake_pb2 as snowflake__pb2
+from infra.ids._generated import snowflake_pb2 as snowflake__pb2
 
 GRPC_GENERATED_VERSION = '1.68.1'
 GRPC_VERSION = grpc.__version__

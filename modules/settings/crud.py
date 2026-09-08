@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models.user_settings import UserSettings
+from modules.settings.models import UserSettings
 
 
 async def get_settings_blob(session: AsyncSession, user_id: int) -> Optional[dict[str, Any]]:

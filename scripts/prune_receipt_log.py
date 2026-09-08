@@ -25,7 +25,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from config import RECEIPT_LOG_RETENTION_DAYS
-from database.connection import DATABASE_URL
+from infra.db.connection import DATABASE_URL
 
 _PARENT = "message_receipt_log"
 

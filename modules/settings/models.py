@@ -2,7 +2,7 @@ from sqlalchemy import Column, BigInteger, ForeignKey, DateTime, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
-from database.base import Base
+from infra.db.base import Base
 
 
 class UserSettings(Base):

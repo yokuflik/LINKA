@@ -11,21 +11,21 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-from database.base import Base
+from infra.db.base import Base
 
 # Registers every model on Base.metadata regardless of which one the test
 # file being run actually imports - create_all() needs the full set (e.g.
 # Message's FK to chats.id fails to resolve if Chat was never imported by
 # anything), and a test file that only exercises, say, crud_user has no
 # reason to import Chat/Participant/Message itself.
-from database.models import chat as _chat  # noqa: F401
-from database.models import participant as _participant  # noqa: F401
-from database.models import message as _message  # noqa: F401
-from database.models import message_receipt_log as _message_receipt_log  # noqa: F401
-from database.models import user as _user  # noqa: F401
-from database.models import private_chat_pair as _private_chat_pair  # noqa: F401
-from database.models import user_settings as _user_settings  # noqa: F401
-from database.models import reserved_username as _reserved_username  # noqa: F401
+from modules.chats.models import chat as _chat  # noqa: F401
+from modules.chats.models import participant as _participant  # noqa: F401
+from modules.messaging import models as _message  # noqa: F401
+from modules.receipts import models as _message_receipt_log  # noqa: F401
+from modules.users import models as _user  # noqa: F401
+from modules.chats.models import private_chat_pair as _private_chat_pair  # noqa: F401
+from modules.settings import models as _user_settings  # noqa: F401
+from modules.auth import models as _reserved_username  # noqa: F401
 
 # Pointing to a local PostgreSQL instance dedicated ONLY for tests
 # (Usually spun up via Docker before running the tests)
@@ -96,8 +96,8 @@ async def _reset_shared_singletons_after_every_test():
     always runs after redis_db's own teardown below.
     """
     yield
-    from services.redis_client import redis_client
-    from database.connection import engine as db_connection_engine
+    from infra.redis.client import redis_client
+    from infra.db.connection import engine as db_connection_engine
 
     await redis_client.connection_pool.disconnect()
     await db_connection_engine.dispose()
@@ -111,7 +111,7 @@ async def redis_db():
     create_all/drop_all isolation, so this is what keeps presence/rate-limit/
     idempotency/OTP keys from leaking between tests.
     """
-    from services.redis_client import redis_client
+    from infra.redis.client import redis_client
 
     await redis_client.flushdb()
     yield redis_client

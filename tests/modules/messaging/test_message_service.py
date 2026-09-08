@@ -4,9 +4,12 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_user import create_user
-from services import chat_service, message_service, presence_service
-from services.fanout import fanout_worker, send_queue
+from modules.users.crud import create_user
+from modules.chats import service as chat_service
+from modules.messaging import service as message_service
+from realtime import presence_service
+from realtime.fanout import fanout_worker
+from realtime.fanout import send_queue
 
 pytestmark = pytest.mark.asyncio
 
@@ -186,7 +189,7 @@ async def test_purge_requires_a_soft_deleted_message_then_wipes_it(db_session: A
     await message_service.delete_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id)
     assert await message_service.purge_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id) is True
 
-    from database.crud.crud_message import get_message_by_id
+    from modules.messaging.crud import get_message_by_id
     row = await get_message_by_id(db_session, chat_id=chat_id, message_id=message.id)
     assert row.content is None and row.purged_at is not None
 
@@ -205,7 +208,7 @@ async def test_only_the_sender_can_purge_their_message(db_session: AsyncSession,
 
 
 async def test_mark_as_read_updates_the_watermark(db_session: AsyncSession, redis_db):
-    from database.crud.crud_participant import get_chat_participants
+    from modules.chats.crud.crud_participant import get_chat_participants
 
     chat_id = await _make_group(db_session, 1, [2])
     message = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="hi")
@@ -223,7 +226,7 @@ async def test_fan_out_pushes_only_to_offline_recipients_never_the_sender(db_ses
     async def fake_send_push(user_id, title, body, data=None):
         pushed_to.append(user_id)
 
-    from services import notification_service
+    from realtime import notification_service
     monkeypatch.setattr(notification_service, "send_push", fake_send_push)
 
     chat_id = await _make_group(db_session, 1, [2, 3])
@@ -243,7 +246,7 @@ async def test_fan_out_to_a_large_group_only_pushes_the_offline_half(db_session:
     async def fake_send_push(user_id, title, body, data=None):
         pushed_to.append(user_id)
 
-    from services import notification_service
+    from realtime import notification_service
     monkeypatch.setattr(notification_service, "send_push", fake_send_push)
 
     member_ids = list(range(2, 202))
@@ -260,8 +263,8 @@ async def test_fan_out_to_a_large_group_only_pushes_the_offline_half(db_session:
 
 
 async def test_send_message_fans_out_over_realtime_pubsub(db_session: AsyncSession, redis_db):
-    from services import realtime_service
-    from services.fanout import routing
+    from realtime import realtime_service
+    from realtime.fanout import routing
 
     chat_id = await _make_group(db_session, 1, [2])
 
@@ -313,8 +316,8 @@ async def test_edit_message_rejects_content_over_the_length_cap(db_session: Asyn
 
 
 async def test_send_message_threads_a_reply(db_session: AsyncSession, redis_db):
-    from services import realtime_service
-    from services.fanout import routing
+    from realtime import realtime_service
+    from realtime.fanout import routing
 
     chat_id = await _make_group(db_session, 1, [2])
     original = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="original")
@@ -341,8 +344,8 @@ async def test_send_message_threads_a_reply(db_session: AsyncSession, redis_db):
 
 
 async def test_fan_out_event_echoes_the_client_message_id(db_session: AsyncSession, redis_db):
-    from services import realtime_service
-    from services.fanout import routing
+    from realtime import realtime_service
+    from realtime.fanout import routing
 
     chat_id = await _make_group(db_session, 1, [2])
     client_message_id = str(uuid.uuid4())
@@ -365,9 +368,9 @@ async def test_fan_out_event_echoes_the_client_message_id(db_session: AsyncSessi
 
 
 async def test_mark_as_delivered_updates_the_watermark_and_fans_out(db_session: AsyncSession, redis_db):
-    from database.crud.crud_participant import get_chat_participants
-    from services import realtime_service
-    from services.fanout import routing
+    from modules.chats.crud.crud_participant import get_chat_participants
+    from realtime import realtime_service
+    from realtime.fanout import routing
 
     chat_id = await _make_group(db_session, 1, [2])
     message = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="hi")
@@ -392,9 +395,9 @@ async def test_mark_as_delivered_updates_the_watermark_and_fans_out(db_session: 
 
 
 async def test_mark_as_played_updates_the_watermark(db_session: AsyncSession, redis_db):
-    from database.crud.crud_message import create_message
-    from database.crud.crud_participant import get_chat_participants
-    from utils.snowflake import next_id
+    from modules.messaging.crud import create_message
+    from modules.chats.crud.crud_participant import get_chat_participants
+    from infra.ids.snowflake import next_id
 
     chat_id = await _make_group(db_session, 1, [2])
     # mark_as_played only accepts a voice message (type 4); build one directly
@@ -421,8 +424,8 @@ async def test_mark_as_played_rejects_a_non_voice_message(db_session: AsyncSessi
 async def test_marking_behind_the_watermark_fans_out_nothing(db_session: AsyncSession, redis_db):
     # A redundant/behind re-mark returns None from the CRUD layer, so
     # mark_as_* must publish no event and enqueue no receipt-log row.
-    from services import realtime_service
-    from services.fanout import routing
+    from realtime import realtime_service
+    from realtime.fanout import routing
 
     chat_id = await _make_group(db_session, 1, [2])
     m1 = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="1")
@@ -448,7 +451,7 @@ async def test_marking_behind_the_watermark_fans_out_nothing(db_session: AsyncSe
 
 
 async def test_send_system_message_persists_synchronously_and_enqueues_fanout(db_session: AsyncSession, redis_db):
-    from database.crud.crud_message import get_message_by_id
+    from modules.messaging.crud import get_message_by_id
 
     chat_id = await _make_group(db_session, 1, [2])
 

@@ -53,7 +53,7 @@ from config import (
     RECEIPT_LOG_PARTITION_INTERVAL,
     RECEIPT_LOG_PRECREATE_DAYS,
 )
-from database.connection import DATABASE_URL
+from infra.db.connection import DATABASE_URL
 
 
 class TableSpec:

@@ -23,7 +23,7 @@ from config import (  # noqa: E402
     S3_BUCKET_MEDIA,
     S3_ENDPOINT_URL,
 )
-from services.storage.media_service import ensure_buckets  # noqa: E402
+from modules.media.media_service import ensure_buckets  # noqa: E402
 
 
 async def main() -> None:

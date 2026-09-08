@@ -4,7 +4,7 @@ from sqlalchemy import Column, BigInteger, SMALLINT, Text, Boolean, DateTime, Fo
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
-from database.base import Base
+from infra.db.base import Base
 
 
 # type == 4. Voice recordings are the only message kind that can additionally

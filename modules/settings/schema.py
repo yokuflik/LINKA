@@ -14,7 +14,7 @@ rejected - a client cannot smuggle arbitrary JSON into the blob.
 from copy import deepcopy
 from typing import Any
 
-from services.settings.errors import SettingsValidationError
+from modules.settings.errors import SettingsValidationError
 
 # Visibility options for "who may see this about me".
 PRIVACY_VISIBILITY = ("everyone", "contacts", "nobody")

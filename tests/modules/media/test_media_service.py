@@ -11,8 +11,9 @@ import urllib.request
 import pytest
 import pytest_asyncio
 
-from services.storage import media_service as media
-from services.storage.errors import MediaNotFoundError, MediaValidationError
+from modules.media import media_service as media
+from modules.media.errors import MediaNotFoundError
+from modules.media.errors import MediaValidationError
 
 pytestmark = pytest.mark.asyncio
 

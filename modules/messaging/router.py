@@ -15,19 +15,19 @@ from config import (
     UPLOAD_TICKET_RATE_MAX,
     UPLOAD_TICKET_RATE_WINDOW_SECONDS,
 )
-from database.connection import get_db
-from database.crud.crud_media_blob import get_blob_by_hash, reserve_blob
-from database.crud.crud_participant import is_participant
-from routers.dependencies import get_current_user_id
-from routers.schemas import (
-    MediaUploadTicketIn,
-    MediaUploadTicketOut,
-    MessageOut,
-    MessageReceiptsOut,
-)
-from services import message_service, rate_limit_service
-from services.rate_limit_service import RateLimited
-from services.storage import media_service
+from infra.db.connection import get_db
+from modules.media.crud import get_blob_by_hash
+from modules.media.crud import reserve_blob
+from modules.chats.crud.crud_participant import is_participant
+from api.dependencies import get_current_user_id
+from api.schemas import MediaUploadTicketIn
+from api.schemas import MediaUploadTicketOut
+from api.schemas import MessageOut
+from api.schemas import MessageReceiptsOut
+from modules.messaging import service as message_service
+from infra.ratelimit import service as rate_limit_service
+from infra.ratelimit.service import RateLimited
+from modules.media import media_service
 
 router = APIRouter(prefix="/chats/{chat_id}/messages", tags=["messages"])
 

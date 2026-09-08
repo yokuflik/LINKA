@@ -10,11 +10,13 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from database.crud.crud_media_blob import reserve_blob
-from database.crud.crud_user import create_user
-from services import chat_service, message_service
-from services.storage import media_service as media
-from services.storage.errors import MediaNotFoundError, MediaValidationError
+from modules.media.crud import reserve_blob
+from modules.users.crud import create_user
+from modules.chats import service as chat_service
+from modules.messaging import service as message_service
+from modules.media import media_service as media
+from modules.media.errors import MediaNotFoundError
+from modules.media.errors import MediaValidationError
 
 pytestmark = pytest.mark.asyncio
 
@@ -122,7 +124,7 @@ async def test_identical_bytes_dedupe_to_one_object(db_session, redis_db):
 
     # A second "upload" of the same bytes: the ticket endpoint would report
     # already_uploaded and hand back the same key.
-    from database.crud.crud_media_blob import get_blob_by_hash
+    from modules.media.crud import get_blob_by_hash
 
     blob = await get_blob_by_hash(db_session, digest)
     assert blob is not None and blob.uploaded_at is not None
@@ -154,7 +156,7 @@ async def test_blur_hash_is_stored_and_reused_on_dedupe(db_session, redis_db):
     )
     assert m1.media_blur_hash == "1QcSHQRnh493V4dIh4eXh1h4kJUI"
 
-    from database.crud.crud_media_blob import get_blob_by_hash
+    from modules.media.crud import get_blob_by_hash
 
     blob = await get_blob_by_hash(db_session, digest)
     assert blob.blur_hash == "1QcSHQRnh493V4dIh4eXh1h4kJUI"

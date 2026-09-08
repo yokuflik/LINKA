@@ -17,7 +17,7 @@ load_dotenv()
 
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from database.connection import DATABASE_URL
+from infra.db.connection import DATABASE_URL
 from scripts import manage_partitions, prune_receipt_log
 
 JOBS = ("ensure", "report", "cold", "prune-receipts")

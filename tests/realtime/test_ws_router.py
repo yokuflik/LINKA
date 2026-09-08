@@ -5,14 +5,18 @@ import pytest
 from fastapi import WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.connection import session_scope
-from database.crud.crud_message import get_chat_messages
-from database.crud.crud_user import create_user
-from routers.websocket import _dispatch, websocket_endpoint
-from services import auth_service, chat_service, presence_service, ws_connection_registry
-from services.connection_manager import connection_manager
-from services.fanout import worker as send_worker
-from services.settings import service as settings_service
+from infra.db.connection import session_scope
+from modules.messaging.crud import get_chat_messages
+from modules.users.crud import create_user
+from realtime.ws_router import _dispatch
+from realtime.ws_router import websocket_endpoint
+from modules.auth import service as auth_service
+from modules.chats import service as chat_service
+from realtime import presence_service
+from realtime import ws_connection_registry
+from realtime.connection_manager import connection_manager
+from realtime.fanout import worker as send_worker
+from modules.settings import service as settings_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -163,7 +167,7 @@ async def test_dispatch_send_message_by_a_non_participant_returns_forbidden(db_s
 
 
 async def test_dispatch_send_message_is_rate_limited(db_session: AsyncSession, redis_db, monkeypatch):
-    monkeypatch.setattr("routers.websocket.WS_SEND_MESSAGE_RATE_MAX", 2)
+    monkeypatch.setattr("realtime.ws_router.WS_SEND_MESSAGE_RATE_MAX", 2)
 
     chat_id = await _make_group(db_session, 1, [2])
     ws = FakeWebSocket()
@@ -187,8 +191,8 @@ async def test_dispatch_send_message_is_rate_limited(db_session: AsyncSession, r
 
 async def test_dispatch_send_message_burst_ceiling(db_session: AsyncSession, redis_db, monkeypatch):
     # Primary 3/s is generous; the 40/60s ceiling is what catches sustained spam.
-    monkeypatch.setattr("routers.websocket.WS_SEND_MESSAGE_RATE_MAX", 1000)
-    monkeypatch.setattr("routers.websocket.WS_SEND_MESSAGE_BURST_MAX", 3)
+    monkeypatch.setattr("realtime.ws_router.WS_SEND_MESSAGE_RATE_MAX", 1000)
+    monkeypatch.setattr("realtime.ws_router.WS_SEND_MESSAGE_BURST_MAX", 3)
     chat_id = await _make_group(db_session, 1, [2])
     ws = FakeWebSocket()
 
@@ -209,7 +213,7 @@ async def test_dispatch_send_message_burst_ceiling(db_session: AsyncSession, red
 async def test_dispatch_per_action_limit_shares_a_bucket(db_session: AsyncSession, redis_db, monkeypatch):
     # mark_delivered / mark_read / mark_played share one bucket - alternating
     # between them must not dodge the limit.
-    monkeypatch.setattr("routers.websocket.WS_RECEIPTS_RATE_MAX", 2)
+    monkeypatch.setattr("realtime.ws_router.WS_RECEIPTS_RATE_MAX", 2)
     chat_id = await _make_group(db_session, 1, [2])
     ws = FakeWebSocket()
     mid = await _send_and_drain(1, chat_id, ws)
@@ -224,7 +228,7 @@ async def test_dispatch_per_action_limit_shares_a_bucket(db_session: AsyncSessio
 
 
 async def test_dispatch_per_action_limit_is_per_user(db_session: AsyncSession, redis_db, monkeypatch):
-    monkeypatch.setattr("routers.websocket.WS_TYPING_RATE_MAX", 1)
+    monkeypatch.setattr("realtime.ws_router.WS_TYPING_RATE_MAX", 1)
     chat_id = await _make_group(db_session, 1, [2, 3])
     ws = FakeWebSocket()
 
@@ -274,7 +278,7 @@ async def test_dispatch_typing_publishes_event_for_a_participant(db_session: Asy
     async def capture(cid, event):
         published.append((cid, event))
 
-    monkeypatch.setattr("routers.websocket.realtime_service.publish_event", capture)
+    monkeypatch.setattr("realtime.ws_router.realtime_service.publish_event", capture)
     ws = FakeWebSocket()
 
     await _dispatch(user_id=1, connection_id="c1", payload={"type": "recording", "chat_id": chat_id}, websocket=ws)
@@ -305,7 +309,7 @@ async def test_dispatch_typing_suppressed_when_sender_hides_online_status(db_ses
     async def capture(cid, event):
         published.append((cid, event))
 
-    monkeypatch.setattr("routers.websocket.realtime_service.publish_event", capture)
+    monkeypatch.setattr("realtime.ws_router.realtime_service.publish_event", capture)
     ws = FakeWebSocket()
 
     await _dispatch(user_id=1, connection_id="c1", payload={"type": "typing", "chat_id": chat_id}, websocket=ws)
@@ -323,7 +327,7 @@ async def test_dispatch_typing_allowed_in_group_regardless_of_privacy(db_session
     async def capture(cid, event):
         published.append((cid, event))
 
-    monkeypatch.setattr("routers.websocket.realtime_service.publish_event", capture)
+    monkeypatch.setattr("realtime.ws_router.realtime_service.publish_event", capture)
     ws = FakeWebSocket()
 
     await _dispatch(user_id=1, connection_id="c1", payload={"type": "typing", "chat_id": chat_id}, websocket=ws)
@@ -339,7 +343,7 @@ async def test_dispatch_internal_error_is_reported_not_raised(db_session: AsyncS
     async def boom(*args, **kwargs):
         raise RuntimeError("stream unreachable")
 
-    monkeypatch.setattr("routers.websocket.send_queue.enqueue_outgoing_message", boom)
+    monkeypatch.setattr("realtime.ws_router.send_queue.enqueue_outgoing_message", boom)
     ws = FakeWebSocket()
 
     await _dispatch(
@@ -372,8 +376,8 @@ async def test_endpoint_rejects_an_invalid_token(redis_db):
 
 async def test_endpoint_rejects_a_disallowed_origin(redis_db, monkeypatch):
     # CORS_ALLOW_ORIGINS defaults to ["*"] in dev, so pin a real allowlist.
-    monkeypatch.setattr("routers.websocket.CORS_ALLOW_ORIGINS", ["https://linka.example.com"])
-    monkeypatch.setattr("routers.websocket._ORIGIN_WILDCARD", False)
+    monkeypatch.setattr("realtime.ws_router.CORS_ALLOW_ORIGINS", ["https://linka.example.com"])
+    monkeypatch.setattr("realtime.ws_router._ORIGIN_WILDCARD", False)
     ws = FakeWebSocket(headers={"origin": "https://evil.example.com"})
 
     await websocket_endpoint(ws, token="whatever")  # token never checked - Origin fails first
@@ -423,8 +427,8 @@ async def test_endpoint_full_session_lifecycle(session_factory, redis_db):
 
 
 async def test_endpoint_frame_flood_drops_frames_then_closes(session_factory, redis_db, monkeypatch):
-    monkeypatch.setattr("routers.websocket.WS_FRAME_RATE_MAX", 2)
-    monkeypatch.setattr("routers.websocket.WS_FRAME_FLOOD_STRIKES", 3)
+    monkeypatch.setattr("realtime.ws_router.WS_FRAME_RATE_MAX", 2)
+    monkeypatch.setattr("realtime.ws_router.WS_FRAME_FLOOD_STRIKES", 3)
     async with session_factory() as setup:
         await _make_group(setup, 1, [2])
     token = auth_service._create_access_token(user_id=1)
@@ -450,7 +454,7 @@ async def test_endpoint_frame_flood_drops_frames_then_closes(session_factory, re
 
 
 async def test_endpoint_handshake_churn_closes_4429(session_factory, redis_db, monkeypatch):
-    monkeypatch.setattr("routers.websocket.WS_UPGRADE_USER_RATE_LIMIT_MAX", 2)
+    monkeypatch.setattr("realtime.ws_router.WS_UPGRADE_USER_RATE_LIMIT_MAX", 2)
     async with session_factory() as setup:
         await _make_group(setup, 1, [2])
     token = auth_service._create_access_token(user_id=1)
@@ -473,7 +477,7 @@ async def test_endpoint_handshake_churn_closes_4429(session_factory, redis_db, m
 
 
 async def test_endpoint_connection_cap_evicts_the_oldest(session_factory, redis_db, monkeypatch):
-    monkeypatch.setattr("services.ws_connection_registry.WS_CONN_MAX_CONNECTIONS", 3)
+    monkeypatch.setattr("realtime.ws_connection_registry.WS_CONN_MAX_CONNECTIONS", 3)
     async with session_factory() as setup:
         await _make_group(setup, 1, [2])
     token = auth_service._create_access_token(user_id=1)

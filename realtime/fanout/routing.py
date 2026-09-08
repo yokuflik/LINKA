@@ -25,7 +25,7 @@ still persisted; clients reconcile on reconnect / history fetch).
 import logging
 
 from config import CHAT_INSTANCE_TTL_SECONDS
-from services.redis_client import redis_client
+from infra.redis.client import redis_client
 
 logger = logging.getLogger(__name__)
 

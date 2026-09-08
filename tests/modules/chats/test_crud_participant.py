@@ -2,22 +2,21 @@ import asyncio
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_user import create_user
-from database.crud.crud_chat import create_chat, get_chat_by_id
-from database.crud.crud_message import create_message
-from database.models.participant import Participant
-from database.crud.crud_participant import (
-    add_participant_to_chat,
-    get_user_chats,
-    get_all_chat_ids_for_user,
-    is_participant,
-    update_participant_role,
-    get_chat_participants,
-    update_last_delivered_message,
-    update_last_read_message,
-    update_last_played_message,
-    remove_participant
-)
+from modules.users.crud import create_user
+from modules.chats.crud.crud_chat import create_chat
+from modules.chats.crud.crud_chat import get_chat_by_id
+from modules.messaging.crud import create_message
+from modules.chats.models.participant import Participant
+from modules.chats.crud.crud_participant import add_participant_to_chat
+from modules.chats.crud.crud_participant import get_user_chats
+from modules.chats.crud.crud_participant import get_all_chat_ids_for_user
+from modules.chats.crud.crud_participant import is_participant
+from modules.chats.crud.crud_participant import update_participant_role
+from modules.chats.crud.crud_participant import get_chat_participants
+from modules.chats.crud.crud_participant import update_last_delivered_message
+from modules.chats.crud.crud_participant import update_last_read_message
+from modules.chats.crud.crud_participant import update_last_played_message
+from modules.chats.crud.crud_participant import remove_participant
 
 # Tells pytest to run all tests in this file asynchronously
 pytestmark = pytest.mark.asyncio

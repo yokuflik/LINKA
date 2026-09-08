@@ -35,10 +35,12 @@ from config import (
     SEND_WORKER_BLOCK_MS,
     SERVER_ID,
 )
-from services import message_service, realtime_service
-from services.fanout import send_queue
-from services.fanout.base_worker import BaseStreamConsumer
-from services.storage.errors import MediaNotFoundError, MediaValidationError
+from modules.messaging import service as message_service
+from realtime import realtime_service
+from realtime.fanout import send_queue
+from realtime.fanout.base_worker import BaseStreamConsumer
+from modules.media.errors import MediaNotFoundError
+from modules.media.errors import MediaValidationError
 
 logger = logging.getLogger(__name__)
 

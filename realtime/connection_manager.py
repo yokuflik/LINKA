@@ -5,8 +5,8 @@ from typing import Awaitable, Callable
 from fastapi import WebSocket
 
 from config import SERVER_ID
-from services import realtime_service
-from services.fanout import routing
+from realtime import realtime_service
+from realtime.fanout import routing
 
 logger = logging.getLogger(__name__)
 

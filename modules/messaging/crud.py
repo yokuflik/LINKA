@@ -6,12 +6,15 @@ from typing import Sequence, Optional
 from datetime import timedelta
 import logging
 
-from database.models.message import AUDIO_MESSAGE_TYPE, Message, MessageStatus
-from database.models.chat import Chat, LAST_MESSAGE_PREVIEW_LENGTH
-from database.models.participant import Participant
-from database.crud.crud_participant import recompute_chat_receipt_cursors
+from modules.messaging.models import AUDIO_MESSAGE_TYPE
+from modules.messaging.models import Message
+from modules.messaging.models import MessageStatus
+from modules.chats.models.chat import Chat
+from modules.chats.models.chat import LAST_MESSAGE_PREVIEW_LENGTH
+from modules.chats.models.participant import Participant
+from modules.chats.crud.crud_participant import recompute_chat_receipt_cursors
 from config import MESSAGE_PARTITION_QUERY_SKEW_HOURS
-from utils.snowflake import id_to_datetime
+from infra.ids.snowflake import id_to_datetime
 
 logger = logging.getLogger(__name__)
 

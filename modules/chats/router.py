@@ -4,25 +4,25 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.connection import get_db
-from routers.dependencies import get_current_user_id
-from routers.schemas import (
-    AddMemberIn,
-    AvatarCommitIn,
-    AvatarUploadTicketIn,
-    AvatarUploadTicketOut,
-    ChangeRoleIn,
-    ChatListItemOut,
-    ChatMemberOut,
-    ChatOut,
-    CreateGroupChatIn,
-    CreatePrivateChatIn,
-    MuteChatIn,
-    ParticipantOut,
-    UpdateGroupDetailsIn,
-)
+from infra.db.connection import get_db
+from api.dependencies import get_current_user_id
+from api.schemas import AddMemberIn
+from api.schemas import AvatarCommitIn
+from api.schemas import AvatarUploadTicketIn
+from api.schemas import AvatarUploadTicketOut
+from api.schemas import ChangeRoleIn
+from api.schemas import ChatListItemOut
+from api.schemas import ChatMemberOut
+from api.schemas import ChatOut
+from api.schemas import CreateGroupChatIn
+from api.schemas import CreatePrivateChatIn
+from api.schemas import MuteChatIn
+from api.schemas import ParticipantOut
+from api.schemas import UpdateGroupDetailsIn
 from config import LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
-from services import avatar_service, chat_service, rate_limit_service
+from modules.users import avatar_service
+from modules.chats import service as chat_service
+from infra.ratelimit import service as rate_limit_service
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 

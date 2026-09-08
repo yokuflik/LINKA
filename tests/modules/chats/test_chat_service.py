@@ -3,9 +3,9 @@ import asyncio
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_user import create_user
-from database.models.chat import Chat
-from services import chat_service
+from modules.users.crud import create_user
+from modules.chats.models.chat import Chat
+from modules.chats import service as chat_service
 
 pytestmark = pytest.mark.asyncio
 
@@ -91,7 +91,7 @@ async def test_add_member_for_a_nonexistent_user_returns_none_without_a_system_m
     # new_user_id (FK violation, silently swallowed by add_participant_to_chat)
     # still produced a "X joined the group" system message for a join that
     # never actually happened.
-    from database.crud.crud_message import get_chat_messages
+    from modules.messaging.crud import get_chat_messages
 
     await _make_users(db_session, 1)
     group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team")
@@ -107,7 +107,7 @@ async def test_add_member_for_a_nonexistent_user_returns_none_without_a_system_m
 
 
 async def test_add_member_generates_a_system_message(db_session: AsyncSession):
-    from database.crud.crud_message import get_chat_messages
+    from modules.messaging.crud import get_chat_messages
 
     await _make_users(db_session, 1, 2)
     group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team")
@@ -187,7 +187,7 @@ async def test_only_admin_or_owner_can_update_group_details(db_session: AsyncSes
 
 
 async def test_update_group_details_announces_name_and_description_changes(db_session: AsyncSession):
-    from database.crud.crud_message import get_chat_messages
+    from modules.messaging.crud import get_chat_messages
 
     await _make_users(db_session, 1)
     group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team")
@@ -312,7 +312,7 @@ async def test_group_chat_with_a_nonexistent_member_raises_and_leaves_nothing_be
 # ---------------------------------------------------------------------------
 
 async def _collect_one_user_event(user_id: int, timeout: float = 2.0):
-    from services import realtime_service
+    from realtime import realtime_service
     agen = realtime_service.subscribe_to_user(user_id)
     task = asyncio.create_task(agen.__anext__())
     try:
@@ -419,8 +419,8 @@ async def test_owner_leaving_with_a_non_member_successor_is_rejected(db_session:
 
 
 async def test_owner_leaving_promotes_the_named_successor(db_session: AsyncSession):
-    from database.crud.crud_message import get_chat_messages
-    from database.crud.crud_participant import get_chat_participants
+    from modules.messaging.crud import get_chat_messages
+    from modules.chats.crud.crud_participant import get_chat_participants
 
     await _make_users(db_session, 1, 2)
     group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team", initial_member_ids=[2])
@@ -465,7 +465,7 @@ async def test_get_chat_members_rejects_a_non_participant(db_session: AsyncSessi
 async def test_change_member_role_emits_a_json_role_changed_system_message(db_session: AsyncSession):
     import json
 
-    from database.crud.crud_message import get_chat_messages
+    from modules.messaging.crud import get_chat_messages
 
     await _make_users(db_session, 1, 2)
     group = await chat_service.create_group_chat(db_session, creator_id=1, title="Team", initial_member_ids=[2])

@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from services import ws_connection_registry as reg
+from realtime import ws_connection_registry as reg
 
 pytestmark = pytest.mark.asyncio
 

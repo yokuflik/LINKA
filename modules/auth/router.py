@@ -9,10 +9,16 @@ from config import (
     REFRESH_IP_RATE_LIMIT_MAX,
     REFRESH_IP_RATE_LIMIT_WINDOW_SECONDS,
 )
-from database.connection import get_db
-from routers.schemas import FirebaseVerifyIn, LoginOut, OTPRequestIn, OTPVerifyIn, RefreshTokenIn, TokenPairOut
-from services import auth_service, rate_limit_service
-from services.rate_limit_service import RateLimited
+from infra.db.connection import get_db
+from api.schemas import FirebaseVerifyIn
+from api.schemas import LoginOut
+from api.schemas import OTPRequestIn
+from api.schemas import OTPVerifyIn
+from api.schemas import RefreshTokenIn
+from api.schemas import TokenPairOut
+from modules.auth import service as auth_service
+from infra.ratelimit import service as rate_limit_service
+from infra.ratelimit.service import RateLimited
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 

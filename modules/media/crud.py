@@ -6,7 +6,7 @@ from sqlalchemy import delete as sa_delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models.media_blob import MediaBlob
+from modules.media.models import MediaBlob
 
 
 async def get_blob_by_hash(session: AsyncSession, sha256: str) -> Optional[MediaBlob]:

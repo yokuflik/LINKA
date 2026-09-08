@@ -7,15 +7,19 @@
 from typing import Optional, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_chat import create_chat, delete_chat
-from database.crud.crud_participant import add_participant_to_chat
-from database.crud.crud_private_chat_pair import create_pair, get_pair_chat_id
-from database.models.chat import Chat
-from services import avatar_service
-from services.chats.common import ROLE_MEMBER, ROLE_OWNER
-from services.chats.errors import TooManyMembersError, UserNotFoundError
-from services.chats.notifications import _notify_added_to_chat
-from utils.id_client import next_id
+from modules.chats.crud.crud_chat import create_chat
+from modules.chats.crud.crud_chat import delete_chat
+from modules.chats.crud.crud_participant import add_participant_to_chat
+from modules.chats.crud.crud_private_chat_pair import create_pair
+from modules.chats.crud.crud_private_chat_pair import get_pair_chat_id
+from modules.chats.models.chat import Chat
+from modules.users import avatar_service
+from modules.chats.common import ROLE_MEMBER
+from modules.chats.common import ROLE_OWNER
+from modules.chats.errors import TooManyMembersError
+from modules.chats.errors import UserNotFoundError
+from modules.chats.notifications import _notify_added_to_chat
+from infra.ids.client import next_id
 
 
 async def get_or_create_private_chat(session: AsyncSession, user_a_id: int, user_b_id: int) -> Chat:
@@ -81,7 +85,7 @@ async def create_group_chat(
     avatar_storage_key: Optional[str] = None,
     avatar_preview: Optional[str] = None,
 ) -> Chat:
-    from services import chat_service
+    from modules.chats import service as chat_service
 
     # Each member is its own sequential DB round trip below - an unbounded
     # list is an easy way to turn one call into millions of inserts.

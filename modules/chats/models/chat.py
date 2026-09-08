@@ -2,7 +2,7 @@ from sqlalchemy import Column, BigInteger, String, Boolean, Text, DateTime
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
-from database.base import Base
+from infra.db.base import Base
 
 # Only the first line of the last message is ever rendered in a chat list,
 # so only that much is worth denormalizing onto this (small, hot) table -

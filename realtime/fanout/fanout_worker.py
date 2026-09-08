@@ -37,10 +37,10 @@ from config import (
     MESSAGE_FANOUT_STREAM_KEY,
     SERVER_ID,
 )
-from database.crud.crud_message import get_message_by_id
-from services import message_service
-from services.fanout import send_queue
-from services.fanout.base_worker import BaseStreamConsumer
+from modules.messaging.crud import get_message_by_id
+from modules.messaging import service as message_service
+from realtime.fanout import send_queue
+from realtime.fanout.base_worker import BaseStreamConsumer
 
 logger = logging.getLogger(__name__)
 

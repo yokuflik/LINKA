@@ -1,25 +1,25 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.connection import get_db
-from routers.dependencies import get_current_user_id
-from routers.schemas import (
-    AvatarCommitIn,
-    AvatarUploadTicketIn,
-    AvatarUploadTicketOut,
-    UserOut,
-    UserProfileUpdateIn,
-    UserSettingsOut,
-    UserSettingsUpdateIn,
-)
+from infra.db.connection import get_db
+from api.dependencies import get_current_user_id
+from api.schemas import AvatarCommitIn
+from api.schemas import AvatarUploadTicketIn
+from api.schemas import AvatarUploadTicketOut
+from api.schemas import UserOut
+from api.schemas import UserProfileUpdateIn
+from api.schemas import UserSettingsOut
+from api.schemas import UserSettingsUpdateIn
 from config import (
     LIST_READ_RATE_MAX,
     LIST_READ_RATE_WINDOW_SECONDS,
     USERNAME_CHECK_RATE_MAX,
     USERNAME_CHECK_RATE_WINDOW_SECONDS,
 )
-from services import avatar_service, rate_limit_service, user_service
-from services.settings import service as settings_service
+from modules.users import avatar_service
+from infra.ratelimit import service as rate_limit_service
+from modules.users import service as user_service
+from modules.settings import service as settings_service
 
 router = APIRouter(prefix="/users", tags=["users"])
 

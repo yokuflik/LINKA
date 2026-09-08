@@ -3,12 +3,10 @@ import asyncio
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.crud.crud_user import (
-    create_user,
-    get_user_by_id,
-    get_user_by_phone,
-    update_user_profile
-)
+from modules.users.crud import create_user
+from modules.users.crud import get_user_by_id
+from modules.users.crud import get_user_by_phone
+from modules.users.crud import update_user_profile
 
 # Tells pytest to run these tests asynchronously
 pytestmark = pytest.mark.asyncio

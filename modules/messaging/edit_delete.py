@@ -6,18 +6,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
-from database.crud.crud_media_blob import delete_blob_row, deref_blob
-from database.crud.crud_message import (
-    edit_message_content,
-    get_message_by_id,
-    purge_message as crud_purge_message,
-    soft_delete_message,
-    undelete_message,
-)
-from services import realtime_service
-from services.messaging.common import _check_content_length
-from services.messaging.errors import NotAParticipantError
-from services.storage import media_service
+from modules.media.crud import delete_blob_row
+from modules.media.crud import deref_blob
+from modules.messaging.crud import edit_message_content
+from modules.messaging.crud import get_message_by_id
+from modules.messaging.crud import purge_message as crud_purge_message
+from modules.messaging.crud import soft_delete_message
+from modules.messaging.crud import undelete_message
+from realtime import realtime_service
+from modules.messaging.common import _check_content_length
+from modules.messaging.errors import NotAParticipantError
+from modules.media import media_service
 
 
 async def edit_message(session: AsyncSession, user_id: int, chat_id: int, message_id: int, new_content: str) -> "object":

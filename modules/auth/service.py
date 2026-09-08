@@ -20,11 +20,14 @@ from config import (
     OTP_REQUEST_RATE_LIMIT_WINDOW_SECONDS,
     OTP_VERIFY_MAX_ATTEMPTS,
 )
-from database.crud.crud_user import create_user, get_user_by_phone
-from database.models.user import User
-from services import firebase_auth, rate_limit_service, user_service
-from services.redis_client import redis_client
-from utils.id_client import next_id
+from modules.users.crud import create_user
+from modules.users.crud import get_user_by_phone
+from modules.users.models import User
+from modules.auth import firebase as firebase_auth
+from infra.ratelimit import service as rate_limit_service
+from modules.users import service as user_service
+from infra.redis.client import redis_client
+from infra.ids.client import next_id
 
 logger = logging.getLogger(__name__)
 

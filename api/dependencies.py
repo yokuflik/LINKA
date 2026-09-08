@@ -2,7 +2,7 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from services import auth_service
+from modules.auth import service as auth_service
 
 _bearer_scheme = HTTPBearer()
 

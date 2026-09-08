@@ -4,8 +4,8 @@ from sqlalchemy.exc import IntegrityError
 from typing import Optional
 import logging
 
-from database.models.user import User
-from database.models.reserved_username import ReservedUsername
+from modules.users.models import User
+from modules.auth.models import ReservedUsername
 
 logger = logging.getLogger(__name__)
 

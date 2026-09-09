@@ -24,14 +24,7 @@ from typing import Optional
 from redis.exceptions import ResponseError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import (
-    RECEIPT_STREAM_CLAIM_IDLE_MS,
-    RECEIPT_STREAM_GROUP,
-    RECEIPT_STREAM_KEY,
-    RECEIPT_STREAM_MAXLEN,
-    RECEIPT_WORKER_BATCH,
-    SERVER_ID,
-)
+from config import settings
 from modules.receipts.models import MessageReceiptLog
 from infra.redis.client import redis_client
 # Local generator on purpose: _rows_from_entries() is sync and these ids are
@@ -43,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 # One consumer name per process. The consumer *group* is shared across every
 # app instance, so the stream's load is split between them automatically.
-_CONSUMER_NAME = f"receipt-worker-{SERVER_ID}"
+_CONSUMER_NAME = f"receipt-worker-{settings.SERVER_ID}"
 
 
 async def enqueue_receipt_event(
@@ -63,7 +56,7 @@ async def enqueue_receipt_event(
     """
     occurred_at = occurred_at or datetime.now(timezone.utc)
     await redis_client.xadd(
-        RECEIPT_STREAM_KEY,
+        settings.RECEIPT_STREAM_KEY,
         {
             "chat_id": str(chat_id),
             "user_id": str(user_id),
@@ -71,7 +64,7 @@ async def enqueue_receipt_event(
             "up_to_message_id": str(up_to_message_id),
             "occurred_at": occurred_at.isoformat(),
         },
-        maxlen=RECEIPT_STREAM_MAXLEN,
+        maxlen=settings.RECEIPT_STREAM_MAXLEN,
         approximate=True,
     )
 
@@ -80,7 +73,7 @@ async def ensure_group() -> None:
     """Create the consumer group (and the stream) if absent. Idempotent."""
     try:
         await redis_client.xgroup_create(
-            RECEIPT_STREAM_KEY, RECEIPT_STREAM_GROUP, id="0", mkstream=True
+            settings.RECEIPT_STREAM_KEY, settings.RECEIPT_STREAM_GROUP, id="0", mkstream=True
         )
     except ResponseError as exc:
         if "BUSYGROUP" not in str(exc):
@@ -130,10 +123,10 @@ async def _claim_stale(count: int) -> list:
     """
     try:
         result = await redis_client.xautoclaim(
-            RECEIPT_STREAM_KEY,
-            RECEIPT_STREAM_GROUP,
+            settings.RECEIPT_STREAM_KEY,
+            settings.RECEIPT_STREAM_GROUP,
             _CONSUMER_NAME,
-            min_idle_time=RECEIPT_STREAM_CLAIM_IDLE_MS,
+            min_idle_time=settings.RECEIPT_STREAM_CLAIM_IDLE_MS,
             count=count,
         )
     except ResponseError as exc:
@@ -159,12 +152,12 @@ async def drain_once(
     Exposed directly (not just run from the worker loop) so tests can drive
     the drain deterministically right after enqueuing.
     """
-    count = count or RECEIPT_WORKER_BATCH
+    count = count or settings.RECEIPT_WORKER_BATCH
 
     response = await redis_client.xreadgroup(
-        RECEIPT_STREAM_GROUP,
+        settings.RECEIPT_STREAM_GROUP,
         _CONSUMER_NAME,
-        {RECEIPT_STREAM_KEY: ">"},
+        {settings.RECEIPT_STREAM_KEY: ">"},
         count=count,
         block=block_ms or None,
     )
@@ -184,5 +177,5 @@ async def drain_once(
         session.add_all(rows)
         await session.commit()
     if ack_ids:
-        await redis_client.xack(RECEIPT_STREAM_KEY, RECEIPT_STREAM_GROUP, *ack_ids)
+        await redis_client.xack(settings.RECEIPT_STREAM_KEY, settings.RECEIPT_STREAM_GROUP, *ack_ids)
     return len(rows)

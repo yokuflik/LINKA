@@ -3,21 +3,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.db.connection import get_db
 from api.dependencies import get_current_user_id
-from api.schemas import AvatarCommitIn
-from api.schemas import AvatarUploadTicketIn
-from api.schemas import AvatarUploadTicketOut
-from api.schemas import PublicKeyIn
-from api.schemas import PublicKeyOut
-from api.schemas import UserOut
-from api.schemas import UserProfileUpdateIn
-from api.schemas import UserSettingsOut
-from api.schemas import UserSettingsUpdateIn
-from config import (
-    LIST_READ_RATE_MAX,
-    LIST_READ_RATE_WINDOW_SECONDS,
-    USERNAME_CHECK_RATE_MAX,
-    USERNAME_CHECK_RATE_WINDOW_SECONDS,
-)
+from modules.media.schemas import AvatarCommitIn
+from modules.media.schemas import AvatarUploadTicketIn
+from modules.media.schemas import AvatarUploadTicketOut
+from modules.users.schemas import PublicKeyIn
+from modules.users.schemas import PublicKeyOut
+from modules.users.schemas import UserOut
+from modules.users.schemas import UserProfileUpdateIn
+from modules.users.schemas import UserSettingsOut
+from modules.users.schemas import UserSettingsUpdateIn
+from config import settings
 from modules.users import avatar_service
 from infra.ratelimit import service as rate_limit_service
 from modules.users import service as user_service
@@ -29,7 +24,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 @router.get("/me", response_model=UserOut)
 async def get_my_profile(user_id: int = Depends(get_current_user_id), session: AsyncSession = Depends(get_db)):
     await rate_limit_service.enforce_sliding_window(
-        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+        user_id, "list_read", settings.LIST_READ_RATE_MAX, settings.LIST_READ_RATE_WINDOW_SECONDS
     )
     user = await user_service.get_profile(session, user_id)
     if user is None:
@@ -46,7 +41,7 @@ async def username_available(
     """Advisory only (ADR 0017): the real authority is the unique-index write on
     PATCH /users/me. Dedicated tight bucket so it can't enumerate the table."""
     await rate_limit_service.enforce_sliding_window(
-        user_id, "username_check", USERNAME_CHECK_RATE_MAX, USERNAME_CHECK_RATE_WINDOW_SECONDS
+        user_id, "username_check", settings.USERNAME_CHECK_RATE_MAX, settings.USERNAME_CHECK_RATE_WINDOW_SECONDS
     )
     return await user_service.check_username_available(session, user_id, username)
 
@@ -60,7 +55,7 @@ async def get_profile_by_phone(
     """Looks up a user by phone number - e.g. to start a private chat by phone
     instead of needing to already know their numeric id."""
     await rate_limit_service.enforce_sliding_window(
-        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+        user_id, "list_read", settings.LIST_READ_RATE_MAX, settings.LIST_READ_RATE_WINDOW_SECONDS
     )
     user = await user_service.get_profile_by_phone(session, phone_number)
     if user is None:
@@ -77,7 +72,7 @@ async def get_profile_by_username(
     """Exact-match username lookup (ADR 0017) - e.g. to start a private chat by
     username. No prefix / substring search: a full handle or nothing."""
     await rate_limit_service.enforce_sliding_window(
-        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+        user_id, "list_read", settings.LIST_READ_RATE_MAX, settings.LIST_READ_RATE_WINDOW_SECONDS
     )
     user = await user_service.get_profile_by_username(session, username)
     if user is None:
@@ -139,7 +134,7 @@ async def get_user_public_key(
     """Fetch one user's current E2E public key (ADR 0026) - e.g. before starting
     a new encrypted 1:1 chat."""
     await rate_limit_service.enforce_sliding_window(
-        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+        user_id, "list_read", settings.LIST_READ_RATE_MAX, settings.LIST_READ_RATE_WINDOW_SECONDS
     )
     row = await user_service.get_public_key(session, target_user_id)
     if row is None:

@@ -6,7 +6,7 @@ every process shares one consumer group, so adding replicas splits the load.
 import asyncio
 import logging
 
-from config import RECEIPT_WORKER_BLOCK_MS
+from config import settings
 from infra.db.connection import session_scope
 from modules.receipts import receipt_log
 
@@ -22,10 +22,10 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
     while stop_event is None or not stop_event.is_set():
         try:
             async with session_scope() as session:
-                written = await receipt_log.drain_once(session, block_ms=RECEIPT_WORKER_BLOCK_MS)
+                written = await receipt_log.drain_once(session, block_ms=settings.RECEIPT_WORKER_BLOCK_MS)
             # A full-looking batch means there may be more waiting - loop
             # straight back without the block delay. An empty read already
-            # blocked for RECEIPT_WORKER_BLOCK_MS inside drain_once.
+            # blocked for settings.RECEIPT_WORKER_BLOCK_MS inside drain_once.
             if written == 0:
                 await asyncio.sleep(0)
         except asyncio.CancelledError:

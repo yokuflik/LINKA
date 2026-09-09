@@ -21,18 +21,7 @@ from botocore.exceptions import ClientError
 import base64
 import re
 
-from config import (
-    ALLOWED_UPLOAD_MIME,
-    DOWNLOAD_URL_EXPIRY_SECONDS,
-    MAX_UPLOAD_BYTES_BY_KIND,
-    MIN_UPLOAD_BYTES_BY_KIND,
-    S3_AVATARS_PUBLIC_BASE_URL,
-    S3_BUCKET_AVATARS,
-    S3_BUCKET_MEDIA,
-    S3_ENFORCE_UPLOAD_CHECKSUM,
-    UPLOAD_BUCKET_BY_KIND,
-    UPLOAD_URL_EXPIRY_SECONDS,
-)
+from config import settings
 from modules.media.client import async_session
 from modules.media.client import build_media_blob_key
 from modules.media.client import build_object_key
@@ -44,7 +33,14 @@ from modules.media.errors import StorageUnavailableError
 
 logger = logging.getLogger(__name__)
 
-VALID_KINDS = frozenset(MAX_UPLOAD_BYTES_BY_KIND.keys())
+# The two bucket names are part of this module's public surface: they are the
+# default ``bucket=`` argument on the functions below, and callers (avatar_service,
+# tests) pass ``media_service.S3_BUCKET_AVATARS`` explicitly. Re-exported on
+# purpose - not an incidental ``from config import`` leak.
+S3_BUCKET_AVATARS = settings.S3_BUCKET_AVATARS
+S3_BUCKET_MEDIA = settings.S3_BUCKET_MEDIA
+
+VALID_KINDS = frozenset(settings.MAX_UPLOAD_BYTES_BY_KIND.keys())
 
 
 @dataclass(frozen=True)
@@ -107,7 +103,7 @@ def build_media_upload_ticket(
     disabled) x-amz-checksum-sha256 into the signature.
     """
     _validate_upload_request(kind, mime, size_bytes)
-    bucket = UPLOAD_BUCKET_BY_KIND[kind]
+    bucket = settings.UPLOAD_BUCKET_BY_KIND[kind]
     key = build_media_blob_key(kind, sha256_hex, mime)
 
     if already_uploaded:
@@ -127,13 +123,13 @@ def build_media_upload_ticket(
         "ContentLength": size_bytes,
     }
     headers = {"Content-Type": mime, "Content-Length": str(size_bytes)}
-    if S3_ENFORCE_UPLOAD_CHECKSUM:
+    if settings.S3_ENFORCE_UPLOAD_CHECKSUM:
         checksum_b64 = base64.b64encode(bytes.fromhex(sha256_hex)).decode()
         params["ChecksumSHA256"] = checksum_b64
         headers["x-amz-checksum-sha256"] = checksum_b64
 
     url = signing_client().generate_presigned_url(
-        "put_object", Params=params, ExpiresIn=UPLOAD_URL_EXPIRY_SECONDS
+        "put_object", Params=params, ExpiresIn=settings.UPLOAD_URL_EXPIRY_SECONDS
     )
     return MediaUploadTicket(
         storage_key=key,
@@ -141,7 +137,7 @@ def build_media_upload_ticket(
         already_uploaded=False,
         upload_url=url,
         required_headers=headers,
-        expires_in=UPLOAD_URL_EXPIRY_SECONDS,
+        expires_in=settings.UPLOAD_URL_EXPIRY_SECONDS,
     )
 
 
@@ -162,7 +158,7 @@ def _validate_upload_request(kind: str, mime: str, size_bytes: int) -> None:
         raise MediaValidationError(
             f"unknown upload kind {kind!r}; expected one of {sorted(VALID_KINDS)}"
         )
-    allowed = ALLOWED_UPLOAD_MIME.get(kind, set())
+    allowed = settings.ALLOWED_UPLOAD_MIME.get(kind, set())
     # An empty allow-set is the "any non-empty MIME" sentinel (kind 'file').
     if not mime:
         raise MediaValidationError(f"a content type is required for {kind!r} uploads")
@@ -172,12 +168,12 @@ def _validate_upload_request(kind: str, mime: str, size_bytes: int) -> None:
         )
     if size_bytes <= 0:
         raise MediaValidationError("declared upload size must be positive")
-    floor = MIN_UPLOAD_BYTES_BY_KIND.get(kind, 1)
+    floor = settings.MIN_UPLOAD_BYTES_BY_KIND.get(kind, 1)
     if size_bytes < floor:
         raise MediaValidationError(
             f"declared size {size_bytes} is below the {floor}-byte minimum for {kind!r}"
         )
-    ceiling = MAX_UPLOAD_BYTES_BY_KIND[kind]
+    ceiling = settings.MAX_UPLOAD_BYTES_BY_KIND[kind]
     if size_bytes > ceiling:
         raise MediaValidationError(
             f"declared size {size_bytes} exceeds the {ceiling}-byte limit for {kind!r}"
@@ -196,7 +192,7 @@ def create_upload_ticket(kind: str, mime: str, size_bytes: int) -> UploadTicket:
     """
     _validate_upload_request(kind, mime, size_bytes)
 
-    bucket = UPLOAD_BUCKET_BY_KIND[kind]
+    bucket = settings.UPLOAD_BUCKET_BY_KIND[kind]
     key = build_object_key(kind, mime)
 
     # ContentType and ContentLength in Params are signed into the URL: the
@@ -210,21 +206,21 @@ def create_upload_ticket(kind: str, mime: str, size_bytes: int) -> UploadTicket:
             "ContentType": mime,
             "ContentLength": size_bytes,
         },
-        ExpiresIn=UPLOAD_URL_EXPIRY_SECONDS,
+        ExpiresIn=settings.UPLOAD_URL_EXPIRY_SECONDS,
     )
     return UploadTicket(
         storage_key=key,
         bucket=bucket,
         upload_url=url,
         required_headers={"Content-Type": mime, "Content-Length": str(size_bytes)},
-        expires_in=UPLOAD_URL_EXPIRY_SECONDS,
+        expires_in=settings.UPLOAD_URL_EXPIRY_SECONDS,
     )
 
 
 # --------------------------------------------------------------------------
 # Download URLs (sync - local signing / string building only)
 # --------------------------------------------------------------------------
-def download_url(storage_key: str, bucket: str = S3_BUCKET_MEDIA) -> str:
+def download_url(storage_key: str, bucket: str = settings.S3_BUCKET_MEDIA) -> str:
     """
     Presigned GET for a private media object. Short-lived (see
     DOWNLOAD_URL_EXPIRY_SECONDS). Callers that serve many of these (message
@@ -234,7 +230,7 @@ def download_url(storage_key: str, bucket: str = S3_BUCKET_MEDIA) -> str:
     return signing_client().generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": storage_key},
-        ExpiresIn=DOWNLOAD_URL_EXPIRY_SECONDS,
+        ExpiresIn=settings.DOWNLOAD_URL_EXPIRY_SECONDS,
     )
 
 
@@ -246,7 +242,7 @@ def message_media_download_url(storage_key: str | None) -> str | None:
     """
     if not storage_key:
         return None
-    return download_url(storage_key, bucket=S3_BUCKET_MEDIA)
+    return download_url(storage_key, bucket=settings.S3_BUCKET_MEDIA)
 
 
 def public_avatar_url(storage_key: str | None) -> str | None:
@@ -257,13 +253,13 @@ def public_avatar_url(storage_key: str | None) -> str | None:
     """
     if not storage_key:
         return None
-    return f"{S3_AVATARS_PUBLIC_BASE_URL.rstrip('/')}/{storage_key.lstrip('/')}"
+    return f"{settings.S3_AVATARS_PUBLIC_BASE_URL.rstrip('/')}/{storage_key.lstrip('/')}"
 
 
 # --------------------------------------------------------------------------
 # Object metadata / lifecycle (async - real network I/O)
 # --------------------------------------------------------------------------
-async def object_metadata(storage_key: str, bucket: str = S3_BUCKET_MEDIA) -> ObjectMetadata:
+async def object_metadata(storage_key: str, bucket: str = settings.S3_BUCKET_MEDIA) -> ObjectMetadata:
     """
     HEAD an object and return its authoritative content-type and size.
 
@@ -290,7 +286,7 @@ async def object_metadata(storage_key: str, bucket: str = S3_BUCKET_MEDIA) -> Ob
     )
 
 
-async def object_exists(storage_key: str, bucket: str = S3_BUCKET_MEDIA) -> bool:
+async def object_exists(storage_key: str, bucket: str = settings.S3_BUCKET_MEDIA) -> bool:
     try:
         await object_metadata(storage_key, bucket)
         return True
@@ -298,7 +294,7 @@ async def object_exists(storage_key: str, bucket: str = S3_BUCKET_MEDIA) -> bool
         return False
 
 
-async def delete_object(storage_key: str, bucket: str = S3_BUCKET_MEDIA) -> None:
+async def delete_object(storage_key: str, bucket: str = settings.S3_BUCKET_MEDIA) -> None:
     """Delete one object. Used for avatar replacement cleanup. Idempotent."""
     session = async_session()
     try:
@@ -318,7 +314,7 @@ _AVATARS_PUBLIC_READ_POLICY = {
             "Effect": "Allow",
             "Principal": {"AWS": ["*"]},
             "Action": ["s3:GetObject"],
-            "Resource": [f"arn:aws:s3:::{S3_BUCKET_AVATARS}/*"],
+            "Resource": [f"arn:aws:s3:::{settings.S3_BUCKET_AVATARS}/*"],
         }
     ],
 }
@@ -352,7 +348,7 @@ async def ensure_buckets() -> None:
     """
     session = async_session()
     async with session.client("s3", **client_kwargs()) as s3:
-        for bucket in (S3_BUCKET_MEDIA, S3_BUCKET_AVATARS):
+        for bucket in (settings.S3_BUCKET_MEDIA, settings.S3_BUCKET_AVATARS):
             try:
                 await s3.head_bucket(Bucket=bucket)
             except ClientError:
@@ -367,22 +363,22 @@ async def ensure_buckets() -> None:
 
         try:
             await s3.put_bucket_policy(
-                Bucket=S3_BUCKET_AVATARS,
+                Bucket=settings.S3_BUCKET_AVATARS,
                 Policy=json.dumps(_AVATARS_PUBLIC_READ_POLICY),
             )
         except ClientError as exc:
             raise StorageUnavailableError(
-                f"could not set public-read policy on {S3_BUCKET_AVATARS}: {exc}"
+                f"could not set public-read policy on {settings.S3_BUCKET_AVATARS}: {exc}"
             ) from exc
 
         try:
             await s3.put_bucket_cors(
-                Bucket=S3_BUCKET_AVATARS,
+                Bucket=settings.S3_BUCKET_AVATARS,
                 CORSConfiguration=_AVATARS_CORS_CONFIG,
             )
         except ClientError as exc:
             # Non-fatal: <img> rendering still works without CORS; only the
             # fetch()-based device cache degrades to re-downloading each time.
             logger.warning(
-                "could not set CORS on %s: %s", S3_BUCKET_AVATARS, exc
+                "could not set CORS on %s: %s", settings.S3_BUCKET_AVATARS, exc
             )

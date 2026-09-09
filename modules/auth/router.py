@@ -10,12 +10,12 @@ from config import (
     REFRESH_IP_RATE_LIMIT_WINDOW_SECONDS,
 )
 from infra.db.connection import get_db
-from api.schemas import FirebaseVerifyIn
-from api.schemas import LoginOut
-from api.schemas import OTPRequestIn
-from api.schemas import OTPVerifyIn
-from api.schemas import RefreshTokenIn
-from api.schemas import TokenPairOut
+from modules.auth.schemas import FirebaseVerifyIn
+from modules.auth.schemas import LoginOut
+from modules.auth.schemas import OTPRequestIn
+from modules.auth.schemas import OTPVerifyIn
+from modules.auth.schemas import RefreshTokenIn
+from modules.auth.schemas import TokenPairOut
 from modules.auth import service as auth_service
 from infra.ratelimit import service as rate_limit_service
 from infra.ratelimit.service import RateLimited

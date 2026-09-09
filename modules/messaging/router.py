@@ -25,13 +25,13 @@ from modules.media.errors import StorageQuotaExceededError
 from modules.users.crud import get_storage_bytes_used
 from modules.chats.crud.crud_participant import is_participant
 from api.dependencies import get_current_user_id
-from api.schemas import MediaUploadTicketIn
-from api.schemas import MediaUploadTicketOut
-from api.schemas import MessageOut
-from api.schemas import MessageReceiptsOut
-from api.schemas import ScheduledMessageIn
-from api.schemas import ScheduledMessageOut
-from api.schemas import ScheduledMessagePatchIn
+from modules.media.schemas import MediaUploadTicketIn
+from modules.media.schemas import MediaUploadTicketOut
+from modules.messaging.schemas import MessageOut
+from modules.messaging.schemas import MessageReceiptsOut
+from modules.messaging.schemas import ScheduledMessageIn
+from modules.messaging.schemas import ScheduledMessageOut
+from modules.messaging.schemas import ScheduledMessagePatchIn
 from modules.messaging import service as message_service
 from infra.ratelimit import service as rate_limit_service
 from infra.ratelimit.service import RateLimited

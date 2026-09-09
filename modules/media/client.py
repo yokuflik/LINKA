@@ -24,12 +24,7 @@ import aioboto3
 import boto3
 from botocore.config import Config as BotoConfig
 
-from config import (
-    S3_ACCESS_KEY,
-    S3_ENDPOINT_URL,
-    S3_REGION,
-    S3_SECRET_KEY,
-)
+from config import settings
 # Local generator on purpose: build_object_key() is sync (called from the sync
 # create_upload_ticket path) and the id here is only an object-key nonce, not a
 # created_at partition-routing key - see ADR 0011.
@@ -45,10 +40,10 @@ _BOTO_CONFIG = BotoConfig(
 )
 
 _COMMON_KWARGS = dict(
-    endpoint_url=S3_ENDPOINT_URL or None,
-    region_name=S3_REGION,
-    aws_access_key_id=S3_ACCESS_KEY,
-    aws_secret_access_key=S3_SECRET_KEY,
+    endpoint_url=settings.S3_ENDPOINT_URL or None,
+    region_name=settings.S3_REGION,
+    aws_access_key_id=settings.S3_ACCESS_KEY,
+    aws_secret_access_key=settings.S3_SECRET_KEY,
     config=_BOTO_CONFIG,
 )
 

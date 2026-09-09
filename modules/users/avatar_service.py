@@ -15,12 +15,7 @@ from typing import Optional
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import (
-    ALLOWED_UPLOAD_MIME,
-    MAX_AVATAR_PREVIEW_LENGTH,
-    MAX_UPLOAD_BYTES_AVATAR,
-    S3_BUCKET_AVATARS,
-)
+from config import settings
 from modules.chats.crud.crud_chat import get_chat_by_id
 from modules.chats.crud.crud_chat import update_chat_details
 from modules.users.crud import get_user_by_id
@@ -42,7 +37,7 @@ def _clean_preview(raw) -> Optional[str]:
     if raw is None:
         return None
     value = str(raw)
-    if not value or len(value) > MAX_AVATAR_PREVIEW_LENGTH or not value.startswith("data:image/"):
+    if not value or len(value) > settings.MAX_AVATAR_PREVIEW_LENGTH or not value.startswith("data:image/"):
         return None
     return value
 
@@ -131,10 +126,10 @@ async def _validate_stored_avatar_object(storage_key: str) -> None:
     if not storage_key or f"/{_AVATAR_KIND}/" not in storage_key:
         raise MediaValidationError("storage_key does not look like an avatar object key")
 
-    meta = await media_service.object_metadata(storage_key, bucket=S3_BUCKET_AVATARS)
-    if meta.content_type not in ALLOWED_UPLOAD_MIME[_AVATAR_KIND]:
+    meta = await media_service.object_metadata(storage_key, bucket=settings.S3_BUCKET_AVATARS)
+    if meta.content_type not in settings.ALLOWED_UPLOAD_MIME[_AVATAR_KIND]:
         raise MediaValidationError(f"stored object type {meta.content_type!r} is not a valid avatar")
-    if meta.size <= 0 or meta.size > MAX_UPLOAD_BYTES_AVATAR:
+    if meta.size <= 0 or meta.size > settings.MAX_UPLOAD_BYTES_AVATAR:
         raise MediaValidationError(f"stored object size {meta.size} is outside the avatar limit")
 
 
@@ -196,6 +191,6 @@ async def clear_group_avatar(session: AsyncSession, chat_id: int) -> Optional[Ch
 
 async def _delete_object_quietly(storage_key: str) -> None:
     try:
-        await media_service.delete_object(storage_key, bucket=S3_BUCKET_AVATARS)
+        await media_service.delete_object(storage_key, bucket=settings.S3_BUCKET_AVATARS)
     except StorageError as exc:  # cleanup failure must not fail the request
         logger.warning("failed to delete old avatar object %s: %s", storage_key, exc)

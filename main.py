@@ -16,14 +16,7 @@ from modules.messaging.router import scheduled_create_router
 from modules.messaging.router import scheduled_router
 from modules.users.router import router as users_router
 from realtime.ws_router import router as websocket_router
-from config import (
-    ALLOWED_HOSTS,
-    API_IP_BACKSTOP_MAX,
-    API_IP_BACKSTOP_WINDOW_SECONDS,
-    CORS_ALLOW_ORIGINS,
-    ROUTING_HEARTBEAT_INTERVAL_SECONDS,
-    SERVER_ID,
-)
+from config import settings
 from modules.auth import service as auth_service
 from modules.chats import service as chat_service
 from modules.messaging import service as message_service
@@ -76,12 +69,12 @@ async def lifespan(app: FastAPI):
     async def _routing_heartbeat() -> None:
         while True:
             try:
-                await routing.heartbeat(SERVER_ID)
+                await routing.heartbeat(settings.SERVER_ID)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logging.getLogger(__name__).exception("routing heartbeat failed")
-            await asyncio.sleep(ROUTING_HEARTBEAT_INTERVAL_SECONDS)
+            await asyncio.sleep(settings.ROUTING_HEARTBEAT_INTERVAL_SECONDS)
 
     heartbeat_task = asyncio.create_task(_routing_heartbeat())
 
@@ -100,7 +93,7 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     try:
-        await routing.unregister_instance(SERVER_ID)
+        await routing.unregister_instance(settings.SERVER_ID)
     except Exception:
         logging.getLogger(__name__).warning("routing unregister failed at shutdown")
     await dispose_engine()
@@ -114,18 +107,18 @@ app = FastAPI(lifespan=lifespan)
 
 # Reject requests whose Host header isn't in ALLOWED_HOSTS (DNS-rebinding /
 # Host-header injection). "*" disables the check for local dev.
-if ALLOWED_HOSTS != ["*"]:
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+if settings.ALLOWED_HOSTS != ["*"]:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS)
 
 # CORS. Prod is same-origin (Caddy serves the PoC + API together) so this is
 # normally the single site origin. "*" is dev-only: the "*" + credentials
 # combination is invalid per the CORS spec and silently unsafe, so whenever
 # origins is "*" we force credentials off (a file:// PoC doesn't send cookies
 # anyway - it holds the JWT in JS).
-_cors_wildcard = CORS_ALLOW_ORIGINS == ["*"]
+_cors_wildcard = settings.CORS_ALLOW_ORIGINS == ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_origins=settings.CORS_ALLOW_ORIGINS,
     allow_credentials=not _cors_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -142,13 +135,16 @@ async def _per_ip_backstop(request: Request, call_next):
     if path != "/healthz" and not path.startswith("/ws"):
         ip = rate_limit_service.client_ip(request)
         allowed = await rate_limit_service.check_and_increment(
-            ip, "api_ip_backstop", API_IP_BACKSTOP_MAX, API_IP_BACKSTOP_WINDOW_SECONDS
+            ip,
+            "api_ip_backstop",
+            settings.API_IP_BACKSTOP_MAX,
+            settings.API_IP_BACKSTOP_WINDOW_SECONDS,
         )
         if not allowed:
             return JSONResponse(
                 status_code=429,
                 content={"detail": "rate limited", "action": "api_ip_backstop"},
-                headers={"Retry-After": str(API_IP_BACKSTOP_WINDOW_SECONDS)},
+                headers={"Retry-After": str(settings.API_IP_BACKSTOP_WINDOW_SECONDS)},
             )
     return await call_next(request)
 

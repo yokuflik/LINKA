@@ -5,12 +5,7 @@ from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import (
-    MAX_MEDIA_BLUR_HASH_LENGTH,
-    MAX_MEDIA_FILENAME_LENGTH,
-    MEDIA_KIND_BY_MESSAGE_TYPE,
-    MEDIA_MESSAGE_TYPES,
-)
+from config import settings
 
 # base64 alphabet only - the client sends a ThumbHash as standard base64.
 _BLUR_HASH_RE = re.compile(r"^[A-Za-z0-9+/=]*$")
@@ -41,7 +36,7 @@ def _clean_blur_hash(raw) -> Optional[str]:
     if raw is None:
         return None
     value = str(raw)
-    if not value or len(value) > MAX_MEDIA_BLUR_HASH_LENGTH or not _BLUR_HASH_RE.match(value):
+    if not value or len(value) > settings.MAX_MEDIA_BLUR_HASH_LENGTH or not _BLUR_HASH_RE.match(value):
         return None
     return value
 
@@ -59,7 +54,7 @@ async def _validate_media(
     Returns None for a text/system message. Raises MediaValidationError
     (-> 400) / MediaNotFoundError (-> 404).
     """
-    if type not in MEDIA_MESSAGE_TYPES:
+    if type not in settings.MEDIA_MESSAGE_TYPES:
         if media:
             raise MediaValidationError("media payload is only valid for a media-type message")
         return None
@@ -67,7 +62,7 @@ async def _validate_media(
     if not media or not media.get("key"):
         raise MediaValidationError("a media-type message requires a media.key")
 
-    kind = MEDIA_KIND_BY_MESSAGE_TYPE[type]
+    kind = settings.MEDIA_KIND_BY_MESSAGE_TYPE[type]
     key = str(media["key"])
 
     # The key must be one we minted an upload ticket for (ADR 0010) - a client
@@ -79,13 +74,13 @@ async def _validate_media(
     # Authoritative type/size from storage - not the client's declared values.
     meta = await media_service.object_metadata(key)
 
-    allowed = media_service.ALLOWED_UPLOAD_MIME.get(kind, set())
+    allowed = settings.ALLOWED_UPLOAD_MIME.get(kind, set())
     # An empty allow-set is the "any non-empty MIME" sentinel (kind 'file').
     if allowed and meta.content_type not in allowed:
         raise MediaValidationError(
             f"stored object type {meta.content_type!r} is not allowed for {kind!r}"
         )
-    ceiling = media_service.MAX_UPLOAD_BYTES_BY_KIND[kind]
+    ceiling = settings.MAX_UPLOAD_BYTES_BY_KIND[kind]
     if meta.size <= 0 or meta.size > ceiling:
         raise MediaValidationError(
             f"stored object size {meta.size} is outside the limit for {kind!r}"
@@ -93,7 +88,7 @@ async def _validate_media(
 
     name = media.get("name")
     if name is not None:
-        name = str(name)[:MAX_MEDIA_FILENAME_LENGTH]
+        name = str(name)[:settings.MAX_MEDIA_FILENAME_LENGTH]
 
     duration = media.get("duration_seconds")
     duration = int(duration) if duration is not None else None

@@ -138,11 +138,10 @@ async def set_username(
 
     The DB unique index is the authority: a lost race raises UsernameTakenError.
     """
-    from config import (
-        USERNAME_RESERVED_GRACE_DAYS,
-        USERNAME_CHANGE_WINDOW_DAYS,
-        USERNAME_CHANGE_MAX_PER_WINDOW,
-    )
+    from config import settings
+    USERNAME_RESERVED_GRACE_DAYS = settings.USERNAME_RESERVED_GRACE_DAYS
+    USERNAME_CHANGE_WINDOW_DAYS = settings.USERNAME_CHANGE_WINDOW_DAYS
+    USERNAME_CHANGE_MAX_PER_WINDOW = settings.USERNAME_CHANGE_MAX_PER_WINDOW
 
     norm = _normalize_username(username)
     user = await get_user_by_id(session, user_id)

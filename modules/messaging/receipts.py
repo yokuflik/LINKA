@@ -14,11 +14,7 @@ from modules.chats.crud.crud_participant import update_last_delivered_message
 from modules.chats.crud.crud_participant import update_last_played_message
 from modules.chats.crud.crud_participant import update_last_read_message
 from modules.messaging.models import AUDIO_MESSAGE_TYPE
-from config import (
-    RECEIPT_KIND_DELIVERED,
-    RECEIPT_KIND_PLAYED,
-    RECEIPT_KIND_READ,
-)
+from config import settings
 from modules.receipts import crud as crud_receipt
 from realtime import realtime_service
 from modules.messaging.errors import MessageNotFoundError
@@ -59,7 +55,7 @@ async def mark_as_delivered(session: AsyncSession, user_id: int, chat_id: int, m
     )
     if participant is None:
         return  # watermark already at/past this message - nothing changed
-    await _record_receipt(chat_id, user_id, RECEIPT_KIND_DELIVERED, message_id, occurred_at)
+    await _record_receipt(chat_id, user_id, settings.RECEIPT_KIND_DELIVERED, message_id, occurred_at)
     await realtime_service.publish_event(
         chat_id,
         {
@@ -82,7 +78,7 @@ async def mark_as_read(session: AsyncSession, user_id: int, chat_id: int, messag
     # Watermark + detailed log always advance; the sender-facing live event
     # is suppressed only when *this reader* turned their own read receipts
     # off in a 1:1 chat (asymmetric - ADR 0003).
-    await _record_receipt(chat_id, user_id, RECEIPT_KIND_READ, message_id, occurred_at)
+    await _record_receipt(chat_id, user_id, settings.RECEIPT_KIND_READ, message_id, occurred_at)
     if await reader_hides_read_receipts(session, chat_id, reader_id=user_id):
         return
     await realtime_service.publish_event(
@@ -119,7 +115,7 @@ async def mark_as_played(session: AsyncSession, user_id: int, chat_id: int, mess
     )
     if participant is None:
         return
-    await _record_receipt(chat_id, user_id, RECEIPT_KIND_PLAYED, message_id, occurred_at)
+    await _record_receipt(chat_id, user_id, settings.RECEIPT_KIND_PLAYED, message_id, occurred_at)
     if await reader_hides_read_receipts(session, chat_id, reader_id=user_id):
         return
     await realtime_service.publish_event(
@@ -206,14 +202,14 @@ async def get_message_receipts(
     if truncated:
         payload["counts"] = {
             "delivered": await crud_receipt.crosser_count_for_message(
-                session, chat_id, RECEIPT_KIND_DELIVERED, message_id, eligible
+                session, chat_id, settings.RECEIPT_KIND_DELIVERED, message_id, eligible
             ),
             "read": await crud_receipt.crosser_count_for_message(
-                session, chat_id, RECEIPT_KIND_READ, message_id, eligible
+                session, chat_id, settings.RECEIPT_KIND_READ, message_id, eligible
             ),
             "played": (
                 await crud_receipt.crosser_count_for_message(
-                    session, chat_id, RECEIPT_KIND_PLAYED, message_id, eligible
+                    session, chat_id, settings.RECEIPT_KIND_PLAYED, message_id, eligible
                 )
                 if is_audio
                 else 0
@@ -230,13 +226,13 @@ async def get_message_receipts(
             ]
 
         delivered_by = _entries(
-            await crud_receipt.crossers_for_message(session, chat_id, RECEIPT_KIND_DELIVERED, message_id)
+            await crud_receipt.crossers_for_message(session, chat_id, settings.RECEIPT_KIND_DELIVERED, message_id)
         )
         read_by = _entries(
-            await crud_receipt.crossers_for_message(session, chat_id, RECEIPT_KIND_READ, message_id)
+            await crud_receipt.crossers_for_message(session, chat_id, settings.RECEIPT_KIND_READ, message_id)
         )
         played_by = (
-            _entries(await crud_receipt.crossers_for_message(session, chat_id, RECEIPT_KIND_PLAYED, message_id))
+            _entries(await crud_receipt.crossers_for_message(session, chat_id, settings.RECEIPT_KIND_PLAYED, message_id))
             if is_audio
             else []
         )

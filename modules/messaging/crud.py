@@ -13,14 +13,14 @@ from modules.chats.models.chat import Chat
 from modules.chats.models.chat import LAST_MESSAGE_PREVIEW_LENGTH
 from modules.chats.models.participant import Participant
 from modules.chats.crud.crud_participant import recompute_chat_receipt_cursors
-from config import MESSAGE_PARTITION_QUERY_SKEW_HOURS
+from config import settings
 from infra.ids.snowflake import id_to_datetime
 
 logger = logging.getLogger(__name__)
 
 # Half-width of the created_at slack applied to id-derived partition-pruning
 # predicates (see config.MESSAGE_PARTITION_QUERY_SKEW_HOURS).
-_PARTITION_SKEW = timedelta(hours=MESSAGE_PARTITION_QUERY_SKEW_HOURS)
+_PARTITION_SKEW = timedelta(hours=settings.MESSAGE_PARTITION_QUERY_SKEW_HOURS)
 
 # Hard ceiling on any page size a caller can request, regardless of what they
 # pass in. Without this, `limit` is just a suggestion - someone (a bug, or a

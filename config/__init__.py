@@ -30,7 +30,11 @@ from . import (  # noqa: F401
     partition_settings,
 )
 
+# ADR 0029: single flat accessor over every setting - `from config import settings`.
+from ._accessor import settings  # noqa: F401
+
 __all__ = [
+    "settings",
     *app_settings.__all__,
     *auth_settings.__all__,
     *redis_settings.__all__,

@@ -6,21 +6,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.db.connection import get_db
 from api.dependencies import get_current_user_id
-from api.schemas import AddMemberIn
-from api.schemas import AvatarCommitIn
-from api.schemas import AvatarUploadTicketIn
-from api.schemas import AvatarUploadTicketOut
-from api.schemas import ChangeRoleIn
-from api.schemas import ChatListItemOut
-from api.schemas import ChatMemberOut
-from api.schemas import ChatOut
-from api.schemas import CreateGroupChatIn
-from api.schemas import CreatePrivateChatIn
-from api.schemas import MuteChatIn
-from api.schemas import ParticipantOut
-from api.schemas import PublicKeyOut
-from api.schemas import UpdateGroupDetailsIn
-from config import LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+from modules.chats.schemas import AddMemberIn
+from modules.media.schemas import AvatarCommitIn
+from modules.media.schemas import AvatarUploadTicketIn
+from modules.media.schemas import AvatarUploadTicketOut
+from modules.chats.schemas import ChangeRoleIn
+from modules.chats.schemas import ChatListItemOut
+from modules.chats.schemas import ChatMemberOut
+from modules.chats.schemas import ChatOut
+from modules.chats.schemas import CreateGroupChatIn
+from modules.chats.schemas import CreatePrivateChatIn
+from modules.chats.schemas import MuteChatIn
+from modules.chats.schemas import ParticipantOut
+from modules.users.schemas import PublicKeyOut
+from modules.chats.schemas import UpdateGroupDetailsIn
+from config import settings
 from modules.users import avatar_service
 from modules.chats import service as chat_service
 from infra.ratelimit import service as rate_limit_service
@@ -37,7 +37,7 @@ async def list_my_chats(
     session: AsyncSession = Depends(get_db),
 ):
     await rate_limit_service.enforce_sliding_window(
-        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+        user_id, "list_read", settings.LIST_READ_RATE_MAX, settings.LIST_READ_RATE_WINDOW_SECONDS
     )
     before = (before_last_message_at, before_chat_id) if before_last_message_at and before_chat_id else None
     participants = await chat_service.get_chat_list(session, user_id, before=before, limit=limit)
@@ -230,7 +230,7 @@ async def get_chat_key_bundle(
     """Every participant's E2E public key (ADR 0026), for the encrypted send
     path. Requester must be a member (PermissionDeniedError -> 403 globally)."""
     await rate_limit_service.enforce_sliding_window(
-        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+        user_id, "list_read", settings.LIST_READ_RATE_MAX, settings.LIST_READ_RATE_WINDOW_SECONDS
     )
     return await chat_service.get_chat_key_bundle(session, requester_id=user_id, chat_id=chat_id)
 

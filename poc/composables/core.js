@@ -184,6 +184,10 @@ function useCore(ctx) {
     if (status === 401 || status === 403) {
       return 'Your session has expired. Please sign in again.';
     }
+    // Per-user storage quota (ADR 0028): over the file-storage limit.
+    if (status === 413 || (err.body && err.body.reason === 'storage_quota_exceeded')) {
+      return 'Storage full — delete some files to upload more.';
+    }
     if (typeof status === 'number' && status >= 500) {
       return 'The server ran into a problem. Please try again in a little while.';
     }

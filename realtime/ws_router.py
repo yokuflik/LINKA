@@ -221,7 +221,11 @@ async def _dispatch(user_id: int, connection_id: str, payload: dict, websocket: 
 
     except message_service.NotAParticipantError as e:
         await websocket.send_json(_err("forbidden", str(e)))
-    except (message_service.MessageTooLongError, message_service.NotAVoiceMessageError) as e:
+    except (
+        message_service.MessageTooLongError,
+        message_service.NotAVoiceMessageError,
+        message_service.EncryptionRequiredError,
+    ) as e:
         await websocket.send_json(_err("bad_request", str(e)))
     except MediaNotFoundError as e:
         await websocket.send_json(_err("not_found", str(e)))
@@ -253,6 +257,11 @@ async def _handle_heartbeat(user_id: int, connection_id: str, payload: dict, web
 
 
 async def _handle_edit_message(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    # ADR 0027: optional E2E header on an edit - {v, alg, iv, eph_pub, wraps},
+    # opaque to the server. When present, payload["content"] is base64 ciphertext.
+    enc_header = payload.get("enc")
+    if enc_header is not None and not isinstance(enc_header, dict):
+        raise ValueError("enc must be an object")
     async with session_scope() as session:
         message = await message_service.edit_message(
             session,
@@ -260,6 +269,7 @@ async def _handle_edit_message(user_id: int, connection_id: str, payload: dict, 
             chat_id=int(payload["chat_id"]),
             message_id=int(payload["message_id"]),
             new_content=payload["content"],
+            enc_header=enc_header,
         )
     await websocket.send_json({"type": "ack", "for": "edit_message", "message_id": str(message.id)})
 
@@ -322,6 +332,13 @@ async def _handle_recording(user_id: int, connection_id: str, payload: dict, web
     await _publish_typing(user_id, payload, kind="recording_audio")
 
 
+async def _handle_presence_active(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
+    # Client asserts whether this connection is currently foreground (ADR 0025).
+    # Missing/invalid -> treat as active (assume foreground).
+    active = bool(payload.get("active", True))
+    await presence_service.set_active(user_id, connection_id, SERVER_ID, active)
+
+
 async def _handle_unsubscribe_presence(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
     target_user_id = int(payload["user_id"])
     await connection_manager.unsubscribe_presence(connection_id, target_user_id)
@@ -353,6 +370,13 @@ async def _handle_send_message(user_id: int, connection_id: str, payload: dict, 
     if media is not None and not isinstance(media, dict):
         raise ValueError("media must be an object")
 
+    # E2E encryption header (ADR 0026): {v, alg, iv, eph_pub, wraps}. Opaque to
+    # the server - carried straight through to storage / fan-out. When present,
+    # payload["content"] is base64 ciphertext.
+    enc_header = payload.get("enc")
+    if enc_header is not None and not isinstance(enc_header, dict):
+        raise ValueError("enc must be an object")
+
     # Authorization stays synchronous - it's a cheap participant check and a
     # non-participant must never get a "queued" ack. Everything else (persist,
     # fan-out, push) is deferred to the send worker.
@@ -374,6 +398,7 @@ async def _handle_send_message(user_id: int, connection_id: str, payload: dict, 
             media_name=media.get("name") if media else None,
             media_duration_seconds=media.get("duration_seconds") if media else None,
             media_blur_hash=media.get("blur_hash") if media else None,
+            enc_header=enc_header,
         )
     except Exception:
         # A dropped enqueue loses the message while the sender thinks it sent -
@@ -518,6 +543,7 @@ _HANDLERS = {
     "recording": _handle_recording,
     "subscribe_presence": _handle_subscribe_presence,
     "unsubscribe_presence": _handle_unsubscribe_presence,
+    "presence_active": _handle_presence_active,
 }
 
 # message type -> (redis action key, MAX global name, WINDOW global name),
@@ -538,4 +564,5 @@ _ACTION_LIMITS = {
     "typing": ("ws_typing", "WS_TYPING_RATE_MAX", "WS_TYPING_RATE_WINDOW_SECONDS"),
     "recording": ("ws_typing", "WS_TYPING_RATE_MAX", "WS_TYPING_RATE_WINDOW_SECONDS"),
     "subscribe_presence": ("ws_sub_presence", "WS_SUBSCRIBE_PRESENCE_RATE_MAX", "WS_SUBSCRIBE_PRESENCE_RATE_WINDOW_SECONDS"),
+    "presence_active": ("ws_sub_presence", "WS_SUBSCRIBE_PRESENCE_RATE_MAX", "WS_SUBSCRIBE_PRESENCE_RATE_WINDOW_SECONDS"),
 }

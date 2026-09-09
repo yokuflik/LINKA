@@ -16,6 +16,7 @@ from config import (
 _BLUR_HASH_RE = re.compile(r"^[A-Za-z0-9+/=]*$")
 from modules.media.crud import confirm_and_ref
 from modules.media.crud import get_blob_by_key
+from modules.users.crud import add_storage_usage
 from modules.media import media_service
 from modules.media.errors import MediaValidationError
 
@@ -46,7 +47,7 @@ def _clean_blur_hash(raw) -> Optional[str]:
 
 
 async def _validate_media(
-    session: AsyncSession, type: int, media: Optional[dict]
+    session: AsyncSession, type: int, media: Optional[dict], sender_id: Optional[int] = None
 ) -> Optional[MediaAttachment]:
     """
     Validate the media payload for a media-type message (2=image/3=video/
@@ -108,6 +109,11 @@ async def _validate_media(
     await confirm_and_ref(
         session, storage_key=key, mime=meta.content_type, size=meta.size, blur_hash=blur_hash
     )
+
+    # Per-user storage quota (ADR 0028): every confirmed send counts, deduped or
+    # not. The upload-ticket endpoint already refused this if it would overshoot.
+    if sender_id is not None:
+        await add_storage_usage(session, sender_id, meta.size)
 
     return MediaAttachment(
         key=key, mime=meta.content_type, size=meta.size,

@@ -9,6 +9,12 @@ class NotAParticipantError(Exception):
     pass
 
 
+class EncryptionRequiredError(Exception):
+    """Raised by edit_message when a plaintext edit targets an already-
+    encrypted message (ADR 0027) - blocks a silent downgrade to plaintext."""
+    pass
+
+
 class NotAVoiceMessageError(Exception):
     """Raised by mark_as_played for a missing message or a non-audio one."""
     pass

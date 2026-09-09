@@ -176,7 +176,9 @@ function useForward(ctx) {
   }
 
   // Build the send_message frame that re-sends `m` into `chatId`.
-  function buildForwardFrame(m, chatId) {
+  // Async: a text forward is re-encrypted for the *target* chat's participants
+  // (ADR 0026) - the plaintext we hold from decrypting the source is sealed anew.
+  async function buildForwardFrame(m, chatId) {
     const frame = {
       type: 'send_message',
       chat_id: chatId,
@@ -184,7 +186,12 @@ function useForward(ctx) {
       message_type: m.type || 1,
     };
     if (m.type === 1) {
-      frame.content = m.content || '';
+      const plain = m.content || '';
+      if (ctx.encryptFor && plain) {
+        const sealed = await ctx.encryptFor(chatId, plain);
+        if (sealed) { frame.content = sealed.ciphertext; frame.enc = sealed.enc; return frame; }
+      }
+      frame.content = plain;
       return frame;
     }
     const key = mediaKeyFromUrl(m.media_url_remote || m.media_url);
@@ -233,12 +240,15 @@ function useForward(ctx) {
       // other chats reconcile silently via their new_message echo.
       for (let i = 0; i < targetChatIds.length; i++) {
         const chatId = targetChatIds[i];
-        const frame = buildForwardFrame(m, chatId);
+        const frame = await buildForwardFrame(m, chatId);
         if (chatId === ctx.activeChatId.value) {
           ctx.messages.value.push({
             id: null, client_message_id: frame.client_message_id, chat_id: chatId,
             sender_id: ctx.currentUser.value.id, type: frame.message_type,
-            content: frame.content || '', created_at: new Date().toISOString(),
+            // Optimistic bubble shows the plaintext; the ciphertext echo won't clobber it.
+            content: (frame.enc ? (m.content || '') : (frame.content || '')),
+            is_encrypted: false, _e2eDecrypted: !!frame.enc,
+            created_at: new Date().toISOString(),
             is_edited: false, edited_at: null, status: 'SENT',
             reply_to_message_id: null, pending: true, send_failed: false,
             media_url: m.media_url_remote || m.media_url || null,

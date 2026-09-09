@@ -105,6 +105,21 @@ async def mark_offline(user_id: int, connection_id: str) -> None:
         )
 
 
+async def set_active(user_id: int, connection_id: str, server_id: str, active: bool) -> None:
+    """
+    Client-driven foreground toggle (ADR 0025). "Online" means a *foreground*
+    connection, so a tab that goes to the background / loses focus asks to be
+    treated as offline for that connection without dropping the socket, and a
+    tab returning to the foreground asks to be online again. Thin wrapper over
+    mark_online / mark_offline so the edge-triggered publish, the multi-device
+    set semantics and the last_seen stamping are all reused unchanged.
+    """
+    if active:
+        await mark_online(user_id, connection_id, server_id)
+    else:
+        await mark_offline(user_id, connection_id)
+
+
 async def get_status(user_id: int) -> dict:
     """
     The "pull" half of subscribe-on-demand: a subscriber's first snapshot on

@@ -26,6 +26,15 @@ class MediaNotFoundError(StorageError):
     """
 
 
+class StorageQuotaExceededError(StorageError):
+    """
+    The caller's per-user storage quota (config.STORAGE_QUOTA_BYTES, ADR 0028)
+    would be exceeded by this upload. Maps to HTTP 413 with
+    reason "storage_quota_exceeded". The user must purge media messages
+    ("delete forever", ADR 0021) to free space.
+    """
+
+
 class StorageUnavailableError(StorageError):
     """
     Storage could not be reached / a bucket operation failed unexpectedly.

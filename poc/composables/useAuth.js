@@ -303,6 +303,7 @@ function useAuth(ctx) {
     // Leave the 'welcome' stage so the main app view (gated on authStage) shows.
     authStage.value = 'phone';
     if (ctx.scheduleTokenRefresh) ctx.scheduleTokenRefresh();
+    if (ctx.initE2E) ctx.initE2E(); // E2E keypair + publish public key (ADR 0026)
     ctx.connectWebSocket();
     await ctx.loadChats();
   }
@@ -336,6 +337,7 @@ function useAuth(ctx) {
     if (ctx.resetPhoneInput) ctx.resetPhoneInput();
     ctx.clearAllMessageCache();
     if (ctx.clearOutbox) ctx.clearOutbox();
+    if (ctx.resetE2E) ctx.resetE2E();
     if (ctx.clearAvatarCache) ctx.clearAvatarCache();
     localStorage.removeItem('linka_access_token');
     localStorage.removeItem('linka_refresh_token');

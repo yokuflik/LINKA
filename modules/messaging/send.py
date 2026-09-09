@@ -42,6 +42,7 @@ async def process_outgoing(
     type: int = 1,
     reply_to_message_id: Optional[int] = None,
     media: Optional[dict] = None,
+    enc_header: Optional[dict] = None,
 ) -> Message:
     """
     The full send flow, run by the fan-out worker off ``message_send_stream``
@@ -62,7 +63,7 @@ async def process_outgoing(
     if not await is_participant(session, chat_id, sender_id):
         raise NotAParticipantError(f"User {sender_id} is not a participant of chat {chat_id}")
 
-    attachment = await _validate_media(session, type, media)
+    attachment = await _validate_media(session, type, media, sender_id=sender_id)
 
     idem_key = _idempotency_key(chat_id, client_message_id)
 
@@ -97,6 +98,7 @@ async def process_outgoing(
         media_name=attachment.name if attachment else None,
         media_duration_seconds=attachment.duration_seconds if attachment else None,
         media_blur_hash=attachment.blur_hash if attachment else None,
+        enc_header=enc_header,
     )
 
     await redis_client.set(idem_key, str(message.id), ex=_IDEMPOTENCY_TTL_SECONDS)
@@ -165,6 +167,10 @@ async def fan_out_message(session: AsyncSession, message: Message, client_messag
         "sender_id": str(message.sender_id) if message.sender_id is not None else None,
         "type": message.type,
         "content": message.content,
+        # E2E (ADR 0026): content above is ciphertext when is_encrypted; the
+        # header travels alongside it, untouched by the server.
+        "is_encrypted": bool(message.is_encrypted),
+        "enc_header": message.enc_header,
         "reply_to_message_id": str(message.reply_to_message_id) if message.reply_to_message_id is not None else None,
         # Media attachment (null for a text / system message). media_url is a
         # short-lived presigned GET so a client rendering the message live
@@ -216,7 +222,9 @@ async def fan_out_message(session: AsyncSession, message: Message, client_messag
             notification_service.send_push(
                 user_id,
                 title="New message",
-                body=message.content or _push_body_for_media(message.type),
+                # Never push ciphertext (ADR 0026) - generic body for E2E messages.
+                body="New message" if message.is_encrypted
+                else (message.content or _push_body_for_media(message.type)),
                 data={"chat_id": str(message.chat_id), "message_id": str(message.id)},
             )
             for user_id in offline_ids

@@ -12,6 +12,7 @@ from config import MAX_MESSAGE_CONTENT_LENGTH, RECEIPT_NAMED_LIST_MAX_MEMBERS  #
 
 from modules.messaging.common import SYSTEM_MESSAGE_TYPE
 from modules.messaging.common import _check_content_length  # noqa: F401
+from modules.messaging.errors import EncryptionRequiredError
 from modules.messaging.errors import MessageAlreadySentError
 from modules.messaging.errors import MessageNotFoundError
 from modules.messaging.errors import MessageTooLongError
@@ -35,6 +36,7 @@ from modules.messaging.receipts import mark_as_read
 __all__ = [
     "SYSTEM_MESSAGE_TYPE",
     "MediaAttachment",
+    "EncryptionRequiredError",
     "MessageAlreadySentError",
     "MessageNotFoundError",
     "MessageTooLongError",

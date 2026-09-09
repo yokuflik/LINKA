@@ -151,6 +151,30 @@ async def test_only_the_sender_can_edit_their_message(db_session: AsyncSession, 
     assert edited.content == "fixed"
 
 
+async def test_editing_an_encrypted_message_requires_an_enc_header(db_session: AsyncSession, redis_db):
+    # ADR 0027: a plaintext edit of an encrypted message must be refused.
+    chat_id = await _make_group(db_session, 1, [2])
+    enc = {"v": 1, "alg": "A256GCM", "iv": "aaa", "eph_pub": {"kty": "EC"}, "wraps": {"1": {"ek": "e", "iv": "i"}}}
+    message = await message_service.process_outgoing(
+        db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()),
+        content="Y2lwaGVy", enc_header=enc,
+    )
+    assert message.is_encrypted is True
+
+    with pytest.raises(message_service.EncryptionRequiredError):
+        await message_service.edit_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id, new_content="plain")
+
+    enc2 = {**enc, "iv": "bbb"}
+    edited = await message_service.edit_message(
+        db_session, user_id=1, chat_id=chat_id, message_id=message.id,
+        new_content="Y2lwaGVyMg==", enc_header=enc2,
+    )
+    assert edited.is_encrypted is True
+    assert edited.enc_header == enc2
+    assert edited.content == "Y2lwaGVyMg=="
+    assert edited.is_edited is True
+
+
 async def test_editing_a_nonexistent_message_is_rejected_not_crashed(db_session: AsyncSession, redis_db):
     chat_id = await _make_group(db_session, 1, [2])
 

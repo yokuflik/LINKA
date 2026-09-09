@@ -37,6 +37,7 @@ from modules.settings.errors import SettingsValidationError
 from modules.media import media_service
 from modules.media.errors import MediaNotFoundError
 from modules.media.errors import MediaValidationError
+from modules.media.errors import StorageQuotaExceededError
 from modules.media.errors import StorageUnavailableError
 
 
@@ -248,6 +249,17 @@ async def _handle_media_validation(request: Request, exc: Exception):
 @app.exception_handler(MediaNotFoundError)
 async def _handle_media_not_found(request: Request, exc: Exception):
     return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(StorageQuotaExceededError)
+async def _handle_storage_quota(request: Request, exc: Exception):
+    # 413 Content Too Large - the user is over their per-user storage quota
+    # (ADR 0028). reason lets the client show the "delete files to free space"
+    # message without string-matching the detail.
+    return JSONResponse(
+        status_code=413,
+        content={"detail": str(exc), "reason": "storage_quota_exceeded"},
+    )
 
 
 @app.exception_handler(StorageUnavailableError)

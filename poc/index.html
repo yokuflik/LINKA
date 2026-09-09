@@ -88,6 +88,7 @@
 <script src="components/ForwardModal.js?v=2026.09.08-1"></script>
 <script src="components/MessageDetailsModal.js?v=2026.09.08-1"></script>
 <script src="components/MembersModal.js?v=2026.09.08-1"></script>
+<script src="components/ChatProfileModal.js?v=2026.09.08-1"></script>
 <script src="components/ProfileEditModal.js?v=2026.09.08-1"></script>
 <script src="components/SettingsModal.js?v=2026.09.08-1"></script>
 <script src="components/NewChatModal.js?v=2026.09.08-1"></script>
@@ -113,8 +114,10 @@
 <script src="composables/useChatMenu.js?v=2026.09.08-1"></script>
 <script src="composables/useChats.js?v=2026.09.08-1"></script>
 <script src="composables/useMembers.js?v=2026.09.08-1"></script>
+<script src="composables/useChatProfile.js?v=2026.09.08-1"></script>
 <script src="composables/useNewChat.js?v=2026.09.08-1"></script>
 <script src="composables/useMessageMenu.js?v=2026.09.08-1"></script>
+<script src="composables/useE2E.js?v=2026.09.09-1"></script>
 <script src="composables/useMessageSend.js?v=2026.09.08-1"></script>
 <script src="composables/useForward.js?v=2026.09.08-1"></script>
 <script src="composables/useMessageEdit.js?v=2026.09.08-1"></script>
@@ -258,7 +261,7 @@ const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick
 
 const app = createApp({
   components: {
-    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, ForwardModal, MessageDetailsModal, MembersModal, ProfileEditModal, SettingsModal, NewChatModal, NewGroupModal, ToastList, AvatarLightbox,
+    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, ForwardModal, MessageDetailsModal, MembersModal, ChatProfileModal, ProfileEditModal, SettingsModal, NewChatModal, NewGroupModal, ToastList, AvatarLightbox,
   },
   setup() {
     // ---------------------------------------------------------------
@@ -281,8 +284,10 @@ const app = createApp({
     Object.assign(ctx, useOutbox(ctx));
     Object.assign(ctx, useChats(ctx));
     Object.assign(ctx, useMembers(ctx));
+    Object.assign(ctx, useChatProfile(ctx));
     Object.assign(ctx, useNewChat(ctx));
     Object.assign(ctx, useMessageMenu(ctx));
+    Object.assign(ctx, useE2E(ctx));
     Object.assign(ctx, useMessageSend(ctx));
     Object.assign(ctx, useForward(ctx));
     Object.assign(ctx, useMessageEdit(ctx));
@@ -327,6 +332,8 @@ const app = createApp({
           currentUser.value = await apiFetch('/users/me');
           log('resumed session as', currentUser.value);
           ctx.scheduleTokenRefresh();
+          ctx.initE2E(); // generate/recover E2E keypair + (re)publish public key
+
           connectWebSocket();
           await loadChats();
         } catch (err) {
@@ -405,7 +412,7 @@ const app = createApp({
               :activeChatTypingLabel="activeChatTypingLabel"
               :avatarUrl="activeChatAvatarUrl" :avatarName="activeChatAvatarName" :avatarColorKey="activeChatAvatarColorKey"
               :avatarPreview="activeChatAvatarPreview"
-              @open-members-modal="openMembersModal" />
+              @open-chat-profile="openChatProfile" />
 
             <MessageList ref="messagesEl"
               :messages="messages" :currentUser="currentUser" :isGroup="activeChatIsGroup"
@@ -414,7 +421,8 @@ const app = createApp({
               :senderAvatarUrl="senderAvatarUrl" :senderAvatarPreview="senderAvatarPreview"
               :quotedPreviewFor="quotedPreviewFor" :imageOrientation="imageOrientation"
               :thumbHashToDataUrl="thumbHashToDataUrl" :thumbHashToAspect="thumbHashToAspect"
-              :connectionError="messagesConnectionError"
+              :connectionError="messagesConnectionError" :loading="messagesLoading"
+              :loadingOlder="loadingOlderMessages" :loadingOlderRetrying="olderMessagesRetrying"
               @message-contextmenu="openMessageContextMenu" @load-older="onMessagesScroll"
               @voice-played="onVoicePlayed" @retry-message="retryFailedMessage" />
 
@@ -459,8 +467,13 @@ const app = createApp({
       </div>
     </div>
 
-    <MembersModal v-if="showMembersModal"
-      :activeChatLabel="activeChatLabel" :activeChatMembers="activeChatMembers"
+    <ChatProfileModal v-if="showChatProfile"
+      :isGroup="activeChatIsGroup" :title="activeChatLabel"
+      :peerUser="activeChatPeerUser"
+      :aboutText="(activeChatIsGroup ? (activeChatItem && activeChatItem.chat.about_text) : (activeChatPeerUser && activeChatPeerUser.about_text)) || ''"
+      :avatarUrl="activeChatAvatarUrl" :avatarPreview="activeChatAvatarPreview"
+      :avatarName="activeChatAvatarName" :avatarColorKey="activeChatAvatarColorKey"
+      :activeChatMembers="activeChatMembers"
       :memberDisplayName="memberDisplayName" :roleLabel="roleLabel" :userAvatarUrl="userAvatarUrl"
       :userAvatarPreview="userAvatarPreview"
       :hasMemberOptions="hasMemberOptions" :memberOptionsFor="memberOptionsFor"
@@ -468,8 +481,14 @@ const app = createApp({
       :showOwnerTransferPicker="showOwnerTransferPicker" :leaveGroupBusy="leaveGroupBusy"
       v-model:ownerTransferTargetId="ownerTransferTargetId" :otherActiveChatMembers="otherActiveChatMembers"
       :canManageActiveChatMembers="canManageActiveChatMembers"
-      v-model:addMemberPhone="addMemberPhone" :membersModalBusy="membersModalBusy" :membersModalError="membersModalError"
-      @close="showMembersModal = false"
+      :membersModalBusy="membersModalBusy" :membersModalError="membersModalError"
+      v-model:addMemberSearchQuery="addMemberSearchQuery"
+      :addMemberSearchBusy="addMemberSearchBusy" :addMemberSearchError="addMemberSearchError"
+      :addMemberSearchResult="addMemberSearchResult" :addMemberResultIsMember="addMemberResultIsMember"
+      :userLabel="peerName"
+      @close="closeChatProfile"
+      @message="messageFromProfile"
+      @call="callFromProfile"
       @open-member-options="openMemberOptions"
       @member-option-make-or-remove-admin="memberOptionMakeOrRemoveAdmin"
       @member-option-remove-from-group="memberOptionRemoveFromGroup"
@@ -477,7 +496,9 @@ const app = createApp({
       @confirm-leave-with-transfer="confirmLeaveWithTransfer"
       @cancel-owner-transfer-picker="cancelOwnerTransferPicker"
       @edit-group-info="openGroupEditModal"
-      @add-member-to-active-group="addMemberToActiveGroup" />
+      @add-member-search-input="onAddMemberSearchInput"
+      @add-member-search="runAddMemberSearch"
+      @add-member="addMemberToActiveGroup" />
 
     <ProfileEditModal v-if="showProfileModal"
       heading="Edit your profile"

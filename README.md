@@ -10,7 +10,6 @@ A real-time messaging platform (WhatsApp / Telegram style) designed around the a
 * **Optimized Bandwidth:** Direct-to-storage media uploads with content-addressed deduplication (SHA-256).
 
 **Live Demo:** [linka-web.com](https://linka-web.com) *(Running on a single t3.micro EC2 instance — please be gentle)*  
-*(📸 Tip: Add a short GIF here demonstrating a real-time chat with read receipts)*
 
 ---
 
@@ -94,7 +93,7 @@ DATABASE_URL="postgresql+asyncpg://test_user:test_password@localhost:5433/test_d
 Open `poc/index.html` directly in a browser. Interactive API docs are available at `http://localhost:8000/docs`. *(Note: Phone strings 1–5 are a dev whitelist that skips SMS verification).*
 
 ### 🧪 Tests
-The repository includes ~200 integration tests run against real Postgres, Redis, and MinIO containers (no mocks).
+The repository includes ~400 integration tests run against real Postgres, Redis, and MinIO containers (no mocks).
 > **Warning:** DB-backed tests execute `drop_all` on teardown and will clear your local dev database. Re-run `init_db` (and optionally `seed_mock_data`) afterwards. MinIO is unaffected.
 
 ### 📐 Design Notes & Out of Scope

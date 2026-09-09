@@ -14,10 +14,13 @@ from config import (
     UPLOAD_TICKET_IP_RATE_LIMIT_WINDOW_SECONDS,
     UPLOAD_TICKET_RATE_MAX,
     UPLOAD_TICKET_RATE_WINDOW_SECONDS,
+    STORAGE_QUOTA_BYTES,
 )
 from infra.db.connection import get_db
 from modules.media.crud import get_blob_by_hash
 from modules.media.crud import reserve_blob
+from modules.media.errors import StorageQuotaExceededError
+from modules.users.crud import get_storage_bytes_used
 from modules.chats.crud.crud_participant import is_participant
 from api.dependencies import get_current_user_id
 from api.schemas import MediaUploadTicketIn
@@ -98,6 +101,14 @@ async def create_media_upload_ticket(
     if not await is_participant(session, chat_id, user_id):
         raise message_service.NotAParticipantError(
             f"User {user_id} is not a participant of chat {chat_id}"
+        )
+
+    # Per-user hard storage quota (ADR 0028): checked before the dedup branch -
+    # a deduped send still becomes a ref this user holds, so it still counts.
+    used = await get_storage_bytes_used(session, user_id)
+    if used + body.size_bytes > STORAGE_QUOTA_BYTES:
+        raise StorageQuotaExceededError(
+            "storage quota exceeded - delete some files to upload more"
         )
 
     # Content-addressed dedup (ADR 0010): if this exact file was already

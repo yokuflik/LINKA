@@ -18,17 +18,15 @@ const ChatHeader = {
     avatarName: { default: '' },
     avatarColorKey: { default: '' },
   },
-  emits: ['open-members-modal', 'back'],
+  emits: ['open-chat-profile', 'back'],
   template: `
     <div class="px-4 py-2 border-b border-slate-200 bg-white flex items-center gap-3">
       <button @click="$emit('back')" class="md:hidden -ml-1 p-1 text-slate-500 hover:text-slate-800" aria-label="Back">
         <svg viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
       </button>
       <Avatar :url="avatarUrl" :preview="avatarPreview" :name="avatarName" :colorKey="avatarColorKey" sizeClass="w-9 h-9 text-sm" />
-      <div class="min-w-0 flex-1">
-      <div class="text-sm font-medium"
-           :class="activeChatIsGroup ? 'cursor-pointer hover:underline' : ''"
-           @click="activeChatIsGroup && $emit('open-members-modal')">{{ activeChatLabel }}</div>
+      <div class="min-w-0 flex-1 cursor-pointer" @click="$emit('open-chat-profile')">
+      <div class="text-sm font-medium hover:underline">{{ activeChatLabel }}</div>
       <div v-if="activeChatSubLabel" class="text-xs text-slate-400 font-mono truncate">{{ activeChatSubLabel }}</div>
       <div v-if="activeChatIsGroup" class="mt-0.5 text-xs text-slate-500 truncate">
         <span v-for="(member, index) in visibleActiveChatMembers" :key="member.user.id">

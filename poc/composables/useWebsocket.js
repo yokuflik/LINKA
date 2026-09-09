@@ -79,6 +79,10 @@ function useWebsocket(ctx) {
       wsStatus.value = 'disconnected';
       if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
       ws = null;
+      // Drop stale peer online / typing state so it can't linger on reconnect
+      // before the fresh presence_status pull (ADR 0025).
+      if (ctx.resetTyping) ctx.resetTyping();
+      if (ctx.resetPresence) ctx.resetPresence();
       if (!ctx.accessToken.value) return;
 
       // 4401 = the server rejected the token (expired mid-session, e.g. tab

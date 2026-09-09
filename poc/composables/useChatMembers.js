@@ -196,6 +196,17 @@ function useChatMembers(ctx) {
     return otherId != null ? peerHandle(ctx.userById.value[otherId]) : '';
   });
 
+  // The 1:1 peer's UserOut (phone / about / avatar) for the chat-profile screen.
+  // Null for groups or before the peer is resolved.
+  const activeChatPeerUser = computed(() => {
+    if (activeChatIsGroup.value) return null;
+    if (ctx.draftChat.value) return draftUser();
+    const item = activeChatItem.value;
+    if (!item) return null;
+    const otherId = ctx.privateChatOtherUserId.value[item.chat.id];
+    return otherId != null ? (ctx.userById.value[otherId] || null) : null;
+  });
+
   const activeChatMembers = computed(() => ctx.groupChatMembers.value[ctx.activeChatId.value] || []);
   const visibleActiveChatMembers = computed(() => activeChatMembers.value.slice(0, ctx.MAX_VISIBLE_MEMBERS));
   const hiddenActiveChatMemberCount = computed(() => Math.max(0, activeChatMembers.value.length - ctx.MAX_VISIBLE_MEMBERS));
@@ -223,6 +234,7 @@ function useChatMembers(ctx) {
     activeChatItem, activePaneVisible, draftUser,
     activeChatLabel, activeChatSubLabel, activeChatIsGroup,
     activeChatAvatarUrl, activeChatAvatarName, activeChatAvatarColorKey, activeChatAvatarPreview,
+    activeChatPeerUser,
     activeChatMembers, visibleActiveChatMembers, hiddenActiveChatMemberCount,
     memberDisplayName,
     currentUserRoleInActiveChat, canManageActiveChatMembers, canChangeActiveChatRoles,

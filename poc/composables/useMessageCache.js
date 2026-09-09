@@ -15,7 +15,7 @@ function useMessageCache(ctx) {
   // Bump when the stored shape changes so stale entries are ignored.
   // Bump when the cached message shape changes so stale snapshots refetch once.
   // v2: ADR 0014 media_blur_hash (rides along in the stored message object).
-  const SCHEMA = 2;
+  const SCHEMA = 3; // 3: E2E (ADR 0026) - rows may carry decrypted content + markers
   // Cap what we keep per chat so localStorage can't grow unbounded.
   const MAX_CACHED = 60;
 

@@ -6,6 +6,8 @@ from api.dependencies import get_current_user_id
 from api.schemas import AvatarCommitIn
 from api.schemas import AvatarUploadTicketIn
 from api.schemas import AvatarUploadTicketOut
+from api.schemas import PublicKeyIn
+from api.schemas import PublicKeyOut
 from api.schemas import UserOut
 from api.schemas import UserProfileUpdateIn
 from api.schemas import UserSettingsOut
@@ -107,6 +109,42 @@ async def update_my_profile(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     await user_service.broadcast_profile_update(session, user_id)
     return user
+
+
+@router.put("/me/public-key", response_model=PublicKeyOut)
+async def set_my_public_key(
+    body: PublicKeyIn,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Publish this device's E2E public key (ADR 0026). Shape-checked only; a
+    private key (`d` present) is rejected. The server never holds the private
+    key or any plaintext."""
+    try:
+        row = await user_service.set_public_key(session, user_id, body.public_key, body.algo)
+    except user_service.PublicKeyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_public_key", "reason": e.reason},
+        )
+    return row
+
+
+@router.get("/{target_user_id}/public-key", response_model=PublicKeyOut)
+async def get_user_public_key(
+    target_user_id: int,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Fetch one user's current E2E public key (ADR 0026) - e.g. before starting
+    a new encrypted 1:1 chat."""
+    await rate_limit_service.enforce_sliding_window(
+        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+    )
+    row = await user_service.get_public_key(session, target_user_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No public key for that user")
+    return row
 
 
 @router.get("/me/settings", response_model=UserSettingsOut)

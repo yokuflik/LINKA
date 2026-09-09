@@ -57,10 +57,10 @@ now takes `request: Request`); `modules/chats/router.py::list_my_chats` and
 ## Display name (ADR 0024)
 - Optional, free-form, **any-language** nickname: nullable `users.display_name` (`String(80)`, no uniqueness, **no index, never searchable**). No migration — `scripts/init_db.py` adds `ADD COLUMN IF NOT EXISTS display_name VARCHAR(80)`; a deployed DB needs that `ALTER` run once by hand.
 - `user_service.sanitize_display_name(raw)` — strips C0/C1 control + Unicode bidi/override/isolate + zero-width + BOM code points (`_DISPLAY_NAME_STRIP_TABLE`), NFC-normalises, trims, truncates to `config.DISPLAY_NAME_MAX_LEN` (50). Empty result → `None`.
-- **Fallback everywhere a person is shown:** `display_name || username || phone_number`. **System-message text is NOT changed** — `modules/chats/common._display_name_for` stays `username or phone_number` (non-spoofable).
+- **Fallback everywhere a person is shown:** `display_name || username || phone_number`. The `@username` is not shown alongside a `display_name` (product choice). **System-message text is NOT changed** — `modules/chats/common._display_name_for` stays `username or phone_number` (non-spoofable).
 - `UserOut.display_name`; `UserProfileUpdateIn.display_name` — a *sent* key (`"display_name" in body.model_fields_set` in `modules/users/router.py`) sets it, or clears it when `""`/`null`; an absent key leaves it. Routes through `user_service.update_profile(..., display_name=, write_display_name=True)` → `crud_user.update_user_profile` (mirrors the `write_preview` pattern).
 - Transient `profile_updated` WS event carries `display_name`.
-- PoC: `useChatMembers.peerName()` (the single fallback helper) + `peerHandle()` (returns `@username` only when a `display_name` masks it) + `chatSubLabel()` / `activeChatSubLabel`; `ProfileEditModal` `showDisplayName` field; sign-up welcome form has an optional Display-name input.
+- PoC: `useChatMembers.peerName()` (the single fallback helper); `peerHandle()` / `chatSubLabel()` / `activeChatSubLabel` exist but return empty (no `@username` line); `ProfileEditModal` `showDisplayName` field; sign-up welcome form has an optional Display-name input.
 - **`GET /users/by-username?username=`** (`modules/users/router.py`) — exact-match username lookup, returns `UserOut` (mirrors `by-phone`; shares the `list_read` 120/60 s bucket). `user_service.get_profile_by_username` normalises via `validate_username_format` (returns `None` on a malformed handle) then `crud_user.get_user_by_username`. No prefix / substring / LIKE. Used by the PoC's New-chat modal search.
 
 ## Auth
@@ -109,6 +109,12 @@ now takes `request: Request`); `modules/chats/router.py::list_my_chats` and
 - **Forward**: no backend support at all (no endpoint/action).
 - No *general* storage-object GC — only the ADR-0021 `purge_message` path deletes an S3 object.
 - FANOUT_REWRITE_PLAN.md steps 1–4 all landed.
+
+## Client-side E2E encryption — public-key distribution (ADR 0026)
+- `modules/users`: `PUT /users/me/public-key` (body `{public_key: <JWK>, algo}`) → `user_service.set_public_key` (shape-validate, reject `d`, fingerprint, upsert). `GET /users/{target_user_id}/public-key` → `PublicKeyOut` (404 if none). `GET /chats/{chat_id}/key-bundle` → `list[PublicKeyOut]` for all participants (`modules/chats/key_bundle.py::get_chat_key_bundle`, re-exported via `chat_service`; requester must be a member → `PermissionDeniedError`/403). All on the `list_read` rate bucket.
+- Send path threads an opaque `enc_header` dict end to end: `ws_router._handle_send_message` reads `payload["enc"]` → `send_queue.enqueue_outgoing_message(enc_header=...)` (JSON string on the stream) → `SendWorker._rebuild_enc_header` → `message_service.process_outgoing(enc_header=...)` → `crud.create_message`. `fan_out_message` puts `content` (ciphertext) + `enc_header` + `is_encrypted` on `new_message`; offline push body genericised to "New message" when encrypted. No server code inspects plaintext.
+- `MessageOut` / `new_message` carry `is_encrypted` + `enc_header`.
+- **Encrypted edits (ADR 0027):** WS `edit_message` takes an optional `enc` dict (same shape). `edit_delete.edit_message(..., enc_header=None)` → `crud.edit_message_content` also writes `enc_header` + `is_encrypted=True` when present. A plaintext edit (`enc` absent) of a row that is already `is_encrypted` raises `EncryptionRequiredError` (re-exported on `message_service`; → WS `error` `bad_request`) — no silent downgrade. `message_edited` event now carries `is_encrypted` + `enc_header`. No schema change / migration (columns from ADR 0026).
 
 ## Working conventions
 - Prefer fixing real bugs found via testing over asking permission, but **flag security-relevant or destructive changes clearly** instead of silently reverting them.

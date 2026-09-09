@@ -6,7 +6,10 @@ from typing import Optional
 from datetime import datetime, timedelta, timezone
 import logging
 
+from typing import Sequence
+
 from modules.users.models import User
+from modules.users.models import UserPublicKey
 from modules.auth.models import ReservedUsername
 
 logger = logging.getLogger(__name__)
@@ -213,6 +216,89 @@ async def set_username(
         raise UsernameTakenError(norm) from e
 
     return result.scalar_one_or_none()
+
+
+async def get_storage_bytes_used(session: AsyncSession, user_id: int) -> int:
+    """Current per-user media storage total in bytes (ADR 0028), 0 if unknown."""
+    result = await session.execute(
+        select(User.storage_bytes_used).where(User.id == user_id)
+    )
+    return result.scalar_one_or_none() or 0
+
+
+async def add_storage_usage(session: AsyncSession, user_id: int, delta_bytes: int) -> None:
+    """
+    Adjust a user's media storage total by ``delta_bytes`` (ADR 0028). Positive
+    on a confirmed send, negative on an irreversible purge (ADR 0021). The
+    result is floored at 0 so a double-decrement can't drive it negative.
+    Committed by the caller's surrounding transaction is fine; this commits too
+    so it's safe on its own.
+    """
+    if not delta_bytes:
+        return
+    await session.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(
+            storage_bytes_used=func.greatest(
+                User.storage_bytes_used + delta_bytes, 0
+            )
+        )
+    )
+    await session.commit()
+
+
+async def get_public_key(session: AsyncSession, user_id: int) -> Optional[UserPublicKey]:
+    """Fetch one user's current E2E public key (ADR 0026), or None."""
+    result = await session.execute(
+        select(UserPublicKey).where(UserPublicKey.user_id == user_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_public_keys(
+    session: AsyncSession, user_ids: Sequence[int]
+) -> list[UserPublicKey]:
+    """Fetch the E2E public keys for a set of users (the chat key-bundle path).
+    Users with no published key are simply absent from the result."""
+    if not user_ids:
+        return []
+    result = await session.execute(
+        select(UserPublicKey).where(UserPublicKey.user_id.in_(list(user_ids)))
+    )
+    return list(result.scalars().all())
+
+
+async def upsert_public_key(
+    session: AsyncSession,
+    user_id: int,
+    public_key: dict,
+    algo: str,
+    fingerprint: str,
+) -> UserPublicKey:
+    """Insert or replace the caller's current E2E public key (ADR 0026)."""
+    stmt = (
+        pg_insert(UserPublicKey)
+        .values(
+            user_id=user_id,
+            public_key=public_key,
+            algo=algo,
+            fingerprint=fingerprint,
+        )
+        .on_conflict_do_update(
+            index_elements=["user_id"],
+            set_={
+                "public_key": public_key,
+                "algo": algo,
+                "fingerprint": fingerprint,
+                "updated_at": func.now(),
+            },
+        )
+        .returning(UserPublicKey)
+    )
+    result = await session.execute(stmt)
+    await session.commit()
+    return result.scalar_one()
 
 
 async def update_user_profile(

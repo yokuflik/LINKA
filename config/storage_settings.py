@@ -85,6 +85,13 @@ MIN_UPLOAD_BYTES_BY_KIND = {
     "avatar": 1,
 }
 
+# Per-user hard storage quota, in bytes (ADR 0028). A media upload ticket is
+# refused (HTTP 413, reason "storage_quota_exceeded") once the user's running
+# total of sent-media sizes plus the new file would exceed this. Counted
+# per-ref, not per-object - dedup does not discount it. Freed only by an
+# irreversible message purge (ADR 0021), not a soft delete. Default 1 GiB.
+STORAGE_QUOTA_BYTES = int(os.environ.get("STORAGE_QUOTA_BYTES", str(1 * 1024**3)))
+
 # --- Message media <-> upload-kind mapping ---
 # Message.type integer -> the storage upload kind it corresponds to.
 # 2=image, 3=video, 4=audio, 5=file (1=text, 6=system carry no media).
@@ -122,6 +129,7 @@ __all__ = [
     "S3_AVATARS_PUBLIC_BASE_URL",
     "UPLOAD_URL_EXPIRY_SECONDS",
     "S3_ENFORCE_UPLOAD_CHECKSUM",
+    "STORAGE_QUOTA_BYTES",
     "DOWNLOAD_URL_EXPIRY_SECONDS",
     "MAX_UPLOAD_BYTES_IMAGE",
     "MAX_UPLOAD_BYTES_VIDEO",

@@ -6,7 +6,7 @@
 // messages, resolveChatMemberPhones, currentUserRoleInActiveChat,
 // canChangeActiveChatRoles, otherActiveChatMembers.
 function useMembers(ctx) {
-  const { ref } = Vue;
+  const { ref, computed } = Vue;
 
   // ---------------------------------------------------------------
   // Group members modal
@@ -25,24 +25,91 @@ function useMembers(ctx) {
     await ctx.resolveChatMemberPhones(ctx.activeChatId.value);
   }
 
-  async function addMemberToActiveGroup() {
+  // ---------------------------------------------------------------
+  // Add-member search - identical UX to NewGroupModal step 1: a debounced,
+  // seq-guarded exact-match lookup by username or phone (+digits ->
+  // /users/by-phone, else /users/by-username), surfaced as one result row.
+  // ---------------------------------------------------------------
+  const addMemberSearchQuery = ref('');
+  const addMemberSearchBusy = ref(false);
+  const addMemberSearchError = ref('');
+  const addMemberSearchResult = ref(null); // a UserOut, or null
+  let addMemberSearchSeq = 0;
+  let addMemberSearchTimer = null;
+
+  function resetAddMemberSearch() {
+    if (addMemberSearchTimer) { clearTimeout(addMemberSearchTimer); addMemberSearchTimer = null; }
+    addMemberSearchQuery.value = '';
+    addMemberSearchBusy.value = false;
+    addMemberSearchError.value = '';
+    addMemberSearchResult.value = null;
+  }
+
+  function onAddMemberSearchInput() {
+    addMemberSearchError.value = '';
+    addMemberSearchResult.value = null;
+    if (addMemberSearchTimer) clearTimeout(addMemberSearchTimer);
+    addMemberSearchSeq++;
+    addMemberSearchBusy.value = false;
+    if (!addMemberSearchQuery.value.trim()) return;
+    addMemberSearchTimer = setTimeout(() => { addMemberSearchTimer = null; runAddMemberSearch(); }, 1500);
+  }
+
+  async function runAddMemberSearch() {
+    if (addMemberSearchTimer) { clearTimeout(addMemberSearchTimer); addMemberSearchTimer = null; }
+    const raw = addMemberSearchQuery.value.trim();
+    addMemberSearchError.value = '';
+    addMemberSearchResult.value = null;
+    if (!raw) return;
+    const seq = ++addMemberSearchSeq;
+    addMemberSearchBusy.value = true;
+    try {
+      const looksLikePhone = /^\+?\d[\d\s-]*$/.test(raw);
+      const path = looksLikePhone
+        ? `/users/by-phone?phone_number=${encodeURIComponent(raw.replace(/[\s-]/g, ''))}`
+        : `/users/by-username?username=${encodeURIComponent(raw.replace(/^@/, ''))}`;
+      const user = await ctx.apiFetch(path);
+      if (seq !== addMemberSearchSeq) return;
+      ctx.userById.value[user.id] = user;
+      addMemberSearchResult.value = user;
+    } catch (err) {
+      if (seq !== addMemberSearchSeq) return;
+      if (err.status === 404) {
+        const digits = raw.replace(/[\s-]/g, '').replace(/^\+/, '');
+        const looksLikeFullPhone = /^\+?\d[\d\s-]*$/.test(raw) && digits.length >= 8 && digits.length <= 15;
+        addMemberSearchError.value = looksLikeFullPhone
+          ? 'This number is not registered with the service yet.'
+          : 'No user found — check the exact username or phone number.';
+      } else {
+        addMemberSearchError.value = ctx.friendlyError(err, "We couldn't run that search. Please try again.");
+      }
+    } finally {
+      if (seq === addMemberSearchSeq) addMemberSearchBusy.value = false;
+    }
+  }
+
+  // Whether the current search hit is already a member of this group.
+  const addMemberResultIsMember = computed(() => {
+    const hit = addMemberSearchResult.value;
+    if (!hit) return false;
+    return ctx.activeChatMembers.value.some((m) => m.user.id === hit.id);
+  });
+
+  // Add the resolved user (from the search hit) to the active group.
+  async function addMemberToActiveGroup(user) {
+    const target = user || addMemberSearchResult.value;
+    if (!target) return;
     membersModalError.value = '';
-    const phone = addMemberPhone.value.trim();
-    if (!phone) { membersModalError.value = 'Enter a phone number.'; return; }
     membersModalBusy.value = true;
     try {
-      // Same two-step flow as createGroupChat: resolve phone -> user id,
-      // then POST /chats/{id}/members (server re-checks admin role itself).
-      const target = await ctx.apiFetch(`/users/by-phone?phone_number=${encodeURIComponent(phone)}`);
       await ctx.apiFetch(`/chats/${ctx.activeChatId.value}/members`, {
         method: 'POST',
         body: JSON.stringify({ user_id: target.id }),
       });
-      addMemberPhone.value = '';
+      resetAddMemberSearch();
       await ctx.resolveChatMemberPhones(ctx.activeChatId.value);
     } catch (err) {
-      if (err.status === 404) membersModalError.value = `No user with phone number ${phone}`;
-      else if (err.status === 409) membersModalError.value = 'User is already a member.';
+      if (err.status === 409) membersModalError.value = 'User is already a member.';
       else membersModalError.value = ctx.friendlyError(err, "That didn't work. Please try again.");
     } finally {
       membersModalBusy.value = false;
@@ -184,6 +251,8 @@ function useMembers(ctx) {
   return {
     showMembersModal, addMemberPhone, membersModalError, membersModalBusy,
     openMembersModal, addMemberToActiveGroup, toggleMemberAdmin,
+    addMemberSearchQuery, addMemberSearchBusy, addMemberSearchError, addMemberSearchResult,
+    addMemberResultIsMember, resetAddMemberSearch, onAddMemberSearchInput, runAddMemberSearch,
     memberOptionsFor, hasMemberOptions, openMemberOptions,
     memberOptionMakeOrRemoveAdmin, canRemoveMember, memberOptionRemoveFromGroup,
     leaveGroupBusy, showOwnerTransferPicker, ownerTransferTargetId,

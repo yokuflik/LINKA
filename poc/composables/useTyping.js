@@ -47,6 +47,9 @@ function useTyping(ctx) {
 
   function notifyTyping() {
     if (!ctx.activeChatId.value) return;
+    // Only emit while the tab is physically foreground (ADR 0025) - same rule
+    // as read receipts (useChatOpen.windowIsActive).
+    if (ctx.windowIsActive && !ctx.windowIsActive()) return;
     const now = Date.now();
     if (now - lastTypingSentAt < TYPING_SEND_THROTTLE_MS) return;
     lastTypingSentAt = now;
@@ -57,6 +60,7 @@ function useTyping(ctx) {
   // called on a 1s tick while a mic recording is running.
   function notifyRecording() {
     if (!ctx.activeChatId.value) return;
+    if (ctx.windowIsActive && !ctx.windowIsActive()) return;
     const now = Date.now();
     if (now - lastRecordingSentAt < TYPING_SEND_THROTTLE_MS) return;
     lastRecordingSentAt = now;
@@ -68,6 +72,8 @@ function useTyping(ctx) {
   // Both kinds active -> the phrases joined with a comma. A plain function
   // (takes a chatId); reading typingUsersByChatId.value still tracks reactively.
   function typingLabelForChat(chatId) {
+    // No live connection -> don't claim anyone is typing (ADR 0025).
+    if (ctx.wsStatus && ctx.wsStatus.value !== 'connected') return '';
     const entries = typingUsersByChatId.value[chatId] || {};
     const byKind = { typing: [], recording_audio: [] };
     for (const id of Object.keys(entries)) {

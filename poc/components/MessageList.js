@@ -31,6 +31,14 @@ const MessageList = {
     // nothing cached - show a "waiting for connection" state instead of the
     // misleading "No messages here" empty state.
     connectionError: { type: Boolean, default: false },
+    // True while the initial history fetch is in flight with nothing on screen
+    // yet - show a spinner, not "No messages here".
+    loading: { type: Boolean, default: false },
+    // True while a "load older" page is being fetched (or retried on a dead
+    // connection) - shows a spinner pinned at the top of the pane.
+    loadingOlder: { type: Boolean, default: false },
+    // True when that "load older" fetch is stuck retrying offline.
+    loadingOlderRetrying: { type: Boolean, default: false },
   },
   emits: ['message-contextmenu', 'load-older', 'voice-played', 'retry-message'],
   // Exposes the scrollable element so the root's scrollMessagesToBottom()
@@ -272,6 +280,12 @@ const MessageList = {
   expose: ['messagesEl'],
   template: `
     <div ref="messagesEl" @scroll="onScroll" class="flex-1 overflow-y-auto p-4">
+      <!-- "Load older" spinner, pinned at the top while a previous page is
+           being fetched (or retried on a dead connection). -->
+      <div v-if="messages.length && loadingOlder" class="flex flex-col items-center justify-center gap-1 py-3 text-xs text-slate-400">
+        <span class="w-5 h-5 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin"></span>
+        <span v-if="loadingOlderRetrying">No connection — retrying…</span>
+      </div>
       <template v-for="row in rows" :key="row.type === 'separator' ? row.key : (row.m.id || row.m.client_message_id)">
         <!-- Sticky day separator (WhatsApp-style). data-row is absent so
              onScroll's paging count ignores it. -->
@@ -478,6 +492,10 @@ const MessageList = {
       <div v-if="!messages.length && connectionError" class="h-full flex flex-col items-center justify-center gap-3 text-sm text-slate-400">
         <span class="w-7 h-7 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin"></span>
         <span>Waiting for connection…</span>
+      </div>
+      <div v-else-if="!messages.length && loading" class="h-full flex flex-col items-center justify-center gap-3 text-sm text-slate-400">
+        <span class="w-7 h-7 rounded-full border-2 border-slate-300 border-t-slate-500 animate-spin"></span>
+        <span>Loading messages…</span>
       </div>
       <p v-else-if="!messages.length" class="h-full flex items-center justify-center text-sm text-slate-400">No messages here</p>
     </div>

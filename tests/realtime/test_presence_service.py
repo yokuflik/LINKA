@@ -19,6 +19,27 @@ async def test_mark_online_then_offline(redis_db):
     assert await presence_service.is_online(1) is False
 
 
+async def test_set_active_toggles_foreground_presence(redis_db):
+    # ADR 0025: a backgrounded tab keeps its socket but asks to be treated as
+    # offline; returning to the foreground asks to be online again.
+    await presence_service.mark_online(1, "conn-a", "server-1")
+    assert await presence_service.is_online(1) is True
+
+    await presence_service.set_active(1, "conn-a", "server-1", active=False)
+    assert await presence_service.is_online(1) is False
+
+    await presence_service.set_active(1, "conn-a", "server-1", active=True)
+    assert await presence_service.is_online(1) is True
+
+
+async def test_set_active_false_on_one_of_two_devices_keeps_user_online(redis_db):
+    await presence_service.mark_online(1, "conn-a", "server-1")
+    await presence_service.mark_online(1, "conn-b", "server-2")
+
+    await presence_service.set_active(1, "conn-a", "server-1", active=False)
+    assert await presence_service.is_online(1) is True, "still foreground on the other device"
+
+
 async def test_multi_device_stays_online_until_every_connection_drops(redis_db):
     # WhatsApp-style semantics: a user with the app open on two phones is
     # only "offline" once *both* connections are gone, not after the first.

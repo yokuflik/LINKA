@@ -31,10 +31,17 @@ function useChatStore(ctx) {
   // state in MessageList instead of a misleading "No messages here" + a raw
   // "Failed to fetch" banner over the composer.
   const messagesConnectionError = ref(false);
+  // True while the initial history fetch for the open chat is in flight (or
+  // retrying on a dead connection) and there's nothing on screen yet - drives
+  // the "Loading messages…" spinner instead of a premature "No messages here".
+  const messagesLoading = ref(false);
   const messagesEl = ref(null);
   // Infinite-scroll-up pagination state.
   const hasMoreMessages = ref(false);
   const loadingOlderMessages = ref(false);
+  // True while a "load older" page is stuck retrying on a dead connection -
+  // keeps the top spinner up and tells the user we're actively retrying.
+  const olderMessagesRetrying = ref(false);
   const MESSAGE_PAGE_SIZE = 50;
   // How close to the top (in messages still above the viewport) we get before
   // pulling the next older page.
@@ -130,8 +137,8 @@ function useChatStore(ctx) {
 
   return {
     chats, activeChatId, draftChat, messages, messageInput,
-    chatsError, messagesError, messagesConnectionError, messagesEl,
-    hasMoreMessages, loadingOlderMessages,
+    chatsError, messagesError, messagesConnectionError, messagesLoading, messagesEl,
+    hasMoreMessages, loadingOlderMessages, olderMessagesRetrying,
     MESSAGE_PAGE_SIZE, LOAD_OLDER_THRESHOLD, MAX_VISIBLE_MEMBERS,
     privateChatTitles, privateChatOtherUserId, userById, groupChatMembers,
     ROLE_LABELS, roleLabel, statusTickSymbol, statusTickClass,

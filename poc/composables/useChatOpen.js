@@ -89,12 +89,21 @@ function useChatOpen(ctx) {
     const prevScrollHeight = el ? el.scrollHeight : 0;
     const prevScrollTop = el ? el.scrollTop : 0;
     ctx.loadingOlderMessages.value = true;
+    ctx.olderMessagesRetrying.value = false;
     try {
-      const page = await ctx.apiFetch(`/chats/${chatId}/messages?limit=${ctx.MESSAGE_PAGE_SIZE}&before_id=${oldestId}`);
+      // apiFetch retries a dead connection forever (every 3s); keep the top
+      // spinner up and flag "retrying" so the user sees it's actively trying.
+      const page = await ctx.apiFetch(`/chats/${chatId}/messages?limit=${ctx.MESSAGE_PAGE_SIZE}&before_id=${oldestId}`, {
+        onRetry: () => { if (ctx.activeChatId.value === chatId) ctx.olderMessagesRetrying.value = true; },
+        retryCancelled: () => ctx.activeChatId.value !== chatId,
+      });
       if (ctx.activeChatId.value !== chatId) return; // user switched chats mid-flight
+      ctx.olderMessagesRetrying.value = false;
       ctx.hasMoreMessages.value = page.length === ctx.MESSAGE_PAGE_SIZE;
       if (page.length) {
-        ctx.messages.value = page.slice().reverse().concat(ctx.messages.value);
+        const older = page.slice().reverse();
+        if (ctx.decryptListInPlace) await ctx.decryptListInPlace(older); // E2E (ADR 0026)
+        ctx.messages.value = older.concat(ctx.messages.value);
         await nextTick();
         // Keep the user looking at the same message: the newly-prepended block
         // grew scrollHeight by (new - prev); add that to where they were, don't
@@ -106,6 +115,7 @@ function useChatOpen(ctx) {
       ctx.logError('failed to load older messages:', err.message);
     } finally {
       ctx.loadingOlderMessages.value = false;
+      ctx.olderMessagesRetrying.value = false;
     }
   }
 
@@ -124,6 +134,7 @@ function useChatOpen(ctx) {
     ctx.messages.value = [];
     ctx.messagesError.value = '';
     ctx.messagesConnectionError.value = false;
+    ctx.messagesLoading.value = false;
     ctx.hasMoreMessages.value = false;
     ctx.replyingToMessage.value = null;
     if (ctx.editingMessage.value) ctx.cancelEdit();
@@ -161,8 +172,10 @@ function useChatOpen(ctx) {
     ctx.messages.value = [];
     ctx.messagesError.value = '';
     ctx.messagesConnectionError.value = false;
+    ctx.messagesLoading.value = true;
     ctx.hasMoreMessages.value = false;
     ctx.loadingOlderMessages.value = false;
+    ctx.olderMessagesRetrying.value = false;
     ctx.clearUnreadCount(chatId);
     ctx.replyingToMessage.value = null;
     if (ctx.editingMessage.value) ctx.cancelEdit();
@@ -200,6 +213,7 @@ function useChatOpen(ctx) {
     const cached = ctx.loadChatMessages(chatId);
     if (cached && cached.length) {
       if (ctx.activeChatId.value !== chatId) return;
+      ctx.messagesLoading.value = false;
       ctx.messages.value = cached.slice();
       // A cached bubble still marked pending is a message that was queued in
       // the outbox when the tab closed and never sent - show it as failed
@@ -223,8 +237,16 @@ function useChatOpen(ctx) {
     }
 
     try {
-      const history = await ctx.apiFetch(`/chats/${chatId}/messages?limit=${ctx.MESSAGE_PAGE_SIZE}`);
+      // apiFetch retries a dead connection forever (every 3s). While it does,
+      // flip messagesConnectionError so the pane shows an active "Waiting for
+      // connection…" spinner rather than a stuck blank / "No messages here".
+      const history = await ctx.apiFetch(`/chats/${chatId}/messages?limit=${ctx.MESSAGE_PAGE_SIZE}`, {
+        onRetry: () => { if (ctx.activeChatId.value === chatId) ctx.messagesConnectionError.value = true; },
+        retryCancelled: () => ctx.activeChatId.value !== chatId,
+      });
       if (ctx.activeChatId.value !== chatId) return;
+      ctx.messagesConnectionError.value = false;
+      ctx.messagesLoading.value = false;
       // Live messages pushed onto messages.value while this fetch was in
       // flight (activeChatId is set before the await, so new_message for this
       // chat renders live) would be wiped by the history assignment - keep
@@ -241,6 +263,9 @@ function useChatOpen(ctx) {
         if (!seenIds.has(m.id)) { ctx.messages.value.push(m); seenIds.add(m.id); }
       }
       mergeBuffered();
+      // E2E (ADR 0026): decrypt every encrypted row in place before render and
+      // before persisting to the message cache.
+      if (ctx.decryptListInPlace) await ctx.decryptListInPlace(ctx.messages.value);
       ctx.saveChatMessages(chatId, ctx.messages.value);
       // GET /chats can't tell us the last message was soft-deleted (its
       // last_message_preview column keeps the old text). The history page
@@ -266,11 +291,13 @@ function useChatOpen(ctx) {
       }
     } catch (err) {
       if (ctx.activeChatId.value !== chatId) return;
-      // Server down / offline and nothing cached: show the "waiting for
-      // connection" state in the pane instead of leaking a raw fetch error
-      // into the composer's attach-error banner. A reconnect + tab focus
-      // re-runs selectChat via the WS router, so this is self-healing.
+      // A real API error (4xx/5xx - network failures retry inside apiFetch and
+      // never land here). Show the "waiting for connection" state in the pane
+      // instead of leaking a raw fetch error into the composer's attach-error
+      // banner. A reconnect + tab focus re-runs selectChat via the WS router,
+      // so this is self-healing.
       ctx.messagesConnectionError.value = true;
+      ctx.messagesLoading.value = false;
       ctx.logError('failed to load chat history for', chatId, err.message);
     }
   }

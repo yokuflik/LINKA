@@ -93,6 +93,23 @@ class UserProfileUpdateIn(BaseModel):
     # here - a raw client-supplied URL/key can't be trusted or cleaned up.
 
 
+class PublicKeyIn(BaseModel):
+    """Upload the caller's E2E public key (ADR 0026). ``public_key`` is a public
+    EC/P-256 JWK; the server validates shape only and rejects a private key."""
+
+    public_key: dict
+    algo: str = "ECDH-P256"
+
+
+class PublicKeyOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: IdStr
+    public_key: dict
+    algo: str
+    fingerprint: str
+
+
 class UserSettingsOut(BaseModel):
     # Fully-resolved settings (every group/key present, defaults filled in).
     # Kept as an open dict on purpose: new setting groups are added in
@@ -314,6 +331,13 @@ class MessageOut(BaseModel):
     type: int
     content: Optional[str]
     reply_to_message_id: Optional[IdStr]
+
+    # Client-side E2E encryption (ADR 0026). When is_encrypted is true, `content`
+    # is opaque base64 ciphertext and `enc_header` carries the per-message
+    # encryption header (iv / ephemeral pub key / per-recipient wrapped keys).
+    # Both absent/false for a plaintext or pre-feature message.
+    is_encrypted: bool = False
+    enc_header: Optional[dict] = None
 
     # Media attachment (all None for a text / system message). media_url is a
     # short-lived presigned GET attached by message_service (get_message_history

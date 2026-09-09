@@ -15,18 +15,40 @@ from modules.messaging.crud import soft_delete_message
 from modules.messaging.crud import undelete_message
 from realtime import realtime_service
 from modules.messaging.common import _check_content_length
+from modules.messaging.errors import EncryptionRequiredError
 from modules.messaging.errors import NotAParticipantError
 from modules.media import media_service
+from modules.users.crud import add_storage_usage
 
 
-async def edit_message(session: AsyncSession, user_id: int, chat_id: int, message_id: int, new_content: str) -> "object":
+async def edit_message(
+    session: AsyncSession,
+    user_id: int,
+    chat_id: int,
+    message_id: int,
+    new_content: str,
+    enc_header: dict | None = None,
+) -> "object":
     _check_content_length(new_content)
 
     existing = await get_message_by_id(session, chat_id=chat_id, message_id=message_id)
     if existing is None or existing.sender_id != user_id:
         raise NotAParticipantError(f"User {user_id} may not edit message {message_id}")
 
-    message = await edit_message_content(session, chat_id=chat_id, message_id=message_id, new_content=new_content)
+    # ADR 0027: an encrypted message can only be edited with a fresh enc header;
+    # a plaintext edit would silently downgrade it and leak the text to the server.
+    if enc_header is None and getattr(existing, "is_encrypted", False):
+        raise EncryptionRequiredError(
+            f"message {message_id} is encrypted - an edit must carry an enc header"
+        )
+
+    message = await edit_message_content(
+        session,
+        chat_id=chat_id,
+        message_id=message_id,
+        new_content=new_content,
+        enc_header=enc_header,
+    )
     await realtime_service.publish_event(
         chat_id,
         {
@@ -34,6 +56,8 @@ async def edit_message(session: AsyncSession, user_id: int, chat_id: int, messag
             "chat_id": str(chat_id),
             "message_id": str(message_id),
             "content": new_content,
+            "is_encrypted": bool(enc_header is not None),
+            "enc_header": enc_header,
             "edited_at": message.edited_at.isoformat() if message and message.edited_at else None,
         },
     )
@@ -64,11 +88,25 @@ async def purge_message(session: AsyncSession, user_id: int, chat_id: int, messa
     if existing is None or existing.sender_id != user_id:
         raise NotAParticipantError(f"User {user_id} may not purge message {message_id}")
 
+    # Capture pre-purge media size / original sender before the row is wiped -
+    # needed to refund the sender's storage quota (ADR 0028).
+    purged_size = existing.media_size or 0
+    original_sender_id = existing.sender_id
+
     media_key = await crud_purge_message(session, chat_id=chat_id, message_id=message_id)
     if media_key is None:
         return False  # not currently deleted, or already purged
 
     if media_key:
+        # Free the space this media occupied against the sender's quota
+        # (ADR 0028). A soft delete does not refund; only this irreversible
+        # purge does - that's the "delete files to make room" mechanism.
+        if purged_size and original_sender_id is not None:
+            try:
+                await add_storage_usage(session, original_sender_id, -purged_size)
+            except Exception as exc:
+                logger.error("purge: storage quota refund failed for user %s: %s", original_sender_id, exc)
+
         try:
             remaining = await deref_blob(session, media_key)
             if remaining == 0:

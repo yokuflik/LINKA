@@ -18,6 +18,7 @@ from api.schemas import CreateGroupChatIn
 from api.schemas import CreatePrivateChatIn
 from api.schemas import MuteChatIn
 from api.schemas import ParticipantOut
+from api.schemas import PublicKeyOut
 from api.schemas import UpdateGroupDetailsIn
 from config import LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
 from modules.users import avatar_service
@@ -218,6 +219,20 @@ async def get_chat_members(
 ):
     participants = await chat_service.get_chat_members(session, requester_id=user_id, chat_id=chat_id)
     return [ChatMemberOut(user=p.user, role=p.role) for p in participants]
+
+
+@router.get("/{chat_id}/key-bundle", response_model=list[PublicKeyOut])
+async def get_chat_key_bundle(
+    chat_id: int,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Every participant's E2E public key (ADR 0026), for the encrypted send
+    path. Requester must be a member (PermissionDeniedError -> 403 globally)."""
+    await rate_limit_service.enforce_sliding_window(
+        user_id, "list_read", LIST_READ_RATE_MAX, LIST_READ_RATE_WINDOW_SECONDS
+    )
+    return await chat_service.get_chat_key_bundle(session, requester_id=user_id, chat_id=chat_id)
 
 
 @router.post("/{chat_id}/members", response_model=ParticipantOut)

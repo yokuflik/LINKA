@@ -37,10 +37,29 @@ function usePresence(ctx) {
     if (otherUserId && ctx.activeChatId.value === chatId) subscribeToPresence(otherUserId);
   }
 
+  // --- Foreground-only presence (ADR 0025) -----------------------------------
+  // Tell the server whether this tab is physically foreground, so others only
+  // see us "online" (and only get our typing indicator) while we're actually
+  // looking. Same rule as read receipts (useChatOpen.windowIsActive).
+  let lastActiveSent = null;
+  function syncPresenceActive() {
+    const active = ctx.windowIsActive ? ctx.windowIsActive() : true;
+    if (active === lastActiveSent) return;
+    lastActiveSent = active;
+    ctx.sendRaw({ type: 'presence_active', active });
+  }
+  document.addEventListener('visibilitychange', syncPresenceActive);
+  window.addEventListener('focus', syncPresenceActive);
+  window.addEventListener('blur', syncPresenceActive);
+
   // Called from ws.onopen: the old socket's server-side subscription is gone,
   // so drop the local marker and re-subscribe for the currently open chat.
   function resubscribePresenceForActiveChat() {
     presenceSubscribedUserId = null;
+    // A fresh connection defaults to online server-side; re-assert our real
+    // foreground state (force a send even if unchanged).
+    lastActiveSent = null;
+    syncPresenceActive();
     if (ctx.draftChat && ctx.draftChat.value) {
       subscribeToPresence(ctx.draftChat.value.otherUserId);
     } else if (!ctx.activeChatIsGroup.value && ctx.activeChatId.value) {
@@ -92,6 +111,9 @@ function usePresence(ctx) {
   }
 
   function presenceLabelFor(userId) {
+    // Our own socket is down -> the last-known status is stale, show nothing
+    // rather than a misleading "online" / "last seen" (ADR 0025).
+    if (ctx.wsStatus && ctx.wsStatus.value !== 'connected') return '';
     const info = presenceByUserId.value[userId];
     if (!info) return '';
     if (info.status === 'online') return 'online';

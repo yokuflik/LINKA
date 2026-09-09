@@ -215,6 +215,12 @@ const AuthScreen = {
             <InlineAlert :message="avatarError" class="mt-1" />
           </div>
 
+          <label class="block text-xs font-medium text-slate-500 mb-1">Display name <span class="text-slate-400">(optional)</span></label>
+          <input :value="profileDraft.display_name || ''"
+                 @input="setProfileField('display_name', $event.target.value)"
+                 placeholder="Jane 🌸" maxlength="50"
+                 class="w-full mb-3 px-3 py-2 border border-slate-300 rounded-lg text-sm" />
+
           <label class="block text-xs font-medium text-slate-500 mb-1">Username</label>
           <input :value="profileDraft.username"
                  @input="setProfileField('username', $event.target.value.toLowerCase())"

@@ -126,6 +126,8 @@ async def main(drop: bool) -> None:
                 "UPDATE users SET username = 'user_' || id WHERE username IS NULL",
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)",
                 "ALTER TABLE users ALTER COLUMN username SET NOT NULL",
+                # Optional free-form display name (ADR 0024). No uniqueness/index.
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(80)",
                 # Released-username grace hold (ADR 0017).
                 "CREATE TABLE IF NOT EXISTS reserved_usernames ("
                 "  username VARCHAR(32) PRIMARY KEY,"

@@ -17,6 +17,9 @@ const ProfileEditModal = {
     // When set, a "Username" field is shown under the name (user profile only,
     // not groups). usernameCheck: { status:''|'checking'|'ok'|'bad', reason }.
     showUsername: { type: Boolean, default: false },
+    // When set, an optional free-form "Display name" field is shown above the
+    // username (user profile only) - ADR 0024. Any language, no availability check.
+    showDisplayName: { type: Boolean, default: false },
     usernameCheck: { type: Object, default: () => ({ status: '', reason: '' }) },
     currentAvatarUrl: { default: null },
     avatarName: { default: '' },
@@ -85,6 +88,14 @@ const ProfileEditModal = {
           <label class="block text-xs font-medium text-slate-500 mb-1">{{ nameLabel }}</label>
           <input :value="form[nameKey]" @input="setField(nameKey, $event.target.value)"
                  class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg mb-3" />
+        </template>
+
+        <template v-if="showDisplayName">
+          <label class="block text-xs font-medium text-slate-500 mb-1">Display name <span class="text-slate-400">(optional)</span></label>
+          <input :value="form.display_name || ''" @input="setField('display_name', $event.target.value)"
+                 placeholder="Jane 🌸" maxlength="50"
+                 class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg" />
+          <p class="mb-3 mt-1 text-xs text-slate-400">Shown instead of your username. Any language. Leave empty to use your username.</p>
         </template>
 
         <template v-if="showUsername">

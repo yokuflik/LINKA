@@ -222,6 +222,8 @@ async def update_user_profile(
     profile_pic_url: Optional[str] = None,
     profile_pic_preview: Optional[str] = None,
     write_preview: bool = False,
+    display_name: Optional[str] = None,
+    write_display_name: bool = False,
 ) -> Optional[User]:
     """
     Update user profile fields.
@@ -229,6 +231,9 @@ async def update_user_profile(
     ``write_preview=True`` forces ``profile_pic_preview`` to be written
     even when it is ``None`` (a new avatar with no computable hash still
     replaces the old one) - ADR 0016.
+
+    ``write_display_name=True`` forces ``display_name`` to be written even
+    when it is ``None`` - that's how the user clears their nickname (ADR 0024).
     """
     update_data = {}
     if about_text is not None:
@@ -237,6 +242,8 @@ async def update_user_profile(
         update_data["profile_pic_url"] = profile_pic_url
     if write_preview:
         update_data["profile_pic_preview"] = profile_pic_preview
+    if write_display_name:
+        update_data["display_name"] = display_name
 
     if not update_data:
         return await get_user_by_id(session, user_id)

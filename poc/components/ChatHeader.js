@@ -5,6 +5,8 @@
 const ChatHeader = {
   props: {
     activeChatLabel: { type: String, required: true },
+    // Secondary "@username" line for a 1:1 peer who has a display_name (ADR 0024).
+    activeChatSubLabel: { type: String, default: '' },
     activeChatIsGroup: { type: Boolean, required: true },
     visibleActiveChatMembers: { type: Array, required: true },
     hiddenActiveChatMemberCount: { type: Number, required: true },
@@ -27,6 +29,7 @@ const ChatHeader = {
       <div class="text-sm font-medium"
            :class="activeChatIsGroup ? 'cursor-pointer hover:underline' : ''"
            @click="activeChatIsGroup && $emit('open-members-modal')">{{ activeChatLabel }}</div>
+      <div v-if="activeChatSubLabel" class="text-xs text-slate-400 font-mono truncate">{{ activeChatSubLabel }}</div>
       <div v-if="activeChatIsGroup" class="mt-0.5 text-xs text-slate-500 truncate">
         <span v-for="(member, index) in visibleActiveChatMembers" :key="member.user.id">
           {{ memberDisplayName(member) }}<span v-if="index < visibleActiveChatMembers.length - 1 || hiddenActiveChatMemberCount > 0">, </span>

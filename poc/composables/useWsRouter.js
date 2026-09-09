@@ -255,6 +255,7 @@ function useWsRouter(ctx) {
       ctx.userById.value[msg.user_id] = {
         ...existing,
         username: msg.username,
+        display_name: msg.display_name || null,
         about_text: msg.about_text,
         profile_pic_url: msg.profile_pic_url,
         profile_pic_preview: msg.profile_pic_preview || null,
@@ -270,7 +271,7 @@ function useWsRouter(ctx) {
         String(ctx.privateChatOtherUserId.value[msg.chat_id]) === String(msg.user_id)
       ) {
         const u = ctx.userById.value[msg.user_id] || {};
-        ctx.privateChatTitles.value[msg.chat_id] = msg.username || u.phone_number || '';
+        ctx.privateChatTitles.value[msg.chat_id] = msg.display_name || msg.username || u.phone_number || '';
       }
       // Group member rows in groupChatMembers hold their own copy:
       const members = ctx.groupChatMembers.value[msg.chat_id];
@@ -283,6 +284,7 @@ function useWsRouter(ctx) {
         currentUser.value = {
           ...currentUser.value,
           username: msg.username,
+          display_name: msg.display_name || null,
           about_text: msg.about_text,
           profile_pic_url: msg.profile_pic_url,
           profile_pic_preview: msg.profile_pic_preview || null,

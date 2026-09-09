@@ -78,6 +78,25 @@ async def test_update_user_profile(db_session: AsyncSession):
     assert updated_user.phone_number == "+972504242424" # Remains unchanged
 
 
+async def test_update_user_profile_write_display_name_flag(db_session: AsyncSession):
+    await create_user(db_session, user_id=7, phone_number="+972507070707")
+
+    # Without the flag, a None display_name is not written.
+    u = await update_user_profile(db_session, user_id=7, about_text="x")
+    assert u.display_name is None
+
+    u = await update_user_profile(
+        db_session, user_id=7, display_name="Nick", write_display_name=True
+    )
+    assert u.display_name == "Nick"
+
+    # The flag with None is how the column is cleared.
+    u = await update_user_profile(
+        db_session, user_id=7, display_name=None, write_display_name=True
+    )
+    assert u.display_name is None
+
+
 async def test_concurrent_registration_same_phone_only_one_wins(session_factory):
     # Arrange: two different IDs racing to register the exact same phone number
     # (e.g. two OTP-verification requests firing at once), each on its own

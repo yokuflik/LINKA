@@ -169,6 +169,25 @@ async def test_patch_me_updates_only_the_given_fields(client, db_session: AsyncS
     assert resp.status_code == 200
     body = resp.json()
     assert body["about_text"] == "New bio"
+    assert body["display_name"] is None  # ADR 0024: absent key => untouched
+
+
+async def test_patch_me_sets_updates_and_clears_display_name(client, db_session: AsyncSession, redis_db):
+    _, access_token, _ = await _login(client, redis_db, "+972500100055")
+
+    # Set - free-form, any script, sanitised (surrounding spaces trimmed).
+    resp = await client.patch(
+        "/users/me", json={"display_name": "  שלום 🌸  "}, headers=_auth_header(access_token)
+    )
+    assert resp.json()["display_name"] == "שלום 🌸"
+
+    # Absent key => left as-is.
+    resp = await client.patch("/users/me", json={"about_text": "x"}, headers=_auth_header(access_token))
+    assert resp.json()["display_name"] == "שלום 🌸"
+
+    # Explicit "" => cleared.
+    resp = await client.patch("/users/me", json={"display_name": ""}, headers=_auth_header(access_token))
+    assert resp.json()["display_name"] is None
 
 
 async def test_lookup_user_by_phone(client, db_session: AsyncSession, redis_db):

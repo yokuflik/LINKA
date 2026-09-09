@@ -17,6 +17,18 @@
 function useChatMembers(ctx) {
   const { computed } = Vue;
 
+  // The one place the peer-name fallback lives (ADR 0024): an optional
+  // free-form display_name wins, then the unique username, then the phone.
+  function peerName(user) {
+    if (!user) return '';
+    return user.display_name || user.username || user.phone_number || '';
+  }
+  // Secondary "@username" label - disabled by product choice: when a peer has
+  // a display_name we show only that, never the underlying handle.
+  function peerHandle(_user) {
+    return '';
+  }
+
   // `force` re-fetches even when the title is already cached - used to pick up
   // the other person's freshly changed display name / profile photo (there's
   // no server push for a profile edit, so we re-pull on chat open / tab focus).
@@ -26,7 +38,7 @@ function useChatMembers(ctx) {
       const members = await ctx.apiFetch(`/chats/${chatId}/members`);
       const other = members.find((m) => m.user.id !== ctx.currentUser.value.id);
       if (other) {
-        ctx.privateChatTitles.value[chatId] = other.user.username || other.user.phone_number;
+        ctx.privateChatTitles.value[chatId] = peerName(other.user);
         ctx.privateChatOtherUserId.value[chatId] = other.user.id;
         // Cache the whole UserOut so the avatar URL needs no second lookup.
         ctx.userById.value[other.user.id] = other.user;
@@ -52,17 +64,24 @@ function useChatMembers(ctx) {
     return name ? `Chat with ${name}` : `Private chat #${chat.id}`;
   }
 
+  // "@username" for a 1:1 chat whose peer has a display_name (ADR 0024), else ''.
+  function chatSubLabel(chat) {
+    if (chat.is_group) return '';
+    const otherId = ctx.privateChatOtherUserId.value[chat.id];
+    return otherId != null ? peerHandle(ctx.userById.value[otherId]) : '';
+  }
+
   function senderLabel(senderId) {
     if (senderId == null) return 'system';
     const user = ctx.userById.value[senderId];
     if (!user) return senderId;
-    return user.username || user.phone_number;
+    return peerName(user);
   }
 
   function userLabelById(userId) {
     const user = ctx.userById.value[userId];
     if (!user) return userId;
-    return user.username || user.phone_number;
+    return peerName(user);
   }
 
   // Same as senderLabel, but says "You" for the current user - matches
@@ -100,7 +119,7 @@ function useChatMembers(ctx) {
   function currentUserNameVariants() {
     const u = ctx.currentUser.value;
     if (!u) return [];
-    const variants = [u.username, u.phone_number];
+    const variants = [u.display_name, u.username, u.phone_number];
     return variants.filter((v) => typeof v === 'string' && v.length > 0);
   }
 
@@ -144,7 +163,7 @@ function useChatMembers(ctx) {
   const activeChatLabel = computed(() => {
     if (ctx.draftChat.value) {
       const u = draftUser();
-      return `Chat with ${u ? (u.username || u.phone_number) : ctx.draftChat.value.phone}`;
+      return `Chat with ${u ? peerName(u) : ctx.draftChat.value.phone}`;
     }
     return activeChatItem.value ? chatDisplayName(activeChatItem.value.chat) : '';
   });
@@ -154,7 +173,7 @@ function useChatMembers(ctx) {
     return activeChatItem.value ? ctx.chatAvatarUrl(activeChatItem.value.chat) : null;
   });
   const activeChatAvatarName = computed(() => {
-    if (ctx.draftChat.value) { const u = draftUser(); return u ? (u.username || u.phone_number) : ctx.draftChat.value.phone; }
+    if (ctx.draftChat.value) { const u = draftUser(); return u ? peerName(u) : ctx.draftChat.value.phone; }
     return activeChatItem.value ? ctx.chatAvatarName(activeChatItem.value.chat) : '';
   });
   const activeChatAvatarColorKey = computed(() => {
@@ -166,12 +185,23 @@ function useChatMembers(ctx) {
     return activeChatItem.value ? ctx.chatAvatarPreview(activeChatItem.value.chat) : null;
   });
 
+  // Secondary "@username" line under a 1:1 chat header/title - only when the
+  // peer has a display_name masking their handle (ADR 0024).
+  const activeChatSubLabel = computed(() => {
+    if (activeChatIsGroup.value) return '';
+    if (ctx.draftChat.value) return peerHandle(draftUser());
+    const otherId = activeChatItem.value
+      ? ctx.privateChatOtherUserId.value[activeChatItem.value.chat.id]
+      : null;
+    return otherId != null ? peerHandle(ctx.userById.value[otherId]) : '';
+  });
+
   const activeChatMembers = computed(() => ctx.groupChatMembers.value[ctx.activeChatId.value] || []);
   const visibleActiveChatMembers = computed(() => activeChatMembers.value.slice(0, ctx.MAX_VISIBLE_MEMBERS));
   const hiddenActiveChatMemberCount = computed(() => Math.max(0, activeChatMembers.value.length - ctx.MAX_VISIBLE_MEMBERS));
 
   function memberDisplayName(member) {
-    return member.user.username || member.user.phone_number;
+    return peerName(member.user);
   }
 
   const currentUserRoleInActiveChat = computed(() => {
@@ -186,11 +216,12 @@ function useChatMembers(ctx) {
 
   return {
     resolvePrivateChatTitle, resolveChatMemberPhones,
-    chatDisplayName, senderLabel, userLabelById, replySenderLabel,
+    chatDisplayName, chatSubLabel, senderLabel, userLabelById, replySenderLabel,
+    peerName, peerHandle,
     parseSystemMessage, shouldShowSystemMessage, systemMessageText,
     currentUserNameVariants, personalizeSystemMessage,
     activeChatItem, activePaneVisible, draftUser,
-    activeChatLabel, activeChatIsGroup,
+    activeChatLabel, activeChatSubLabel, activeChatIsGroup,
     activeChatAvatarUrl, activeChatAvatarName, activeChatAvatarColorKey, activeChatAvatarPreview,
     activeChatMembers, visibleActiveChatMembers, hiddenActiveChatMemberCount,
     memberDisplayName,

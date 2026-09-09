@@ -38,10 +38,59 @@ async def test_update_profile_for_a_nonexistent_user_returns_none(db_session: As
     assert await user_service.update_profile(db_session, user_id=999999, about_text="X") is None
 
 
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("  Jane 🌸  ", "Jane 🌸"),          # trimmed, emoji + non-ASCII kept
+        ("שלום עולם", "שלום עולם"),          # any script
+        ("‮evil", "evil"),               # RTL override stripped
+        ("​hi​", "hi"),             # zero-width space stripped
+        ("a\x00b", "ab"),                     # control char stripped
+        ("   ", None),                         # whitespace-only -> cleared
+        ("", None),
+        (None, None),
+    ],
+)
+def test_sanitize_display_name(raw, expected):
+    assert user_service.sanitize_display_name(raw) == expected
+
+
+def test_sanitize_display_name_truncates_to_the_cap():
+    out = user_service.sanitize_display_name("x" * 200)
+    assert len(out) == config.DISPLAY_NAME_MAX_LEN
+
+
+def test_sanitize_display_name_nfc_normalises():
+    # decomposed "é" (e + combining acute) -> single code point
+    assert user_service.sanitize_display_name("é") == "é"
+
+
+async def test_update_profile_sets_and_clears_display_name(db_session: AsyncSession):
+    await create_user(db_session, user_id=1, phone_number="+972501", username="h")
+
+    set_ = await user_service.update_profile(
+        db_session, user_id=1, display_name="  Nick  ", write_display_name=True
+    )
+    assert set_.display_name == "Nick"
+
+    # An absent write flag leaves it untouched.
+    kept = await user_service.update_profile(db_session, user_id=1, about_text="bio")
+    assert kept.display_name == "Nick"
+
+    # write_display_name=True with an empty value clears it.
+    cleared = await user_service.update_profile(
+        db_session, user_id=1, display_name="", write_display_name=True
+    )
+    assert cleared.display_name is None
+
+
 async def test_broadcast_profile_update_fans_one_event_per_shared_chat(db_session: AsyncSession, monkeypatch):
     # A profile edit must reach everyone who shares a chat with the user, as a
     # transient per-chat event (never a persisted system message).
     await create_user(db_session, user_id=1, phone_number="+972501", username="alice")
+    await user_service.update_profile(
+        db_session, user_id=1, display_name="Alice A.", write_display_name=True
+    )
     await create_user(db_session, user_id=2, phone_number="+972502")
     await create_user(db_session, user_id=3, phone_number="+972503")
     private = await chat_service.get_or_create_private_chat(db_session, 1, 2)
@@ -61,6 +110,7 @@ async def test_broadcast_profile_update_fans_one_event_per_shared_chat(db_sessio
         assert ev["event"] == "profile_updated"
         assert ev["user_id"] == str(1)
         assert ev["username"] == "alice"
+        assert ev["display_name"] == "Alice A."
 
 
 async def test_broadcast_profile_update_for_a_nonexistent_user_is_a_noop(db_session: AsyncSession, monkeypatch):

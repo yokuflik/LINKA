@@ -96,7 +96,7 @@ function useProfileEdit(ctx) {
   // Current-user profile
   // ---------------------------------------------------------------
   const showProfileModal = ref(false);
-  const profileForm = ref({ about_text: '', username: '' });
+  const profileForm = ref({ about_text: '', username: '', display_name: '' });
   const profileBusy = ref(false);
   const profileError = ref('');
   const profileAvatar = makeAvatarPicker();
@@ -110,6 +110,7 @@ function useProfileEdit(ctx) {
     profileForm.value = {
       about_text: u.about_text || '',
       username: u.username || '',
+      display_name: u.display_name || '',
     };
     profileUsernameCheck.value = { status: '', reason: '' };
     if (_profUsernameTimer) clearTimeout(_profUsernameTimer);
@@ -148,9 +149,13 @@ function useProfileEdit(ctx) {
       const patch = {};
       const about = (profileForm.value.about_text || '').trim();
       const uname = (profileForm.value.username || '').trim();
+      const dname = (profileForm.value.display_name || '').trim();
       // PATCH /users/me treats null-vs-value, not "" - only send changed fields.
       if (about !== (u.about_text || '')) patch.about_text = about;
       if (uname && uname !== (u.username || '')) patch.username = uname;
+      // display_name is a "sent means set/clear" field (ADR 0024): send "" to
+      // clear it, the value to set it, and omit it entirely when unchanged.
+      if (dname !== (u.display_name || '')) patch.display_name = dname;
       if (Object.keys(patch).length) {
         ctx.currentUser.value = await ctx.apiFetch('/users/me', {
           method: 'PATCH',
@@ -174,6 +179,7 @@ function useProfileEdit(ctx) {
         ctx.userById.value[me.id] = {
           ...existing,
           username: me.username,
+          display_name: me.display_name || null,
           about_text: me.about_text,
           profile_pic_url: me.profile_pic_url,
           profile_pic_preview: me.profile_pic_preview || null,

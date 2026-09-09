@@ -52,6 +52,9 @@ class UserOut(BaseModel):
     id: IdStr
     phone_number: str
     username: Optional[str] = None
+    # Optional free-form nickname (ADR 0024). Shown instead of username when set;
+    # never unique, never searchable.
+    display_name: Optional[str] = None
     about_text: Optional[str]
     profile_pic_url: Optional[str]
     # Inline avatar thumbnail data: URI (ADR 0016) - plain passthrough.
@@ -82,6 +85,10 @@ class UserProfileUpdateIn(BaseModel):
     # ADR 0017: changing the handle. Format 400, taken/cooldown/grace_hold 409 -
     # each with a machine `reason` code. Untouched field => handle unchanged.
     username: Optional[str] = None
+    # ADR 0024: optional nickname. A *sent* field (present in model_fields_set)
+    # sets it - or, when "" / null, clears it; an absent field leaves it as is.
+    # Sanitised server-side (control/bidi/zero-width stripped, NFC, length cap).
+    display_name: Optional[str] = None
     # The avatar is set through the dedicated /users/me/avatar endpoints, not
     # here - a raw client-supplied URL/key can't be trusted or cleaned up.
 

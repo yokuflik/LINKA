@@ -48,6 +48,13 @@ USERNAME_SEARCH_RATE_WINDOW_SECONDS = int(os.environ.get("USERNAME_SEARCH_RATE_W
 # random digit suffix. Each attempt is one indexed existence check.
 USERNAME_GENERATE_ATTEMPTS = int(os.environ.get("USERNAME_GENERATE_ATTEMPTS", "6"))
 
+# --- Display name (ADR 0024) ---
+# Optional, free-form, multi-language nickname shown instead of the username.
+# No uniqueness / no index / not searchable. Sanitised as untrusted input
+# (control + bidi + zero-width stripped, NFC-normalised) then truncated to this
+# many code points. The DB column is String(80) to leave headroom.
+DISPLAY_NAME_MAX_LEN = int(os.environ.get("DISPLAY_NAME_MAX_LEN", "50"))
+
 __all__ = [
     "USERNAME_MIN_LEN",
     "USERNAME_MAX_LEN",
@@ -61,4 +68,5 @@ __all__ = [
     "USERNAME_SEARCH_RATE_MAX",
     "USERNAME_SEARCH_RATE_WINDOW_SECONDS",
     "USERNAME_GENERATE_ATTEMPTS",
+    "DISPLAY_NAME_MAX_LEN",
 ]

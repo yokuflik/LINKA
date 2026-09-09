@@ -7,6 +7,9 @@ const ChatSidebar = {
     chats: { type: Array, required: true },
     activeChatId: { default: null },
     chatDisplayName: { type: Function, required: true },
+    // Returns "@username" for a 1:1 chat whose peer has a display_name, else ''
+    // (ADR 0024). Keeps an impersonating nickname next to the real handle.
+    chatSubLabel: { type: Function, default: () => '' },
     formatChatTime: { type: Function, required: true },
     chatAvatarUrl: { type: Function, required: true },
     chatAvatarName: { type: Function, required: true },
@@ -59,6 +62,7 @@ const ChatSidebar = {
               </svg>
               <span class="shrink-0 text-[11px] text-slate-400">{{ formatChatTime(item.chat.last_message_at) }}</span>
             </div>
+            <div v-if="chatSubLabel(item.chat)" class="text-[11px] text-slate-400 font-mono truncate">{{ chatSubLabel(item.chat) }}</div>
             <div class="flex items-center gap-2">
               <div class="flex-1 min-w-0 text-xs truncate"
                    :class="typingLabelForChat(item.chat.id) ? 'text-teal-600 italic' : 'text-slate-500'">

@@ -93,7 +93,16 @@ async def update_my_profile(
         # Reason-coded (ADR 0017): format -> 400, taken/cooldown/grace_hold -> 409.
         await user_service.set_username(session, user_id, body.username)
 
-    user = await user_service.update_profile(session, user_id, about_text=body.about_text)
+    # ADR 0024: only touch display_name when the client actually sent the key
+    # (present => set/clear; absent => leave unchanged).
+    write_display_name = "display_name" in body.model_fields_set
+    user = await user_service.update_profile(
+        session,
+        user_id,
+        about_text=body.about_text,
+        display_name=body.display_name,
+        write_display_name=write_display_name,
+    )
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     await user_service.broadcast_profile_update(session, user_id)

@@ -25,7 +25,7 @@ function useAuth(ctx) {
   // Firebase confirmationResult between requestOtp() and verifyOtp() for the
   // real-SMS path (ADR 0009). null on the dev-whitelist path.
   let firebaseConfirmation = null;
-  const profileDraft = ref({ about_text: '', username: '' });
+  const profileDraft = ref({ about_text: '', username: '', display_name: '' });
   // Advisory username availability for the welcome form. status: '' | 'checking'
   // | 'ok' | 'bad'; reason is the backend machine code when status==='bad'.
   const usernameCheck = ref({ status: '', reason: '' });
@@ -214,6 +214,7 @@ function useAuth(ctx) {
         profileDraft.value = {
           about_text: '',
           username: (body.user && body.user.username) || '',
+          display_name: (body.user && body.user.display_name) || '',
         };
         usernameCheck.value = { status: '', reason: '' };
         authStage.value = 'welcome';
@@ -261,10 +262,13 @@ function useAuth(ctx) {
       const patch = {};
       const about = (profileDraft.value.about_text || '').trim();
       const uname = (profileDraft.value.username || '').trim();
+      const dname = (profileDraft.value.display_name || '').trim();
       if (about) patch.about_text = about;
       if (uname && uname !== ((currentUser.value && currentUser.value.username) || '')) {
         patch.username = uname;
       }
+      // Optional nickname (ADR 0024) - only send it when the user typed one.
+      if (dname) patch.display_name = dname;
       if (Object.keys(patch).length) {
         currentUser.value = await apiFetch('/users/me', {
           method: 'PATCH',
@@ -322,7 +326,7 @@ function useAuth(ctx) {
     abandonAuthRetry();
     authStage.value = 'phone';
     otpCode.value = '';
-    profileDraft.value = { about_text: '', username: '' };
+    profileDraft.value = { about_text: '', username: '', display_name: '' };
     usernameCheck.value = { status: '', reason: '' };
     if (_usernameCheckTimer) clearTimeout(_usernameCheckTimer);
     clearAvatar();

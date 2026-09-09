@@ -66,20 +66,22 @@ TEXT_MESSAGE_TYPE = 1
 # These phone numbers are what you type into the PoC's login screen. The OTP
 # still prints to the server console like any other login - seeded users
 # aren't special.
-# (phone number, username). Phone numbers "1".."10" are the shape the PoC's
-# login screen accepts. Usernames must match config.USERNAME_REGEX
-# (^[a-z][a-z0-9_]{2,31}$).
+# (phone number, username, display_name). Phone numbers "1".."10" are the shape
+# the PoC's login screen accepts. Usernames must match config.USERNAME_REGEX
+# (^[a-z][a-z0-9_]{2,31}$). display_name is free-form (any language / emoji) or
+# None - several users are left without one to exercise the
+# display_name || username || phone_number fallback (ADR 0024).
 USERS = [
-    ("1", "daniel_shapira"),
-    ("2", "noa_ben_ami"),
-    ("3", "avraham_dahan"),
-    ("4", "maya_friedman"),
-    ("5", "yonatan_regev"),
-    ("6", "shira_barkat"),
-    ("7", "omer_shalev"),
-    ("8", "tamar_nachmani"),
-    ("9", "eitan_rosenberg"),
-    ("10", "roni_halevi"),
+    ("1", "daniel_shapira", "דניאל"),
+    ("2", "noa_ben_ami", "Noa 🌿"),
+    ("3", "avraham_dahan", None),
+    ("4", "maya_friedman", "מאיה פרידמן"),
+    ("5", "yonatan_regev", None),
+    ("6", "shira_barkat", "شيرا"),
+    ("7", "omer_shalev", "オメル"),
+    ("8", "tamar_nachmani", None),
+    ("9", "eitan_rosenberg", "Eitan R."),
+    ("10", "roni_halevi", None),
 ]
 
 # Indices into USERS. Deliberately not every possible pair - a dataset where
@@ -159,12 +161,17 @@ async def _ensure_users(session) -> list[User]:
     manual testing. An existing user's auto-assigned username is left alone.
     """
     users = []
-    for phone_number, username in USERS:
+    for phone_number, username, display_name in USERS:
         user = await get_user_by_phone(session, phone_number)
         if user is None:
             user = await create_user(
                 session, user_id=next_id(), phone_number=phone_number, username=username
             )
+            if display_name is not None:
+                user = await update_user_profile(
+                    session, user_id=user.id,
+                    display_name=display_name, write_display_name=True,
+                )
             print(f"  created user {username} ({phone_number})")
         users.append(user)
     return users
@@ -459,7 +466,7 @@ async def main(messages_per_chat: int, days: int) -> None:
 
     print(f"\nDone: {len(users)} users, {len(chats)} chats, {total_messages} messages inserted.")
     print("Log in from the PoC with any of these numbers (OTP prints to the server console):")
-    for phone_number, username in USERS:
+    for phone_number, username, _display_name in USERS:
         print(f"  {phone_number}  {username}")
 
 

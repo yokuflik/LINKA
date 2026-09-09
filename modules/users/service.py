@@ -1,5 +1,6 @@
 import random
 import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -160,6 +161,35 @@ async def set_username(session: AsyncSession, user_id: int, raw: str) -> User:
     return updated
 
 
+# Code points stripped from a display name before storing (ADR 0024):
+# C0/C1 control ranges, Unicode bidi embedding/override + isolates, zero-width
+# joiners/non-joiners/space, BOM. Kept out of the name so it can't be used to
+# spoof a rendered identity (RTL override attacks) or pad an invisible string.
+_DISPLAY_NAME_STRIP_CODEPOINTS = (
+    list(range(0x00, 0x20)) + [0x7F]           # C0 controls + DEL
+    + list(range(0x80, 0xA0))                  # C1 controls
+    + [0x200B, 0x200C, 0x200D, 0x200E, 0x200F] # ZWSP ZWNJ ZWJ LRM RLM
+    + [0x202A, 0x202B, 0x202C, 0x202D, 0x202E] # LRE RLE PDF LRO RLO
+    + [0x2060, 0x2066, 0x2067, 0x2068, 0x2069] # WJ + bidi isolates
+    + [0xFEFF]                                 # BOM / ZWNBSP
+)
+_DISPLAY_NAME_STRIP_TABLE = {cp: None for cp in _DISPLAY_NAME_STRIP_CODEPOINTS}
+
+
+def sanitize_display_name(raw: Optional[str]) -> Optional[str]:
+    """Clean an untrusted display name (ADR 0024). Strips control / bidi /
+    zero-width code points, NFC-normalises, trims surrounding whitespace and
+    truncates to ``config.DISPLAY_NAME_MAX_LEN`` code points. An empty result
+    (or ``None`` in) returns ``None`` - that's how the nickname is cleared."""
+    if raw is None:
+        return None
+    cleaned = raw.translate(_DISPLAY_NAME_STRIP_TABLE)
+    cleaned = unicodedata.normalize("NFC", cleaned).strip()
+    if not cleaned:
+        return None
+    return cleaned[: config.DISPLAY_NAME_MAX_LEN]
+
+
 async def get_profile(session: AsyncSession, user_id: int) -> Optional[User]:
     return await get_user_by_id(session, user_id)
 
@@ -183,12 +213,18 @@ async def update_profile(
     user_id: int,
     about_text: Optional[str] = None,
     profile_pic_url: Optional[str] = None,
+    display_name: Optional[str] = None,
+    write_display_name: bool = False,
 ) -> Optional[User]:
+    """``write_display_name=True`` writes ``display_name`` (after sanitisation,
+    ADR 0024) even when the sanitised value is ``None`` - that clears it."""
     return await update_user_profile(
         session,
         user_id=user_id,
         about_text=about_text,
         profile_pic_url=profile_pic_url,
+        display_name=sanitize_display_name(display_name) if write_display_name else None,
+        write_display_name=write_display_name,
     )
 
 
@@ -219,6 +255,7 @@ async def broadcast_profile_update(session: AsyncSession, user_id: int) -> None:
         "event": "profile_updated",
         "user_id": str(user.id),
         "username": user.username,
+        "display_name": user.display_name,
         "about_text": user.about_text,
         "profile_pic_url": resolved_pic,
         "profile_pic_preview": user.profile_pic_preview,

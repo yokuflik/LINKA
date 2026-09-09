@@ -30,6 +30,13 @@ class User(Base):
     # (ADR 0023): up to N changes per rolling USERNAME_CHANGE_WINDOW_DAYS.
     username_change_log = Column(JSONB, nullable=True)
 
+    # Optional, free-form, multi-language nickname (ADR 0024). No uniqueness,
+    # no index, never searchable. Shown instead of `username` when set
+    # (fallback: display_name || username || phone_number). Sanitised in the
+    # service layer (control/bidi/zero-width stripped, NFC, capped at
+    # config.DISPLAY_NAME_MAX_LEN). Column is 80 to leave headroom over the cap.
+    display_name = Column(String(80), nullable=True)
+
     # Short bio or status text
     about_text = Column(String(150), nullable=True)
 

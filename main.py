@@ -79,7 +79,7 @@ async def lifespan(app: FastAPI):
     heartbeat_task = asyncio.create_task(_routing_heartbeat())
 
     # Poll worker that fires scheduled messages at their `scheduled_for` time
-    # (ADR 0026). Postgres is the source of truth; it reconciles the Redis
+    # (ADR 0031). Postgres is the source of truth; it reconciles the Redis
     # due-set on startup and periodically. One task per process.
     scheduled_task = asyncio.create_task(scheduled_worker.run_forever())
 

@@ -1,5 +1,5 @@
 """
-Poll worker that fires due scheduled messages (ADR 0026,
+Poll worker that fires due scheduled messages (ADR 0031,
 realtime/fanout/scheduled_worker.py).
 
 `drain_once` claims due ids off the Redis ZSET, re-checks participation, and

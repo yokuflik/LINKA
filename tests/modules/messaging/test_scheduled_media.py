@@ -1,5 +1,5 @@
 """
-Media ref-count bookkeeping for scheduled messages (ADR 0026 / ADR 0010):
+Media ref-count bookkeeping for scheduled messages (ADR 0031 / ADR 0010):
 scheduling a media message pins the blob with +1 ref so a concurrent purge
 can't delete the bytes; cancelling releases it, and the last release deletes
 the object + blob row.

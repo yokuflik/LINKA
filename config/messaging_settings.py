@@ -100,7 +100,7 @@ CHAT_INSTANCE_TTL_SECONDS = int(os.environ.get("CHAT_INSTANCE_TTL_SECONDS", "90"
 ROUTING_HEARTBEAT_INTERVAL_SECONDS = int(os.environ.get("ROUTING_HEARTBEAT_INTERVAL_SECONDS", "30"))
 
 
-# --- Scheduled messages (ADR 0026) ---
+# --- Scheduled messages (ADR 0031) ---
 # A scheduled message lives in the `scheduled_messages` table and is turned
 # into a real message at `scheduled_for` by an in-process poll worker
 # (realtime/fanout/scheduled_worker.py) that re-uses the normal async send

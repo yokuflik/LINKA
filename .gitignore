@@ -41,7 +41,13 @@ env/
 *.swp
 *.swo
 *~
-*.md
+
+# Transient scratch notes only (docs/ and .claude_docs/ ARE tracked)
+/scratch/
+*.local.md
+
+# Rust ID service build output
+id_service/target/
 
 # Testing & Coverage
 .pytest_cache/

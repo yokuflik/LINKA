@@ -85,7 +85,7 @@ class MessageReceiptsOut(BaseModel):
     pending: list[IdStr] = []
 
 
-# --- Scheduled messages (ADR 0026) ---
+# --- Scheduled messages (ADR 0031) ---
 
 class ScheduledMediaIn(BaseModel):
     # Storage key the client got from an upload ticket and already PUT bytes to.

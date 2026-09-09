@@ -101,7 +101,8 @@ now also gates the WS handshake. Full detail:
 - **OTP is an open stub**: any 6-digit code verifies once one has been
   requested (`modules/auth/service.py` `verify_otp_and_login`, the
   `# or stored_code != code` line). No SMS. Close this before any real users.
-- MinIO on the app box (no S3 budget). Switch = blank `S3_ENDPOINT_URL` +
-  real keys/region; frees ~120 MB. App→MinIO calls hairpin through Caddy
-  (few, fine at this scale).
+- **Live deploy uses real AWS S3, not MinIO (ADR 0008)** — `S3_ENDPOINT_URL`
+  blank, real keys/region/bucket. MinIO is local-dev / CI only (`test_minio`).
+  The historical "MinIO on the app box" plan (ADR 0007) freed ~120 MB when
+  dropped.
 - `mem_limit` ceilings sum > 1 GB; swap covers the overlap.

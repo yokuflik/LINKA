@@ -1,5 +1,5 @@
 """
-REST surface for scheduled messages (ADR 0026):
+REST surface for scheduled messages (ADR 0031):
   POST   /chats/{chat_id}/scheduled-messages
   GET    /scheduled-messages
   PATCH  /scheduled-messages/{id}

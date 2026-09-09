@@ -134,7 +134,7 @@ class Message(Base):
 
 
 class ScheduledMessageStatus(enum.IntEnum):
-    """Lifecycle of a ScheduledMessage row (ADR 0026)."""
+    """Lifecycle of a ScheduledMessage row (ADR 0031)."""
     PENDING = 0
     SENT = 1
     CANCELLED = 2
@@ -143,7 +143,7 @@ class ScheduledMessageStatus(enum.IntEnum):
 
 class ScheduledMessage(Base):
     """
-    A message the user composed now to be delivered at `scheduled_for` (ADR 0026).
+    A message the user composed now to be delivered at `scheduled_for` (ADR 0031).
 
     Deliberately NOT a `messages` row and NOT partitioned: it is not a real
     message yet, has no Snowflake-id/created_at partition semantics, and is

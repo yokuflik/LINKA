@@ -145,7 +145,7 @@ async def create_media_upload_ticket(
     )
 
 
-# --- Scheduled messages (ADR 0026) ---
+# --- Scheduled messages (ADR 0031) ---
 # Management state (like chat pin/mute), so REST not WS. Two mount points: the
 # create route is chat-scoped, the rest key off the scheduled-message id.
 

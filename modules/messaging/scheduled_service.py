@@ -1,5 +1,5 @@
 """
-Service layer for scheduled messages (ADR 0026).
+Service layer for scheduled messages (ADR 0031).
 
 Thin business logic over `crud_scheduled`, called by the REST router in
 `modules/messaging/router.py`. The actual delivery at fire time is the poll
@@ -90,7 +90,7 @@ async def _ref_media_for_schedule(
     session: AsyncSession, message_type: int, media: Optional[dict]
 ) -> Optional[dict]:
     """
-    Lenient media capture at schedule time (ADR 0026). The bytes were just PUT,
+    Lenient media capture at schedule time (ADR 0031). The bytes were just PUT,
     so the authoritative HEAD is deferred to fire time; here we only confirm the
     key maps to a `media_blob` row and pin it with +1 ref so a concurrent purge
     of an identical earlier message can't delete the object before this fires.

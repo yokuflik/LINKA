@@ -26,17 +26,17 @@ class MessageNotFoundError(Exception):
 
 
 class ScheduledTimeInvalidError(Exception):
-    """`scheduled_for` is outside [now + MIN_LEAD, now + MAX_LEAD] (ADR 0026)."""
+    """`scheduled_for` is outside [now + MIN_LEAD, now + MAX_LEAD] (ADR 0031)."""
     pass
 
 
 class ScheduledLimitExceededError(Exception):
-    """The user already has SCHEDULED_MAX_PENDING_PER_USER pending rows (ADR 0026)."""
+    """The user already has SCHEDULED_MAX_PENDING_PER_USER pending rows (ADR 0031)."""
     pass
 
 
 class ScheduledMessageNotFoundError(Exception):
-    """No pending scheduled message with this id owned by the caller (ADR 0026)."""
+    """No pending scheduled message with this id owned by the caller (ADR 0031)."""
     pass
 
 

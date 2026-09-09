@@ -1,5 +1,5 @@
 """
-CRUD for `scheduled_messages` (ADR 0026).
+CRUD for `scheduled_messages` (ADR 0031).
 
 Low-volume, unpartitioned table. Postgres is the source of truth for the poll
 worker; the Redis `scheduled_messages:due` ZSET is only a fast index rebuilt by

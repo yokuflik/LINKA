@@ -1,5 +1,5 @@
 """
-Scheduled-messages service layer (ADR 0026): schedule / list / reschedule /
+Scheduled-messages service layer (ADR 0031): schedule / list / reschedule /
 cancel, plus lead-time + pending-limit validation, the participant check, and
 the schedule-time media ref/deref bookkeeping.
 """

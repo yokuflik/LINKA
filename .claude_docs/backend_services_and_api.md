@@ -104,7 +104,7 @@ now takes `request: Request`); `modules/chats/router.py::list_my_chats` and
 - **Server only acts on mute in one place**: `modules/messaging/send.py::fan_out_message` skips offline push for recipients with `muted_until > now()`. Everything else (hiding badges/notifications) is the client's job.
 - Multi-device sync via `chat_mute_changed` on `user_events:{user_id}` (like `chat_pin_changed`). No system message.
 
-## Scheduled messages (ADR 0026)
+## Scheduled messages (ADR 0031)
 - Management state (like chat pin/mute), so **REST not WS**. Routes in `modules/messaging/router.py`, thin over `modules/messaging/scheduled_service.py`:
   - `POST /chats/{chat_id}/scheduled-messages` — body `{client_message_id, scheduled_for, message_type?, content?, media?{key,name?,duration_seconds?,blur_hash?}, reply_to_message_id?}` → `ScheduledMessageOut` (201).
   - `GET /scheduled-messages?chat_id=` — pending only, `scheduled_for` asc → `[ScheduledMessageOut]`.

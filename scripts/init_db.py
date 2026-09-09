@@ -144,7 +144,7 @@ async def main(drop: bool) -> None:
                 # Optional free-form display name (ADR 0024). No uniqueness/index.
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(80)",
                 # Released-username grace hold (ADR 0017).
-                # Scheduled messages (ADR 0026). Unpartitioned, low-volume.
+                # Scheduled messages (ADR 0031). Unpartitioned, low-volume.
                 # Spelled out so an already-initialised dev DB picks it up
                 # without a --drop; a deployed DB runs this once by hand.
                 "CREATE TABLE IF NOT EXISTS scheduled_messages ("

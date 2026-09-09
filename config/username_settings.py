@@ -24,11 +24,14 @@ USERNAME_RESERVED = set(
     ).split(",")
     if x.strip()
 )
-# A user-initiated username change is refused (`cooldown`) until this many days
-# after the last change. The initial auto-assignment at signup does NOT start
-# this clock (users.username_changed_at stays NULL), so the first chosen
-# username is free.
-USERNAME_CHANGE_COOLDOWN_DAYS = int(os.environ.get("USERNAME_CHANGE_COOLDOWN_DAYS", "14"))
+# Username-change quota (ADR 0023, supersedes the ADR 0017 single cooldown):
+# a user may change their handle up to USERNAME_CHANGE_MAX_PER_WINDOW times per
+# rolling USERNAME_CHANGE_WINDOW_DAYS. The next attempt is refused (`cooldown`
+# reason code, kept for client compatibility) until the oldest of those changes
+# ages out of the window. The initial auto-assignment at signup does NOT count
+# (users.username_change_log stays empty), so the first chosen username is free.
+USERNAME_CHANGE_WINDOW_DAYS = int(os.environ.get("USERNAME_CHANGE_WINDOW_DAYS", "14"))
+USERNAME_CHANGE_MAX_PER_WINDOW = int(os.environ.get("USERNAME_CHANGE_MAX_PER_WINDOW", "3"))
 # When a username is released (its owner changed it), it is held in
 # reserved_usernames for this many days: nobody else may take it (`grace_hold`),
 # the original owner may reclaim it. Anti-impersonation.
@@ -50,7 +53,8 @@ __all__ = [
     "USERNAME_MAX_LEN",
     "USERNAME_REGEX",
     "USERNAME_RESERVED",
-    "USERNAME_CHANGE_COOLDOWN_DAYS",
+    "USERNAME_CHANGE_WINDOW_DAYS",
+    "USERNAME_CHANGE_MAX_PER_WINDOW",
     "USERNAME_RESERVED_GRACE_DAYS",
     "USERNAME_CHECK_RATE_MAX",
     "USERNAME_CHECK_RATE_WINDOW_SECONDS",

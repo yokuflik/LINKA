@@ -1,6 +1,6 @@
 import random
 import re
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -81,21 +81,30 @@ async def generate_free_username(session: AsyncSession) -> str:
     return f"user_{tail}"
 
 
-async def _cooldown_active(user: User) -> Optional[str]:
-    """Return an ISO timestamp of when the change cooldown lifts, or None if a
-    change is allowed now. The initial auto-assignment leaves
-    ``username_changed_at`` NULL, so the first user-chosen change is free."""
-    changed_at = user.username_changed_at
-    if changed_at is None:
+async def _change_quota_exceeded(user: User) -> Optional[str]:
+    """Return an ISO timestamp of when the username-change quota frees up, or
+    None if a change is allowed now (ADR 0023). The first
+    ``config.USERNAME_CHANGE_MAX_PER_WINDOW`` user-initiated changes in any
+    rolling ``config.USERNAME_CHANGE_WINDOW_DAYS`` are free; the initial
+    auto-assignment leaves ``username_change_log`` empty and never counts."""
+    log = user.username_change_log or []
+    if not log:
         return None
-    if changed_at.tzinfo is None:
-        changed_at = changed_at.replace(tzinfo=timezone.utc)
-    ready_at = changed_at + timedelta(days=config.USERNAME_CHANGE_COOLDOWN_DAYS)
-    from datetime import datetime
-
-    if datetime.now(timezone.utc) >= ready_at:
+    window = timedelta(days=config.USERNAME_CHANGE_WINDOW_DAYS)
+    now = datetime.now(timezone.utc)
+    recent = []
+    for raw_ts in log:
+        try:
+            ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if now - ts < window:
+            recent.append(ts)
+    if len(recent) < config.USERNAME_CHANGE_MAX_PER_WINDOW:
         return None
-    return ready_at.isoformat()
+    return (min(recent) + window).isoformat()
 
 
 async def check_username_available(session: AsyncSession, user_id: int, raw: str) -> dict:
@@ -110,7 +119,7 @@ async def check_username_available(session: AsyncSession, user_id: int, raw: str
     if user is not None and user.username == norm:
         return {"available": True, "reason": None}
 
-    if user is not None and await _cooldown_active(user) is not None:
+    if user is not None and await _change_quota_exceeded(user) is not None:
         return {"available": False, "reason": "cooldown"}
 
     if not await username_is_free(session, norm, for_user_id=user_id):
@@ -122,8 +131,8 @@ async def check_username_available(session: AsyncSession, user_id: int, raw: str
 
 
 async def set_username(session: AsyncSession, user_id: int, raw: str) -> User:
-    """Change a user's handle. Enforces format, the change cooldown, and the
-    grace hold; drops the old handle into ``reserved_usernames``. Raises
+    """Change a user's handle. Enforces format, the change quota (ADR 0023),
+    and the grace hold; drops the old handle into ``reserved_usernames``. Raises
     ``UsernameError`` (reason-coded) on any rejection."""
     norm = validate_username_format(raw)
 
@@ -134,8 +143,8 @@ async def set_username(session: AsyncSession, user_id: int, raw: str) -> User:
     if user.username == norm:
         return user
 
-    cooldown_until = await _cooldown_active(user)
-    if cooldown_until is not None:
+    quota_until = await _change_quota_exceeded(user)
+    if quota_until is not None:
         raise UsernameError("cooldown", http_status=409)
 
     if not await username_is_free(session, norm, for_user_id=user_id):

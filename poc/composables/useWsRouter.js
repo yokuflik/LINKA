@@ -259,9 +259,20 @@ function useWsRouter(ctx) {
         profile_pic_url: msg.profile_pic_url,
         profile_pic_preview: msg.profile_pic_preview || null,
       };
-      // A private chat's sidebar/header name+avatar are resolved off this same
-      // cache, so reassigning the user object above is enough - nothing else
-      // to touch. Group member rows in groupChatMembers hold their own copy:
+      // The private-chat sidebar row + header title render a *denormalised
+      // string* (privateChatTitles), cached on chat open - not recomputed from
+      // userById - so a peer's username change won't show until reload unless
+      // we refresh it here. The fan-out is per shared chat, so msg.chat_id is
+      // the private chat and privateChatOtherUserId tells us this user is its
+      // peer.
+      if (
+        ctx.privateChatTitles &&
+        String(ctx.privateChatOtherUserId.value[msg.chat_id]) === String(msg.user_id)
+      ) {
+        const u = ctx.userById.value[msg.user_id] || {};
+        ctx.privateChatTitles.value[msg.chat_id] = msg.username || u.phone_number || '';
+      }
+      // Group member rows in groupChatMembers hold their own copy:
       const members = ctx.groupChatMembers.value[msg.chat_id];
       if (members) {
         const row = members.find((m) => m.user.id === msg.user_id);

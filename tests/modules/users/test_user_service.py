@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import config
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -120,6 +121,22 @@ async def test_set_username_changes_and_reserves_old_handle(db_session: AsyncSes
     assert exc.value.http_status == 409
 
 
+async def test_set_username_can_reclaim_own_released_handle_after_cycling(db_session: AsyncSession):
+    # A->B->A->C: re-releasing "B" must not collide on the reserved_usernames
+    # PK, and reclaiming "A" (held in our own grace window) must succeed - not
+    # surface as a bogus "taken".
+    await create_user(db_session, user_id=1, phone_number="+972501", username="handle_aaa_11")
+
+    await user_service.set_username(db_session, 1, "handle_bbb_22")
+    reclaimed = await user_service.set_username(db_session, 1, "handle_aaa_11")
+    assert reclaimed.username == "handle_aaa_11"
+    # advisory check agrees it was free for us
+    check = await user_service.check_username_available(db_session, 1, "handle_bbb_22")
+    assert check["available"] is True  # our own released handle, reclaimable
+    moved = await user_service.set_username(db_session, 1, "handle_ccc_33")
+    assert moved.username == "handle_ccc_33"
+
+
 async def test_set_username_rejects_a_taken_handle(db_session: AsyncSession):
     await create_user(db_session, user_id=1, phone_number="+972501", username="alpha_one_123")
     await create_user(db_session, user_id=2, phone_number="+972502", username="beta_two_456")
@@ -128,26 +145,47 @@ async def test_set_username_rejects_a_taken_handle(db_session: AsyncSession):
     assert exc.value.reason == "taken"
 
 
-async def test_set_username_enforces_the_change_cooldown(db_session: AsyncSession):
+async def test_set_username_enforces_the_change_quota(db_session: AsyncSession):
+    # ADR 0023: up to USERNAME_CHANGE_MAX_PER_WINDOW (3) changes per rolling
+    # window; the 4th inside the window is rejected.
     await create_user(db_session, user_id=1, phone_number="+972501", username="alpha_one_123")
-    await db_session.execute(
-        update(User)
-        .where(User.id == 1)
-        .values(username_changed_at=datetime.now(timezone.utc) - timedelta(days=1))
-    )
-    await db_session.commit()
+
+    await user_service.set_username(db_session, 1, "handle_two_222")
+    await user_service.set_username(db_session, 1, "handle_three_33")
+    updated = await user_service.set_username(db_session, 1, "handle_four_444")
+    assert updated.username == "handle_four_444"
 
     with pytest.raises(user_service.UsernameError) as exc:
-        await user_service.set_username(db_session, 1, "delta_late_222")
+        await user_service.set_username(db_session, 1, "handle_five_555")
     assert exc.value.reason == "cooldown"
     assert exc.value.http_status == 409
 
-    check = await user_service.check_username_available(db_session, 1, "delta_late_222")
+    check = await user_service.check_username_available(db_session, 1, "handle_five_555")
     assert check == {"available": False, "reason": "cooldown"}
+
+    # The change log never grows past the cap.
+    user = await user_service.get_user_by_id(db_session, 1)
+    assert len(user.username_change_log) == config.USERNAME_CHANGE_MAX_PER_WINDOW
+
+
+async def test_set_username_quota_frees_up_after_the_window(db_session: AsyncSession):
+    # Three changes all timestamped just outside the window -> a fresh change
+    # is allowed again.
+    await create_user(db_session, user_id=1, phone_number="+972501", username="alpha_one_123")
+    stale = (
+        datetime.now(timezone.utc) - timedelta(days=config.USERNAME_CHANGE_WINDOW_DAYS + 1)
+    ).isoformat()
+    await db_session.execute(
+        update(User).where(User.id == 1).values(username_change_log=[stale, stale, stale])
+    )
+    await db_session.commit()
+
+    updated = await user_service.set_username(db_session, 1, "fresh_start_99")
+    assert updated.username == "fresh_start_99"
 
 
 async def test_set_username_first_user_change_is_free(db_session: AsyncSession):
-    # Auto-assigned handle -> username_changed_at is NULL -> first change allowed.
+    # Auto-assigned handle -> username_change_log is NULL -> first change allowed.
     await create_user(db_session, user_id=1, phone_number="+972501", username="alpha_one_123")
     updated = await user_service.set_username(db_session, 1, "epsilon_ok_333")
     assert updated.username == "epsilon_ok_333"

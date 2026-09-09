@@ -1,4 +1,5 @@
 from sqlalchemy import Column, BigInteger, String, Text, DateTime
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from infra.db.base import Base
 
@@ -19,9 +20,15 @@ class User(Base):
     username = Column(String(32), unique=True, index=True, nullable=False)
 
     # Timestamp of the last *user-initiated* username change. NULL until the
-    # user changes their auto-assigned handle themselves; drives the change
-    # cooldown (config.USERNAME_CHANGE_COOLDOWN_DAYS).
+    # user changes their auto-assigned handle themselves. Kept for the
+    # released-handle grace-hold reasoning; no longer the quota authority.
     username_changed_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Rolling log of user-initiated username-change timestamps (ISO-8601 UTC
+    # strings, newest last), capped at config.USERNAME_CHANGE_MAX_PER_WINDOW
+    # entries. NULL/absent = never changed. Authority for the change quota
+    # (ADR 0023): up to N changes per rolling USERNAME_CHANGE_WINDOW_DAYS.
+    username_change_log = Column(JSONB, nullable=True)
 
     # Short bio or status text
     about_text = Column(String(150), nullable=True)

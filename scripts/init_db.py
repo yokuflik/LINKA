@@ -121,6 +121,8 @@ async def main(drop: bool) -> None:
                 # deterministic unique handle, then enforce UNIQUE + NOT NULL.
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(32)",
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS username_changed_at TIMESTAMPTZ",
+                # Rolling username-change quota log (ADR 0023).
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS username_change_log JSONB",
                 "UPDATE users SET username = 'user_' || id WHERE username IS NULL",
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)",
                 "ALTER TABLE users ALTER COLUMN username SET NOT NULL",

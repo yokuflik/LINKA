@@ -196,7 +196,7 @@ function useProfileEdit(ctx) {
           must_start_letter: 'Username must start with a letter',
           reserved: 'That username is reserved', taken: 'That username is already taken',
           grace_hold: 'That username was recently released and is not available yet',
-          cooldown: 'You changed your username recently - try again later',
+          cooldown: "You've changed your username a few times recently - try again later",
         };
         profileError.value = map[reason] || ('Username: ' + reason.replace(/_/g, ' '));
         profileUsernameCheck.value = { status: 'bad', reason };

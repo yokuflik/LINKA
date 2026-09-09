@@ -1,7 +1,9 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func
+from sqlalchemy import select, update, delete, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from typing import Optional
+from datetime import datetime, timedelta, timezone
 import logging
 
 from modules.users.models import User
@@ -125,14 +127,19 @@ async def set_username(
     Change a user's username.
 
     ``is_initial=True`` is the signup auto-assignment path: it does NOT stamp
-    ``username_changed_at`` (so the first user-chosen change is free) and does
-    NOT reserve any old handle. A normal change stamps ``username_changed_at``
-    and drops the previous handle into ``reserved_usernames`` for the grace
-    window.
+    ``username_changed_at`` / append to ``username_change_log`` (so the first
+    user-chosen change is free) and does NOT reserve any old handle. A normal
+    change stamps ``username_changed_at``, appends ``now()`` to the capped
+    ``username_change_log`` ring (ADR 0023 quota), and drops the previous handle
+    into ``reserved_usernames`` for the grace window.
 
     The DB unique index is the authority: a lost race raises UsernameTakenError.
     """
-    from config import USERNAME_RESERVED_GRACE_DAYS
+    from config import (
+        USERNAME_RESERVED_GRACE_DAYS,
+        USERNAME_CHANGE_WINDOW_DAYS,
+        USERNAME_CHANGE_MAX_PER_WINDOW,
+    )
 
     norm = _normalize_username(username)
     user = await get_user_by_id(session, user_id)
@@ -144,18 +151,58 @@ async def set_username(
         return user
 
     if not is_initial and old_username:
-        session.add(
-            ReservedUsername(
-                username=old_username,
-                reserved_for_user_id=user_id,
-                released_at=func.now(),
-                expires_at=func.now() + func.make_interval(0, 0, 0, USERNAME_RESERVED_GRACE_DAYS),
+        # Release the old handle into a grace hold. Upsert, not a plain insert:
+        # a user who cycles handles (A->B->A->C) re-releases "A" and would
+        # otherwise hit the reserved_usernames PRIMARY KEY, aborting the whole
+        # change and surfacing as a bogus "taken" error.
+        release = pg_insert(ReservedUsername).values(
+            username=old_username,
+            reserved_for_user_id=user_id,
+            released_at=func.now(),
+            expires_at=func.now() + func.make_interval(0, 0, 0, USERNAME_RESERVED_GRACE_DAYS),
+        )
+        await session.execute(
+            release.on_conflict_do_update(
+                index_elements=["username"],
+                set_={
+                    "reserved_for_user_id": user_id,
+                    "released_at": func.now(),
+                    "expires_at": func.now()
+                    + func.make_interval(0, 0, 0, USERNAME_RESERVED_GRACE_DAYS),
+                },
+            )
+        )
+
+    # Reclaiming a handle currently sitting in our OWN grace hold: clear that
+    # row so it isn't left as a stale reservation against ourselves. (A hold
+    # owned by another user was already rejected upstream as `grace_hold`.)
+    if not is_initial:
+        await session.execute(
+            delete(ReservedUsername).where(
+                ReservedUsername.username == norm,
+                ReservedUsername.reserved_for_user_id == user_id,
             )
         )
 
     values = {"username": norm}
     if not is_initial:
         values["username_changed_at"] = func.now()
+        # Maintain the capped quota ring (ADR 0023): keep only entries inside
+        # the rolling window, append this change, cap at the max.
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=USERNAME_CHANGE_WINDOW_DAYS)
+        log = []
+        for raw_ts in (user.username_change_log or []):
+            try:
+                ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts > cutoff:
+                log.append(ts.astimezone(timezone.utc).isoformat())
+        log.append(now.isoformat())
+        values["username_change_log"] = log[-USERNAME_CHANGE_MAX_PER_WINDOW:]
 
     stmt = update(User).where(User.id == user_id).values(**values).returning(User)
     try:

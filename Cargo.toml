@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/common", "crates/ws_gateway", "id_service"]
+
+[workspace.package]
+edition = "2021"
+license = "proprietary"
+
+[workspace.dependencies]
+tokio = { version = "1.40", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "aio", "script", "keep-alive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+anyhow = "1"
+thiserror = "1"
+
+# Size-first release build. LTO=fat + codegen-units=1 needs >1GB RAM to link,
+# so the production image is built off-host (see RUST_WS_GATEWAY_PLAN.md step 7).
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+overflow-checks = false

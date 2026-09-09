@@ -88,7 +88,7 @@
 <script src="components/ForwardModal.js?v=2026.09.08-1"></script>
 <script src="components/MessageDetailsModal.js?v=2026.09.08-1"></script>
 <script src="components/MembersModal.js?v=2026.09.08-1"></script>
-<script src="components/ChatProfileModal.js?v=2026.09.08-1"></script>
+<script src="components/ChatProfileModal.js?v=2026.09.10-2"></script>
 <script src="components/ProfileEditModal.js?v=2026.09.08-1"></script>
 <script src="components/SettingsModal.js?v=2026.09.08-1"></script>
 <script src="components/NewChatModal.js?v=2026.09.08-1"></script>
@@ -510,6 +510,7 @@ const app = createApp({
       @message="messageFromProfile"
       @call="callFromProfile"
       @open-member-options="openMemberOptions"
+      @open-member-profile="openMemberProfile"
       @member-option-make-or-remove-admin="memberOptionMakeOrRemoveAdmin"
       @member-option-remove-from-group="memberOptionRemoveFromGroup"
       @start-leave-group="startLeaveGroup"
@@ -519,6 +520,20 @@ const app = createApp({
       @add-member-search-input="onAddMemberSearchInput"
       @add-member-search="runAddMemberSearch"
       @add-member="addMemberToActiveGroup" />
+
+    <!-- Same "Contact info" page a private-chat header opens, for a tapped group member. -->
+    <ChatProfileModal v-if="memberProfile"
+      :isGroup="false"
+      :title="memberDisplayName(memberProfile)"
+      :peerUser="memberProfile.user"
+      :aboutText="memberProfile.user.about_text || ''"
+      :avatarUrl="userAvatarUrl(memberProfile.user)"
+      :avatarPreview="userAvatarPreview(memberProfile.user)"
+      :avatarName="memberDisplayName(memberProfile)"
+      :avatarColorKey="memberProfile.user.id"
+      @close="closeMemberProfile"
+      @message="messageMemberFromProfile"
+      @call="callFromProfile" />
 
     <ProfileEditModal v-if="showProfileModal"
       heading="Edit your profile"

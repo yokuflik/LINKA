@@ -9,8 +9,9 @@ production design.
 |---|---|
 | `../Dockerfile` | multi-stage image for the FastAPI app |
 | `../.dockerignore` | keeps the build context small |
-| `../docker-compose.prod.yml` | full stack: `app` + `caddy` + `db` + `redis` + `minio` + `id_service` |
+| `../docker-compose.prod.yml` | full stack: `app` + `caddy` + `db` + `redis` + `minio` + `id_service` + `ws_gateway` |
 | `../id_service/` | Rust Snowflake ID gRPC service (ADR 0011); `id_service/Dockerfile` builds it |
+| `ws_gateway.Dockerfile` | Rust WebSocket gateway (ADR 0033); static musl → distroless. **Build off-host** (see Updating) |
 | `env.production.example` | copy to `../.env`, fill every `<CHANGE ME>` |
 | `Caddyfile` | reverse proxy: API + WS + static PoC + MinIO |
 | `postgres.prod.conf` | Postgres tuned for a 1 GB box |
@@ -24,6 +25,8 @@ production design.
    sudo mkswap /swapfile && sudo swapon /swapfile
    echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
    ```
+   The `ws_gateway` image is **never built on this box** (see Updating); 2 G of
+   swap is still the blanket backstop for the runtime overlap.
 2. **Docker + compose plugin:**
    ```bash
    curl -fsSL https://get.docker.com | sh
@@ -162,6 +165,40 @@ tree, ~15-20 min, swap-heavy). Prefer `docker build -f id_service/Dockerfile
 -t linka-id-service:latest .` on a bigger machine + `docker save | ssh … docker
 load`, then `up -d` on the host.
 
+### Rust `ws_gateway` (ADR 0033) — always built off-host
+
+`lto=fat` + `codegen-units=1` needs >1 GB to link and OOMs this box. Build on a
+dev machine or CI and push to a registry:
+
+```bash
+# dev machine (any arch — buildx cross-compiles to amd64):
+docker buildx build --platform linux/amd64 \
+  -f deploy/ws_gateway.Dockerfile \
+  -t <registry>/linka-ws-gateway:$(git rev-parse --short HEAD) --push .
+```
+
+```bash
+# server:
+cd /opt/linka && git pull
+echo 'WS_GATEWAY_IMAGE=<registry>/linka-ws-gateway:<tag>' >> .env   # or edit in place
+docker compose -f docker-compose.prod.yml pull ws_gateway
+docker compose -f docker-compose.prod.yml up -d ws_gateway caddy
+```
+
+No registry? `docker save <img> | ssh host 'docker load'` then set
+`WS_GATEWAY_IMAGE` to that local tag.
+
+**Canary / rollback.** Caddy serves `/ws` from the gateway and `/ws-legacy`
+from the Python app. To roll back instantly, point clients (PoC API-base
+setting) at `/ws-legacy`, or in `deploy/Caddyfile` swap `handle /ws` to
+`reverse_proxy app:8000` + `rewrite * /ws` and `docker compose up -d caddy`.
+The Python `/ws` stays fully wired until Step 8 of RUST_WS_GATEWAY_PLAN.md.
+
+**Receipts caveat during the canary:** the gateway does not yet process
+`mark_read`/`mark_delivered`/`mark_played` (async-receipt worker pending — plan
+risk 7), so a Rust-connected client's read receipts and unread-count clearing
+lag until it reconnects via `/ws-legacy`. Keep the canary fraction small.
+
 ## Memory budget (≈, idle)
 
 | Service | `mem_limit` | typical |
@@ -171,8 +208,12 @@ load`, then `up -d` on the host.
 | minio | 256m | ~120m |
 | redis | 160m | ~40m |
 | id_service | 32m | ~5m |
+| ws_gateway | 64m | ~15m |
 | caddy | 64m | ~20m |
 
 Ceilings sum above 1 GB on purpose — they are limits, not reservations; swap
-covers the overlap. If the OOM killer fires, drop `minio` and move to real S3
-(blank `S3_ENDPOINT_URL`, set real keys) — that frees ~120 MB.
+covers the overlap. `ws_gateway` is tiny at rest (~15 MB, a few hundred
+connections < 40 MB — ADR 0033). If the OOM killer fires, drop `minio` and move
+to real S3 (blank `S3_ENDPOINT_URL`, set real keys) — that frees ~120 MB. On the
+live deploy MinIO is already gone (real AWS S3, ADR 0008), so the gateway's
+budget is already covered.

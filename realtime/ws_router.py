@@ -32,14 +32,13 @@ from infra.db.connection import session_scope
 from modules.chats.crud.crud_participant import get_all_chat_ids_for_user
 from modules.chats.crud.crud_participant import get_chat_participants
 from modules.chats.crud.crud_participant import is_participant
-from modules.chats.crud.crud_private_chat_pair import get_pair_chat_id
 from modules.auth import service as auth_service
 from modules.messaging import service as message_service
 from realtime import presence_service
+from realtime.presence_authz import presence_authorized
 from infra.ratelimit import service as rate_limit_service
 from realtime import realtime_service
 from realtime import ws_connection_registry
-from modules.settings import service as settings_service
 from realtime.connection_manager import connection_manager
 from realtime.fanout import send_queue
 from modules.media.errors import MediaNotFoundError
@@ -300,27 +299,26 @@ async def _handle_purge_message(user_id: int, connection_id: str, payload: dict,
     await websocket.send_json({"type": "ack", "for": "purge_message", "purged": purged})
 
 
+# mark_* are fire-and-forget enqueues now (ADR 0037): the receipt_log worker
+# does the watermark + privacy + live event off the WS path. No DB session here.
 async def _handle_mark_delivered(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
-    async with session_scope() as session:
-        await message_service.mark_as_delivered(
-            session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
-        )
+    await message_service.mark_as_delivered(
+        None, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
+    )
     await websocket.send_json({"type": "ack", "for": "mark_delivered"})
 
 
 async def _handle_mark_read(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
-    async with session_scope() as session:
-        await message_service.mark_as_read(
-            session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
-        )
+    await message_service.mark_as_read(
+        None, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
+    )
     await websocket.send_json({"type": "ack", "for": "mark_read"})
 
 
 async def _handle_mark_played(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:
-    async with session_scope() as session:
-        await message_service.mark_as_played(
-            session, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
-        )
+    await message_service.mark_as_played(
+        None, user_id=user_id, chat_id=int(payload["chat_id"]), message_id=int(payload["message_id"])
+    )
     await websocket.send_json({"type": "ack", "for": "mark_played"})
 
 
@@ -417,22 +415,9 @@ async def _handle_send_message(user_id: int, connection_id: str, payload: dict, 
     })
 
 
-async def _presence_authorized(session, watcher_id: int, target_user_id: int) -> bool:
-    """
-    Whether `watcher_id` is allowed to see `target_user_id`'s presence -
-    both the live online indicator AND the "last seen" timestamp, which are
-    a single signal gated together by the target's `privacy.online` setting:
-      - `nobody`   -> never.
-      - `contacts` -> only if a PrivateChatPair between the two exists
-                      (get_pair_chat_id) - "someone I have a chat with".
-      - `everyone` (default) -> any authenticated user.
-    """
-    visibility = await settings_service.get_online_visibility(session, target_user_id)
-    if visibility == "nobody":
-        return False
-    if visibility == "contacts":
-        return await get_pair_chat_id(session, watcher_id, target_user_id) is not None
-    return True
+# The presence-visibility rule lives in `realtime/presence_authz.py` (shared
+# with the gateway's internal endpoint, ADR 0036).
+_presence_authorized = presence_authorized
 
 
 async def _handle_subscribe_presence(user_id: int, connection_id: str, payload: dict, websocket: WebSocket) -> None:

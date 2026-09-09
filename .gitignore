@@ -46,7 +46,8 @@ env/
 /scratch/
 *.local.md
 
-# Rust ID service build output
+# Rust: single shared workspace target/ (ADR 0033)
+/target/
 id_service/target/
 
 # Testing & Coverage

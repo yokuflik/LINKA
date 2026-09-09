@@ -13,6 +13,10 @@ __pycache__
 .coverage
 htmlcov
 
+# Rust build output — huge, and rebuilt inside each image / via a cache mount.
+target/
+**/target/
+
 # Tests never run inside the image.
 tests/
 

@@ -42,7 +42,7 @@ const ChatProfileModal = {
   },
   emits: [
     'close', 'message', 'call',
-    'open-member-options', 'member-option-make-or-remove-admin', 'member-option-remove-from-group',
+    'open-member-options', 'open-member-profile', 'member-option-make-or-remove-admin', 'member-option-remove-from-group',
     'start-leave-group', 'confirm-leave-with-transfer', 'cancel-owner-transfer-picker', 'edit-group-info',
     'update:ownerTransferTargetId',
     'update:addMemberSearchQuery', 'add-member-search-input', 'add-member-search', 'add-member',
@@ -100,9 +100,9 @@ const ChatProfileModal = {
 
             <div class="divide-y divide-slate-100">
               <div v-for="member in activeChatMembers" :key="member.user.id" class="relative">
-                <div class="py-2 flex items-center justify-between gap-2"
-                     :class="hasMemberOptions(member) ? 'cursor-pointer hover:bg-slate-50 -mx-1 px-1 rounded' : ''"
-                     @click="$emit('open-member-options', member)">
+                <div class="py-2 flex items-center justify-between gap-2 cursor-pointer hover:bg-slate-50 -mx-1 px-1 rounded"
+                     @click="$emit('open-member-profile', member)"
+                     @contextmenu.prevent="$emit('open-member-options', member)">
                   <span class="flex items-center gap-2 min-w-0">
                     <Avatar :url="userAvatarUrl(member.user)" :preview="userAvatarPreview(member.user)"
                             :name="memberDisplayName(member)" :colorKey="member.user.id" :enlargeable="false"

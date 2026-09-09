@@ -38,7 +38,7 @@ Read this before any change to models, CRUD, partitioning, unread counts, or the
 - **Read-receipts privacy (ADR 0003, asymmetric per-reader):** in a 1:1 chat, READ/PLAYED from reader R are masked → DELIVERED on sender-facing surfaces iff `R.privacy.read_receipts == false` (R's own setting only; sender's is irrelevant). `modules/messaging/receipt_privacy.py`: `reader_hides_read_receipts` (fan-out suppress) / `read_receipts_hidden_for_message` (read views, keyed on the *other* participant). Watermarks still advance (mask is presentation-only). Groups exempt.
 - `crud_message.create_message` bumps the sender's own three watermarks.
 - `add_participant_to_chat` seeds a new member's watermarks at the chat's current `last_message_id`, not NULL — don't remove.
-- WS actions: `mark_delivered`, `mark_read`, `mark_played` (all `{chat_id, message_id}`) → `delivery_receipt`/`read_receipt`/`played_receipt` fan-out (carry `occurred_at`). `update_last_*_message` are **forward-only** — a redundant/behind re-mark returns `None`.
+- WS actions: `mark_delivered`, `mark_read`, `mark_played` (all `{chat_id, message_id}`) → **enqueue to `receipt_log_stream`** (ADR 0037); the `receipt_log` worker advances the watermark and fans out `delivery_receipt`/`read_receipt`/`played_receipt` (carry `occurred_at`). `update_last_*_message` are **forward-only** — a redundant/behind re-mark returns `None` (the worker then writes no row / fires no event).
 - Exposed: `MessageOut.status`, `ChatOut.last_message_status` (only from `chat_service.get_chat_list`; `None` from POST/PATCH chat endpoints).
 
 ## Detailed receipt log (separate history layer, read only by the per-message "info" view)

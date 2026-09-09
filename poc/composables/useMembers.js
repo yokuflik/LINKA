@@ -162,6 +162,38 @@ function useMembers(ctx) {
     memberOptionsFor.value = memberOptionsFor.value === member ? null : member;
   }
 
+  // ---------------------------------------------------------------
+  // Member profile (normal left-click on a member row) - opens a second
+  // ChatProfileModal in 1:1 mode: the exact same "Contact info" page a
+  // private-chat header opens, bound to this member's user.
+  // ---------------------------------------------------------------
+  const memberProfile = ref(null); // the member object whose card is open, or null
+
+  function openMemberProfile(member) {
+    memberOptionsFor.value = null;
+    memberProfile.value = member || null;
+  }
+
+  function closeMemberProfile() {
+    memberProfile.value = null;
+  }
+
+  // "Message" from the card: open the existing private chat with this
+  // member, or start a draft one - then close the group slide-over.
+  async function messageMemberFromProfile() {
+    const member = memberProfile.value;
+    memberProfile.value = null;
+    if (!member) return;
+    const user = member.user;
+    const existing = ctx.chats.value.find(
+      (c) => !c.chat.is_group && ctx.privateChatOtherUserId.value[c.chat.id] === user.id
+    );
+    ctx.closeChatProfile?.();
+    if (existing) { await ctx.selectChat(existing.chat.id); return; }
+    ctx.userById.value[user.id] = user;
+    ctx.openDraftChat(user);
+  }
+
   async function memberOptionMakeOrRemoveAdmin() {
     const member = memberOptionsFor.value;
     memberOptionsFor.value = null;
@@ -255,6 +287,7 @@ function useMembers(ctx) {
     addMemberSearchQuery, addMemberSearchBusy, addMemberSearchError, addMemberSearchResult,
     addMemberResultIsMember, resetAddMemberSearch, onAddMemberSearchInput, runAddMemberSearch,
     memberOptionsFor, hasMemberOptions, openMemberOptions,
+    memberProfile, openMemberProfile, closeMemberProfile, messageMemberFromProfile,
     memberOptionMakeOrRemoveAdmin, canRemoveMember, memberOptionRemoveFromGroup,
     leaveGroupBusy, showOwnerTransferPicker, ownerTransferTargetId,
     startLeaveGroup, cancelOwnerTransferPicker, confirmLeaveWithTransfer, leaveActiveGroup,

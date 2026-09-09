@@ -30,6 +30,8 @@ services:
     depends_on:
       app:
         condition: service_started
+      ws_gateway:
+        condition: service_started
 
   app:
     build:
@@ -82,6 +84,40 @@ services:
       interval: 15s
       timeout: 5s
       start_period: 5s
+      retries: 3
+
+  # Rust WebSocket gateway (ADR 0033). Replaces only the FastAPI /ws endpoint;
+  # speaks the existing Redis contract unchanged. Caddy routes /ws here and
+  # /ws-legacy to `app` during the canary. Image is built off-host and pulled
+  # (see deploy/ws_gateway.Dockerfile + deploy/README.md) — `build:` is kept
+  # only for local `docker compose build ws_gateway` on a dev machine.
+  ws_gateway:
+    build:
+      context: .
+      dockerfile: deploy/ws_gateway.Dockerfile
+    image: ${WS_GATEWAY_IMAGE:-linka-ws-gateway:latest}
+    <<: *restart
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      # The gateway verifies the same HS256 tokens the app issues.
+      JWT_SECRET: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in .env}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-*}
+      APP_INTERNAL_URL: http://app:8000
+      WS_GATEWAY_BIND: 0.0.0.0:8081
+      # SERVER_ID is deliberately unset: the gateway self-generates a per-process
+      # UUID, so a restart's stale routing registrations simply TTL out.
+    depends_on:
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_started
+    mem_limit: 64m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "/ws_gateway", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
       retries: 3
 
   db:

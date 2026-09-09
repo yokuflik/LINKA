@@ -48,9 +48,14 @@ Redis 7 is used for: presence, pub/sub fan-out routing, rate limiting, idempoten
 - **Privacy (1:1 only):** the typing/recording indicator is a presence-like signal, so it follows the **sender's own** `privacy.online`. If the chat has exactly 2 participants and the sender's `privacy.online` doesn't let the other participant see the sender online (`_presence_authorized(watcher_id=other, target_user_id=sender)`), the indicator is **silently dropped** (no event, no error). The sender's setting only ever restricts what the sender emits — it never affects what the sender receives. Checked live on every event — unlike the presence gate (heartbeat re-check), so a privacy change applies immediately. Groups (>2 participants) are never gated.
 - Wire event stays `"typing"`; carries `kind` (`"typing"` | `"recording_audio"`). Extend via the same field, no new endpoint.
 
-## Detailed receipt log async writes
-- `mark_as_*` → `enqueue_receipt_event` → Redis Stream `receipt_log_stream` → `modules/receipts/worker.run_forever` (`drain_once` collapses a batch to one row per (chat,user,kind) at furthest watermark → single INSERT → XACK; XAUTOCLAIM reclaims crashed workers).
-- Redis failure in enqueue is logged+swallowed — coarse `Participant.last_*_at` still written sync, live event still fires.
+## Receipts — fully async (ADR 0037)
+- **The whole receipt side effect is behind `receipt_log_stream` now**, like `send_message`. WS handlers (`_handle_mark_*` in `ws_router.py` **and** the Rust gateway's `mark_*`) do only `XADD receipt_log_stream` (fields `chat_id,user_id,kind,up_to_message_id,occurred_at`) + ack. No DB session, no publish on the WS path. `modules/messaging/receipts.mark_as_{delivered,read,played}` collapsed to that single enqueue (`session` arg kept, unused).
+- `modules/receipts/worker.run_forever` → `receipt_log.drain_once` → **`modules/receipts/apply.py::apply_receipt`** per collapsed (chat,user,kind) at furthest watermark:
+  1. `update_last_{delivered,read,played}_message` — coarse watermark (drives unread). No-op if already past.
+  2. `played` only: skip unless the target message is a voice message (the check that used to raise `NotAVoiceMessageError` to the client — now a **silent drop**).
+  3. only if the watermark advanced: write the `message_receipt_log` row **and** publish the live `delivery_receipt`/`read_receipt`/`played_receipt` — the latter two suppressed when the reader hid their receipts in a 1:1 (ADR 0003, evaluated in the worker).
+  Batch collapse + XAUTOCLAIM reclaim unchanged. Transient failure → batch not XACKed, redelivered (apply is idempotent).
+- **Consequence:** receipts are eventually-consistent (worker latency, sub-second); the `mark_*` ack means "queued", not "applied". Redis failure in enqueue is logged+swallowed (client re-sends on next scroll).
 
 ## WebSocket connection cap + handshake churn (COMMS_SECURITY_PLAN step 5 — DONE)
 
@@ -106,6 +111,14 @@ foreign Origin closes `4403` (CSWSH). `["*"]` (dev default) allows any Origin.
 - **Delivery re-uses the live send path**: `send_queue.enqueue_outgoing_message` is the same entry point `_handle_send_message` uses → identical idempotency, `_validate_media` HEAD, fan-out, receipts, offline push, ordering. Scheduled sends bypass only the WS per-user limiter (server-originated); the send stream + `send_message_burst` window still pace fan-out.
 - Exactly-once under a 2-process race: `ZREM` claim + `FOR UPDATE SKIP LOCKED` + reused-`client_message_id` idempotency in `process_outgoing` (`MessageAlreadySentError`).
 - **User-channel events** on `user_events:{sender_id}` (via `realtime_service.publish_user_event`, same mechanism as `chat_pin_changed`), emitted by the worker: `scheduled_message_sent {id, chat_id}` (no `message_id` — the real send is async, its id isn't known yet; the client removes the row and lets the normal `new_message` echo render the bubble), `scheduled_message_failed {id, chat_id, reason}`. The `scheduled_message_changed` multi-device REST-handler event is NOT yet implemented (deferred to the frontend step).
+
+## Rust WS gateway (ADR 0033 — in progress, Steps 1–6 code-complete)
+The FastAPI `/ws` endpoint is being replaced by a standalone Rust service (`ws_gateway`, a Cargo workspace crate under `crates/` alongside `id_service`). It speaks **this exact Redis contract unchanged** — registers in `chat_instances:{chat_id}` (`crates/ws_gateway/src/routing.rs`), consumes `instance_inbox:{server_id}` + `user_events:{uid}` on one shared pub/sub connection (`fanin.rs`), XADDs `message_send_stream`/`receipt_log_stream`, replicates `publish_event`, calls the same rate-limit + `ws:conns` Lua. Python send/fan-out/receipt/scheduled workers are untouched and unaware; a Rust process is indistinguishable from a Python one to the routing layer, so both can run at once (canary: `/ws` Rust, `/ws-legacy` Python).
+- **Connect bootstrap (ADR 0036):** on connect the gateway calls `GET /internal/ws-bootstrap?token=` on the Python app (`realtime/internal_router.py`) to resolve the user's chat ids (same `get_all_chat_ids_for_user`), then populates its local `chat_subs` and SADDs `chat_instances` on each 0→1 edge. `/internal*` is JWT-verified **and must 404 at the edge** (Caddy rule, plan Step 7).
+- **Presence + typing (Step 6) landed on the gateway:** `presence.rs` mirrors `presence_service.py` (connect/heartbeat/`presence_active` → `presence:{uid}` bare-conn-id SET + TTL `PRESENCE_TTL_SECONDS`=60 + edge `presence_update` on `presence_events:{uid}`); `subscribe_presence` authorises via `GET /internal/presence-authorized` (shared rule `realtime/presence_authz.py`, also used by `ws_router`), dynamically subscribes the pub/sub channel, pulls `presence_status`; typing/recording gate via `GET /internal/typing-allowed` (participant + 1:1 privacy, one call **per typing event**, fail-closed), then `publish_event(chat_id, {event:"typing",kind,user_id})`.
+- **Receipts (ADR 0037):** the gateway's `mark_delivered`/`mark_read`/`mark_played` `XADD receipt_log_stream` (`crates/ws_gateway/src/receipts.rs`) + bucket + ack; the Python `receipt_log` worker does the rest for both fleets (see "Receipts — fully async" above).
+- **Legacy Python `/ws`:** mounted iff `LEGACY_WS_ENABLED` (default true — `config/app_settings.py`); Caddy serves it at `/ws-legacy`. Set false to unmount entirely at cutover (plan Step 8).
+Full plan: `RUST_WS_GATEWAY_PLAN.md`.
 
 ## Local dev note
 `uvicorn --reload` drops every WebSocket on each `.py` save; the PoC auto-reconnects (~3s). Not a bug.

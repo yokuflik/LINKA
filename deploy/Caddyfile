@@ -43,8 +43,24 @@
 		-Server
 	}
 
-	# Backend API + WebSocket. Everything else is the static PoC.
-	@api path /auth* /users* /chats* /ws /healthz /docs* /redoc* /openapi.json
+	# Internal-only endpoints (ADR 0036) are never reachable from the edge.
+	handle /internal* {
+		respond 404
+	}
+
+	# WebSocket. During the Rust-gateway canary (ADR 0033): /ws -> the Rust
+	# ws_gateway, /ws-legacy -> the Python app (rewritten back to /ws) for
+	# instant rollback. Flip both to the same target at cutover (Step 8).
+	handle /ws {
+		reverse_proxy ws_gateway:8081
+	}
+	handle /ws-legacy {
+		rewrite * /ws
+		reverse_proxy app:8000
+	}
+
+	# Backend API. Everything else is the static PoC.
+	@api path /auth* /users* /chats* /healthz /docs* /redoc* /openapi.json
 	handle @api {
 		# Uploads go straight to S3 via a presigned PUT, so the API itself
 		# never legitimately receives a large body.

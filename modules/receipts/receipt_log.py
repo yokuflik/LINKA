@@ -25,7 +25,9 @@ from redis.exceptions import ResponseError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from modules.receipts.apply import apply_receipt
 from modules.receipts.models import MessageReceiptLog
+from realtime import realtime_service
 from infra.redis.client import redis_client
 # Local generator on purpose: _rows_from_entries() is sync and these ids are
 # message_receipt_log PKs, whose row is placed by occurred_at (carried in the
@@ -80,14 +82,14 @@ async def ensure_group() -> None:
             raise
 
 
-def _rows_from_entries(entries: list) -> tuple[list[MessageReceiptLog], list]:
+def _collapse(entries: list) -> tuple[dict[tuple[int, int, int], tuple[int, datetime]], list]:
     """
-    Fold a batch of raw stream entries into at most one row per
-    (chat_id, user_id, kind), keeping the furthest watermark and the
-    timestamp it was reached at. Returns (rows, entry_ids_to_ack).
+    Fold a batch of raw stream entries into at most one (up_to, occurred_at)
+    per (chat_id, user_id, kind), keeping the furthest watermark. Returns
+    (collapsed, entry_ids_to_ack).
 
     Collapsing here is what bounds write amplification: a client that sent
-    ten mark_read frames while scrolling becomes one row.
+    ten mark_read frames while scrolling becomes one apply + one row.
     """
     collapsed: dict[tuple[int, int, int], tuple[int, datetime]] = {}
     ack_ids: list = []
@@ -101,18 +103,7 @@ def _rows_from_entries(entries: list) -> tuple[list[MessageReceiptLog], list]:
         if current is None or up_to > current[0]:
             collapsed[key] = (up_to, occurred_at)
 
-    rows = [
-        MessageReceiptLog(
-            id=next_id(),
-            chat_id=chat_id,
-            user_id=user_id,
-            kind=kind,
-            up_to_message_id=up_to,
-            occurred_at=occurred_at,
-        )
-        for (chat_id, user_id, kind), (up_to, occurred_at) in collapsed.items()
-    ]
-    return rows, ack_ids
+    return collapsed, ack_ids
 
 
 async def _claim_stale(count: int) -> list:
@@ -146,8 +137,9 @@ async def drain_once(
     claim_stale: bool = True,
 ) -> int:
     """
-    Read one batch from the stream, write the collapsed rows, ack them.
-    Returns the number of rows inserted (0 if the stream was empty).
+    Read one batch, apply each collapsed watermark (ADR 0037), write the
+    detailed-log rows for the ones that advanced, publish their live receipt
+    events, ack the batch. Returns the number of rows inserted.
 
     Exposed directly (not just run from the worker loop) so tests can drive
     the drain deterministically right after enqueuing.
@@ -172,10 +164,40 @@ async def drain_once(
     if not entries:
         return 0
 
-    rows, ack_ids = _rows_from_entries(entries)
+    collapsed, ack_ids = _collapse(entries)
+
+    rows: list[MessageReceiptLog] = []
+    events: list[tuple[int, dict]] = []  # (chat_id, event payload) to publish after commit
+    for (chat_id, user_id, kind), (up_to, occurred_at) in collapsed.items():
+        # A transient failure (DB blip) propagates: the batch is not acked and
+        # XAUTOCLAIM redelivers it. apply_receipt is idempotent so re-running
+        # the keys that already succeeded is harmless.
+        outcome = await apply_receipt(session, chat_id, user_id, kind, up_to, occurred_at)
+        if outcome is None:
+            continue
+        rows.append(
+            MessageReceiptLog(
+                id=next_id(),
+                chat_id=chat_id,
+                user_id=user_id,
+                kind=kind,
+                up_to_message_id=up_to,
+                occurred_at=occurred_at,
+            )
+        )
+        if outcome.event is not None:
+            events.append((chat_id, outcome.event))
+
     if rows:
         session.add_all(rows)
         await session.commit()
+
+    for chat_id, event in events:
+        try:
+            await realtime_service.publish_event(chat_id, event)
+        except Exception:
+            logger.exception("receipt publish_event failed (chat=%s event=%s)", chat_id, event.get("event"))
+
     if ack_ids:
         await redis_client.xack(settings.RECEIPT_STREAM_KEY, settings.RECEIPT_STREAM_GROUP, *ack_ids)
     return len(rows)

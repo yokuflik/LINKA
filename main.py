@@ -16,6 +16,7 @@ from modules.messaging.router import scheduled_create_router
 from modules.messaging.router import scheduled_router
 from modules.users.router import router as users_router
 from realtime.ws_router import router as websocket_router
+from realtime.internal_router import router as internal_router
 from config import settings
 from modules.auth import service as auth_service
 from modules.chats import service as chat_service
@@ -154,7 +155,12 @@ app.include_router(chats_router)
 app.include_router(messages_router)
 app.include_router(scheduled_create_router)
 app.include_router(scheduled_router)
-app.include_router(websocket_router)
+# The Rust ws_gateway (ADR 0033) owns /ws in production; the FastAPI endpoint
+# stays mounted for canary + rollback and is unmounted entirely once the
+# gateway is proven (LEGACY_WS_ENABLED=false — RUST_WS_GATEWAY_PLAN.md step 8).
+if settings.LEGACY_WS_ENABLED:
+    app.include_router(websocket_router)
+app.include_router(internal_router)
 
 
 @app.get("/healthz")

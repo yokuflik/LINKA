@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tonic::{transport::Server, Request, Response, Status};
 
 // Node ID is read from the NODE_ID env var at startup and must be unique across
@@ -40,7 +40,7 @@ const TIMESTAMP_SHIFT: u64 = SEQUENCE_BITS + NODE_ID_BITS;
 
 pub struct SnowflakeGenerator {
     node_id: u64,
-    // A single atomic variable holding both timestamp and sequence 
+    // A single atomic variable holding both timestamp and sequence
     // to prevent race conditions without using a Mutex
     state: AtomicU64,
 }
@@ -65,7 +65,7 @@ impl SnowflakeGenerator {
 
     pub fn next_id(&self) -> u64 {
         let mut current_state = self.state.load(Ordering::Acquire);
-        
+
         loop {
             // Extract current timestamp and sequence from the state
             let last_timestamp = current_state >> SEQUENCE_BITS;
@@ -104,7 +104,7 @@ impl SnowflakeGenerator {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    // Successfully updated memory before any other thread. 
+                    // Successfully updated memory before any other thread.
                     // Construct the final 64-bit ID and return it.
                     let timestamp_offset = current_timestamp - EPOCH;
                     return (timestamp_offset << TIMESTAMP_SHIFT)
@@ -112,7 +112,7 @@ impl SnowflakeGenerator {
                         | sequence;
                 }
                 Err(actual_state) => {
-                    // Another thread beat us to it. 
+                    // Another thread beat us to it.
                     // Update our local state and loop again.
                     current_state = actual_state;
                 }
@@ -135,9 +135,7 @@ impl SnowflakeService for MySnowflakeService {
     ) -> Result<Response<NextIdResponse>, Status> {
         // Generate the ID and convert it to a String for the JSON/gRPC response
         let id = self.generator.next_id();
-        Ok(Response::new(NextIdResponse {
-            id: id.to_string(),
-        }))
+        Ok(Response::new(NextIdResponse { id: id.to_string() }))
     }
 }
 

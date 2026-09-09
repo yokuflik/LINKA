@@ -11,8 +11,21 @@ from modules.messaging.limits import MessagingLimits
 from realtime import presence_service
 from realtime.fanout import fanout_worker
 from realtime.fanout import send_queue
+from modules.receipts import receipt_log
 
 pytestmark = pytest.mark.asyncio
+
+
+async def _drain_receipts(session) -> int:
+    """Receipts are async now (ADR 0037): the worker does the watermark + event."""
+    await receipt_log.ensure_group()
+    total = 0
+    while True:
+        n = await receipt_log.drain_once(session, block_ms=0, claim_stale=False)
+        total += n
+        if n == 0:
+            break
+    return total
 
 
 async def _make_group(session: AsyncSession, owner_id: int, member_ids) -> int:
@@ -239,6 +252,7 @@ async def test_mark_as_read_updates_the_watermark(db_session: AsyncSession, redi
     message = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="hi")
 
     await message_service.mark_as_read(db_session, user_id=2, chat_id=chat_id, message_id=message.id)
+    await _drain_receipts(db_session)
 
     participants = await get_chat_participants(db_session, chat_id)
     reader = next(p for p in participants if p.user_id == 2)
@@ -409,7 +423,9 @@ async def test_mark_as_delivered_updates_the_watermark_and_fans_out(db_session: 
     first_item_task = asyncio.create_task(agen.__anext__())
     try:
         await asyncio.sleep(0.2)
+        # Enqueue-only now; the worker advances the watermark and fans out the event (ADR 0037).
         await message_service.mark_as_delivered(db_session, user_id=2, chat_id=chat_id, message_id=message.id)
+        await _drain_receipts(db_session)
         event = await asyncio.wait_for(first_item_task, timeout=2.0)
     finally:
         await agen.aclose()
@@ -434,20 +450,30 @@ async def test_mark_as_played_updates_the_watermark(db_session: AsyncSession, re
     message = await create_message(db_session, message_id=next_id(), chat_id=chat_id, sender_id=1, type=4)
 
     await message_service.mark_as_played(db_session, user_id=2, chat_id=chat_id, message_id=message.id)
+    await _drain_receipts(db_session)
 
     participants = await get_chat_participants(db_session, chat_id)
     listener = next(p for p in participants if p.user_id == 2)
     assert listener.last_played_message_id == message.id
 
 
-async def test_mark_as_played_rejects_a_non_voice_message(db_session: AsyncSession, redis_db):
+async def test_mark_as_played_on_a_non_voice_message_is_dropped_by_the_worker(db_session: AsyncSession, redis_db):
+    from modules.chats.crud.crud_participant import get_chat_participants
+
     chat_id = await _make_group(db_session, 1, [2])
     message = await message_service.process_outgoing(
         db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="just text"
     )
 
-    with pytest.raises(message_service.NotAVoiceMessageError):
-        await message_service.mark_as_played(db_session, user_id=2, chat_id=chat_id, message_id=message.id)
+    # Enqueue succeeds; the worker silently drops it (not a voice message) so
+    # the played watermark never moves (ADR 0037).
+    await message_service.mark_as_played(db_session, user_id=2, chat_id=chat_id, message_id=message.id)
+    rows = await _drain_receipts(db_session)
+    assert rows == 0
+
+    participants = await get_chat_participants(db_session, chat_id)
+    listener = next(p for p in participants if p.user_id == 2)
+    assert listener.last_played_message_id is None
 
 
 async def test_marking_behind_the_watermark_fans_out_nothing(db_session: AsyncSession, redis_db):

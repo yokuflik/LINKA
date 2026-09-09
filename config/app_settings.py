@@ -29,6 +29,12 @@ ID_SERVICE_TIMEOUT_SECONDS = float(os.environ.get("ID_SERVICE_TIMEOUT_SECONDS", 
 # orchestrator/pod name in production).
 SERVER_ID = os.environ.get("SERVER_ID", str(uuid.uuid4()))
 
+# --- Legacy Python WebSocket endpoint (ADR 0033 cutover) ---
+# The Rust ws_gateway owns /ws in production; the FastAPI /ws stays mounted as
+# /ws-legacy for canary + rollback. Set to "false" once the Rust gateway is
+# proven, to unmount it entirely (RUST_WS_GATEWAY_PLAN.md step 8). Default on.
+LEGACY_WS_ENABLED = os.environ.get("LEGACY_WS_ENABLED", "true").lower() in ("1", "true", "yes")
+
 # --- Message content size cap ---
 # Applies to both new messages and edits. Without this, a single message is
 # bounded only by Postgres's TEXT column (~1GB) and whatever the ASGI
@@ -50,6 +56,7 @@ __all__ = [
     "ID_SERVICE_ADDR",
     "ID_SERVICE_TIMEOUT_SECONDS",
     "SERVER_ID",
+    "LEGACY_WS_ENABLED",
     "MAX_MESSAGE_CONTENT_LENGTH",
     "MAX_INITIAL_GROUP_MEMBERS",
 ]

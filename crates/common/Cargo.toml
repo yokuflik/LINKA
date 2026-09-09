@@ -1,0 +1,20 @@
+[package]
+name = "linka-common"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "linka_common"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+redis.workspace = true
+jsonwebtoken = { version = "9", default-features = false }
+
+[dev-dependencies]
+serde_json.workspace = true

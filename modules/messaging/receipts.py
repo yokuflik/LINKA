@@ -1,8 +1,7 @@
-"""Delivery / read / played receipts: watermark advances, live events, detailed-log enqueue, info view."""
+"""Delivery / read / played receipts: enqueue on the WS path (ADR 0037), plus the per-message info view."""
 
 import json
 import logging
-from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,125 +9,52 @@ from modules.chats.crud.crud_chat import get_chat_by_id
 from modules.messaging.crud import get_message_by_id
 from modules.chats.crud.crud_participant import get_chat_participants
 from modules.chats.crud.crud_participant import is_participant
-from modules.chats.crud.crud_participant import update_last_delivered_message
-from modules.chats.crud.crud_participant import update_last_played_message
-from modules.chats.crud.crud_participant import update_last_read_message
 from modules.messaging.models import AUDIO_MESSAGE_TYPE
 from modules.messaging.limits import DEFAULT_MESSAGING_LIMITS, MessagingLimits
 from config import settings
 from modules.receipts import crud as crud_receipt
-from realtime import realtime_service
 from modules.messaging.errors import MessageNotFoundError
 from modules.messaging.errors import NotAParticipantError
-from modules.messaging.errors import NotAVoiceMessageError
 from modules.messaging.receipt_privacy import read_receipts_hidden_for_message
-from modules.messaging.receipt_privacy import reader_hides_read_receipts
 from modules.receipts import receipt_log
 from infra.redis.client import redis_client
 
 logger = logging.getLogger(__name__)
 
 
-async def _record_receipt(
-    chat_id: int,
-    user_id: int,
-    kind: int,
-    message_id: int,
-    occurred_at: datetime,
-) -> None:
+async def _enqueue(user_id: int, chat_id: int, kind: int, message_id: int) -> None:
     """
-    Append the detailed history row (via the Redis Stream) for a watermark
-    advance that actually happened. A Redis failure here is logged and
-    swallowed - the coarse Participant.last_*_at timestamp was already
-    written synchronously by the crud layer, and the live receipt event
-    below still fires, so the fast-path tick is never affected.
+    Fire-and-forget: XADD the receipt onto `receipt_log_stream` and return
+    (ADR 0037). The `receipt_log` worker advances the coarse watermark,
+    writes the detailed-log row, applies the ADR 0003 privacy gate and
+    publishes the live receipt event - all off the WS receive path. A Redis
+    hiccup here is logged and swallowed (a receipt is not a critical path;
+    the client re-sends on the next scroll / reconnect).
     """
     try:
-        await receipt_log.enqueue_receipt_event(chat_id, user_id, kind, message_id, occurred_at)
+        await receipt_log.enqueue_receipt_event(chat_id, user_id, kind, message_id)
     except Exception:
         logger.exception("failed to enqueue receipt event (chat=%s user=%s kind=%s)", chat_id, user_id, kind)
 
 
-async def mark_as_delivered(session: AsyncSession, user_id: int, chat_id: int, message_id: int) -> None:
-    occurred_at = datetime.now(timezone.utc)
-    participant = await update_last_delivered_message(
-        session, chat_id=chat_id, user_id=user_id, message_id=message_id, occurred_at=occurred_at
-    )
-    if participant is None:
-        return  # watermark already at/past this message - nothing changed
-    await _record_receipt(chat_id, user_id, settings.RECEIPT_KIND_DELIVERED, message_id, occurred_at)
-    await realtime_service.publish_event(
-        chat_id,
-        {
-            "event": "delivery_receipt",
-            "chat_id": str(chat_id),
-            "user_id": str(user_id),
-            "message_id": str(message_id),
-            "occurred_at": occurred_at.isoformat(),
-        },
-    )
+async def mark_as_delivered(session: AsyncSession | None, user_id: int, chat_id: int, message_id: int) -> None:
+    """Enqueue a delivery receipt (ADR 0037). `session` is unused, kept for call-site compatibility."""
+    await _enqueue(user_id, chat_id, settings.RECEIPT_KIND_DELIVERED, message_id)
 
 
-async def mark_as_read(session: AsyncSession, user_id: int, chat_id: int, message_id: int) -> None:
-    occurred_at = datetime.now(timezone.utc)
-    participant = await update_last_read_message(
-        session, chat_id=chat_id, user_id=user_id, message_id=message_id, occurred_at=occurred_at
-    )
-    if participant is None:
-        return
-    # Watermark + detailed log always advance; the sender-facing live event
-    # is suppressed only when *this reader* turned their own read receipts
-    # off in a 1:1 chat (asymmetric - ADR 0003).
-    await _record_receipt(chat_id, user_id, settings.RECEIPT_KIND_READ, message_id, occurred_at)
-    if await reader_hides_read_receipts(session, chat_id, reader_id=user_id):
-        return
-    await realtime_service.publish_event(
-        chat_id,
-        {
-            "event": "read_receipt",
-            "chat_id": str(chat_id),
-            "user_id": str(user_id),
-            "message_id": str(message_id),
-            "occurred_at": occurred_at.isoformat(),
-        },
-    )
+async def mark_as_read(session: AsyncSession | None, user_id: int, chat_id: int, message_id: int) -> None:
+    """Enqueue a read receipt (ADR 0037). `session` is unused."""
+    await _enqueue(user_id, chat_id, settings.RECEIPT_KIND_READ, message_id)
 
 
-async def mark_as_played(session: AsyncSession, user_id: int, chat_id: int, message_id: int) -> None:
+async def mark_as_played(session: AsyncSession | None, user_id: int, chat_id: int, message_id: int) -> None:
     """
-    The recipient listened to a voice recording ("נשמעה"). Watermark-based
-    like mark_as_delivered/mark_as_read - bumps this participant's
-    last_played_message_id, which rolls up into Chat.all_played_up_to_message_id
-    so the message's PLAYED status is derived, never written per-recording.
-    Works identically for 1:1 and group chats. Rejects a non-voice message so
-    the played watermark can only ever be moved by an actual listen.
+    Enqueue a played receipt (ADR 0037). `session` is unused. The worker
+    drops the entry if the target message is not a voice recording (the
+    check that used to raise NotAVoiceMessageError synchronously) so the
+    played watermark can still only be moved by an actual listen.
     """
-    if not await is_participant(session, chat_id, user_id):
-        raise NotAParticipantError(f"User {user_id} is not a participant of chat {chat_id}")
-
-    message = await get_message_by_id(session, chat_id=chat_id, message_id=message_id)
-    if message is None or message.type != AUDIO_MESSAGE_TYPE:
-        raise NotAVoiceMessageError(f"Message {message_id} in chat {chat_id} is not a voice recording")
-
-    occurred_at = datetime.now(timezone.utc)
-    participant = await update_last_played_message(
-        session, chat_id=chat_id, user_id=user_id, message_id=message_id, occurred_at=occurred_at
-    )
-    if participant is None:
-        return
-    await _record_receipt(chat_id, user_id, settings.RECEIPT_KIND_PLAYED, message_id, occurred_at)
-    if await reader_hides_read_receipts(session, chat_id, reader_id=user_id):
-        return
-    await realtime_service.publish_event(
-        chat_id,
-        {
-            "event": "played_receipt",
-            "chat_id": str(chat_id),
-            "user_id": str(user_id),
-            "message_id": str(message_id),
-            "occurred_at": occurred_at.isoformat(),
-        },
-    )
+    await _enqueue(user_id, chat_id, settings.RECEIPT_KIND_PLAYED, message_id)
 
 
 # Short TTL: "who has read this" drifts by at most this many seconds for a

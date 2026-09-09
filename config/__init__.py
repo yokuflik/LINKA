@@ -38,6 +38,7 @@ from ._accessor import settings  # noqa: F401
 from .app_settings import (  # noqa: F401
     ID_SERVICE_ADDR,
     ID_SERVICE_TIMEOUT_SECONDS,
+    LEGACY_WS_ENABLED,
     SERVER_ID,
     SNOWFLAKE_MACHINE_ID,
 )
@@ -154,6 +155,7 @@ __all__ = [
     "SEND_WORKER_BATCH",
     "SEND_WORKER_BLOCK_MS",
     "SERVER_ID",
+    "LEGACY_WS_ENABLED",
     "SNOWFLAKE_MACHINE_ID",
     "TRUSTED_PROXY_IPS",
     "WS_CONN_MAX_AGE_SECONDS",

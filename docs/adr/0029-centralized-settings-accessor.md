@@ -62,6 +62,14 @@ settings.WS_FRAME_RATE_MAX
 - `config.settings` is not a Pydantic model — no validation/coercion layer is
   added. The sub-modules' `os.environ.get(...)` parsing remains the single
   source of truth.
+- **Update 2026-09-09 (ADR 0033 landed):** the seven deferred modules moved to
+  injected `policy=` / `limits=` (ADR 0033) or to `settings.X`, so the flat
+  re-export facade in `config/__init__.py` was trimmed from
+  `from .<sub> import *` to an explicit ~64-name allow-list — exactly the names
+  still consumed by `realtime/`, `scripts/`, and `infra/`. `modules/` and the
+  test suite are now 100% on `settings.X` (tests that patched a config value
+  patch the owning `config.<sub>` module). Full facade removal still waits on
+  the `realtime/` Rust rewrite.
 - `importlib.reload(config.app_settings)` in `tests/test_config.py` still works
   (those tests assert against the reloaded module directly, not via
   `settings`); the accessor's cached module reference would not see the reload,

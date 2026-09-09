@@ -21,6 +21,7 @@ from modules.chats.schemas import ParticipantOut
 from modules.users.schemas import PublicKeyOut
 from modules.chats.schemas import UpdateGroupDetailsIn
 from config import settings
+from modules.chats.limits import DEFAULT_CHAT_LIMITS, ChatLimits
 from modules.users import avatar_service
 from modules.chats import service as chat_service
 from infra.ratelimit import service as rate_limit_service
@@ -131,11 +132,18 @@ async def create_new_group_avatar_upload_ticket(
     )
 
 
+def get_chat_limits() -> ChatLimits:
+    """FastAPI dependency (ADR 0033). Tests override via
+    app.dependency_overrides[get_chat_limits]."""
+    return DEFAULT_CHAT_LIMITS
+
+
 @router.post("/groups", response_model=ChatOut)
 async def create_group_chat(
     body: CreateGroupChatIn,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
+    limits: ChatLimits = Depends(get_chat_limits),
 ):
     return await chat_service.create_group_chat(
         session,
@@ -145,6 +153,7 @@ async def create_group_chat(
         about_text=body.about_text,
         avatar_storage_key=body.avatar_storage_key,
         avatar_preview=body.avatar_preview,
+        limits=limits,
     )
 
 

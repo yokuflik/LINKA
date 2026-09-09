@@ -47,7 +47,15 @@ function useMessageCache(ctx) {
       // dead on the next reload - persist the server presigned URL instead and
       // strip the local-only markers.
       const messages = list.slice(-MAX_CACHED).map((m) => {
-        if (!m || !m._localMediaUrl) return m;
+        if (!m) return m;
+        // E2E (ADR 0026): never persist ciphertext in `content` - a row can be
+        // saved by write-through before decryptInPlace resolves. Keep the
+        // ciphertext in enc_ct so the next load can still decrypt it.
+        if (m.is_encrypted && !m._e2eDecrypted) {
+          const { _localMediaUrl, media_url_remote, ...rest } = m;
+          return { ...rest, content: '', enc_ct: m.enc_ct || m.content, media_url: media_url_remote || m.media_url || null };
+        }
+        if (!m._localMediaUrl) return m;
         const { _localMediaUrl, media_url_remote, ...rest } = m;
         return { ...rest, media_url: media_url_remote || null };
       });

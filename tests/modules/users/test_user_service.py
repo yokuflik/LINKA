@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
-import config
+from config import settings
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,7 +57,7 @@ def test_sanitize_display_name(raw, expected):
 
 def test_sanitize_display_name_truncates_to_the_cap():
     out = user_service.sanitize_display_name("x" * 200)
-    assert len(out) == config.DISPLAY_NAME_MAX_LEN
+    assert len(out) == settings.DISPLAY_NAME_MAX_LEN
 
 
 def test_sanitize_display_name_nfc_normalises():
@@ -215,7 +215,7 @@ async def test_set_username_enforces_the_change_quota(db_session: AsyncSession):
 
     # The change log never grows past the cap.
     user = await user_service.get_user_by_id(db_session, 1)
-    assert len(user.username_change_log) == config.USERNAME_CHANGE_MAX_PER_WINDOW
+    assert len(user.username_change_log) == settings.USERNAME_CHANGE_MAX_PER_WINDOW
 
 
 async def test_set_username_quota_frees_up_after_the_window(db_session: AsyncSession):
@@ -223,7 +223,7 @@ async def test_set_username_quota_frees_up_after_the_window(db_session: AsyncSes
     # is allowed again.
     await create_user(db_session, user_id=1, phone_number="+972501", username="alpha_one_123")
     stale = (
-        datetime.now(timezone.utc) - timedelta(days=config.USERNAME_CHANGE_WINDOW_DAYS + 1)
+        datetime.now(timezone.utc) - timedelta(days=settings.USERNAME_CHANGE_WINDOW_DAYS + 1)
     ).isoformat()
     await db_session.execute(
         update(User).where(User.id == 1).values(username_change_log=[stale, stale, stale])

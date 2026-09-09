@@ -92,6 +92,9 @@ Rows are one-liners; the ADR file holds the full rationale (this index is loaded
 | `0029-centralized-settings-accessor.md` | Additive flat `config.settings` accessor over the ADR 0019 sub-modules; read-only, live resolution. Old `from config import X` kept for `realtime/` + `scripts/` + the test-monkeypatched modules | Accepted |
 | `0030-feature-local-api-schemas.md` | Move the 34 Pydantic models out of `api/schemas.py` into `modules/<feature>/schemas.py`; `api/schemas.py` keeps only `IdStr`. No re-export shim | Accepted |
 | `0031-scheduled-messages.md` | Unpartitioned `scheduled_messages` table + Redis due-ZSET polled by an in-process worker firing via the existing async send path; REST API; `scheduled_write` bucket. No migration | Accepted |
+| `0032-ephemeral-test-database.md` | Test suite creates/drops a throwaway `test_db_<uuid>` per session; seeded dev DB never touched. `conftest.py` rewrites `DATABASE_URL` before import | Accepted |
+| `0033-inject-limits-into-services-and-routers.md` | Per-feature frozen `AuthPolicy` / `MessagingLimits` / `ScheduledLimits` / `ChatLimits`; services take keyword-only `policy=`/`limits=`, routers expose FastAPI deps; tests use `dependency_overrides` not `monkeypatch` | Accepted |
+| `0034-encrypted-chat-list-preview.md` | Denormalise the encrypted last message's `{ct, header}` onto `chats.last_message_enc` (JSONB, kept in lockstep with `last_message_preview` in `crud_message`); `ChatOut` exposes it; client decrypts it for the sidebar preview on load | Accepted |
 
 ---
 
@@ -106,7 +109,7 @@ DATABASE_URL="..." REDIS_URL="redis://localhost:6380/0" uvicorn main:app --reloa
 
 Open `poc/index.html` directly. OTP codes print to the server console — no real SMS/FCM.
 
-**Testing caveat:** any DB-backed test wipes the dev DB (`drop_all` on teardown). Dump first or re-run `init_db` + `seed_mock_data`. MinIO is unaffected. When manually verifying against dev Postgres, leave the schema created (not dropped).
+**Testing:** the suite runs against an ephemeral per-run database (ADR 0032, `tests/README.md`) — the seeded dev DB and MinIO are left untouched. `DATABASE_URL` need not be set for tests.
 
 # Reference plan files (root)
 

@@ -127,15 +127,19 @@ async def test_receipts_view_missing_message(db_session, redis_db):
         await message_service.get_message_receipts(db_session, user_id=1, chat_id=chat_id, message_id=123456789)
 
 
-async def test_receipts_view_truncates_to_counts_for_a_large_group(db_session, redis_db, monkeypatch):
-    monkeypatch.setattr(message_service, "RECEIPT_NAMED_LIST_MAX_MEMBERS", 2)
+async def test_receipts_view_truncates_to_counts_for_a_large_group(db_session, redis_db):
+    from modules.messaging.limits import MessagingLimits
+
+    limits = MessagingLimits(receipt_named_list_max_members=2)
     chat_id = await _group(db_session, 1, [2, 3, 4])  # 3 eligible > 2
     m = await _send(db_session, 1, chat_id)
     await message_service.mark_as_read(db_session, user_id=2, chat_id=chat_id, message_id=m.id)
     await message_service.mark_as_read(db_session, user_id=3, chat_id=chat_id, message_id=m.id)
     await _drain(db_session)
 
-    view = await message_service.get_message_receipts(db_session, user_id=1, chat_id=chat_id, message_id=m.id)
+    view = await message_service.get_message_receipts(
+        db_session, user_id=1, chat_id=chat_id, message_id=m.id, limits=limits
+    )
     assert view["truncated"] is True
     assert view.get("read_by", []) == []  # name lists omitted when truncated
     assert view["counts"]["read"] == 2

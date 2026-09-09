@@ -14,6 +14,7 @@ from modules.chats.crud.crud_participant import update_last_delivered_message
 from modules.chats.crud.crud_participant import update_last_played_message
 from modules.chats.crud.crud_participant import update_last_read_message
 from modules.messaging.models import AUDIO_MESSAGE_TYPE
+from modules.messaging.limits import DEFAULT_MESSAGING_LIMITS, MessagingLimits
 from config import settings
 from modules.receipts import crud as crud_receipt
 from realtime import realtime_service
@@ -147,6 +148,8 @@ async def get_message_receipts(
     user_id: int,
     chat_id: int,
     message_id: int,
+    *,
+    limits: MessagingLimits = DEFAULT_MESSAGING_LIMITS,
 ) -> dict:
     """
     The per-message "info" view: when each participant received / read /
@@ -183,12 +186,7 @@ async def get_message_receipts(
     # Everyone but the sender is eligible to "receive/read/play" the message.
     eligible = [p.user_id for p in participants if p.user_id != message.sender_id]
     is_audio = message.type == AUDIO_MESSAGE_TYPE
-    # Read off the facade module at call time so a test that does
-    # monkeypatch.setattr(message_service, "RECEIPT_NAMED_LIST_MAX_MEMBERS", ...)
-    # still takes effect after the split into services/messaging/.
-    from modules.messaging import service as message_service
-
-    truncated = len(eligible) > message_service.RECEIPT_NAMED_LIST_MAX_MEMBERS
+    truncated = len(eligible) > limits.receipt_named_list_max_members
 
     payload: dict = {
         "chat_id": str(chat_id),

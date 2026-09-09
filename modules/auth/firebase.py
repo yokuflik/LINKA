@@ -17,13 +17,13 @@ import httpx
 import jwt
 from cryptography.x509 import load_pem_x509_certificate
 
-from config import FIREBASE_PROJECT_ID
+from config import settings
 
 logger = logging.getLogger(__name__)
 
 # Google's Secure Token Service signing certs for Firebase ID tokens.
 _CERTS_URL = "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
-_ISSUER = f"https://securetoken.google.com/{FIREBASE_PROJECT_ID}"
+_ISSUER = f"https://securetoken.google.com/{settings.FIREBASE_PROJECT_ID}"
 
 _MIN_CACHE_SECONDS = 3600
 
@@ -70,7 +70,7 @@ async def verify_id_token(id_token: str) -> dict:
     `iss` == securetoken.google.com/<project id>, not expired, non-empty `sub`,
     and `auth_time` not in the future.
     """
-    if not FIREBASE_PROJECT_ID:
+    if not settings.FIREBASE_PROJECT_ID:
         raise FirebaseAuthError("Firebase auth is not configured on this server")
 
     try:
@@ -95,7 +95,7 @@ async def verify_id_token(id_token: str) -> dict:
             id_token,
             key=key,
             algorithms=["RS256"],
-            audience=FIREBASE_PROJECT_ID,
+            audience=settings.FIREBASE_PROJECT_ID,
             issuer=_ISSUER,
         )
     except jwt.PyJWTError as exc:

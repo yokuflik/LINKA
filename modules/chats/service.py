@@ -5,10 +5,8 @@ public API so routers/*, other services, the fan-out workers and the tests keep
 importing from one stable place - no behaviour change.
 """
 
-# Config value kept importable here because tests monkeypatch it on this module
-# (chat_service.MAX_INITIAL_GROUP_MEMBERS); services/chats/creation.py reads it
-# back off this module at call time.
-from config import MAX_INITIAL_GROUP_MEMBERS  # noqa: F401
+# ADR 0033: the initial-group-member cap is injected via
+# modules.chats.limits.ChatLimits, not read off this facade module.
 
 # Kept importable here because services/chats/*.py reference
 # `chat_service.realtime_service.publish_*` at call time - tests monkeypatch

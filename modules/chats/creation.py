@@ -1,11 +1,12 @@
 """Creating chats: the idempotent 1:1 get-or-create and group creation.
 
-`MAX_INITIAL_GROUP_MEMBERS` is read off the `chat_service` facade at call time
-(tests monkeypatch `chat_service.MAX_INITIAL_GROUP_MEMBERS`).
+The initial-group-member cap is injected via `ChatLimits` (ADR 0033).
 """
 
 from typing import Optional, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from modules.chats.limits import DEFAULT_CHAT_LIMITS, ChatLimits
 
 from modules.chats.crud.crud_chat import create_chat
 from modules.chats.crud.crud_chat import delete_chat
@@ -84,15 +85,15 @@ async def create_group_chat(
     about_text: Optional[str] = None,
     avatar_storage_key: Optional[str] = None,
     avatar_preview: Optional[str] = None,
+    *,
+    limits: ChatLimits = DEFAULT_CHAT_LIMITS,
 ) -> Chat:
-    from modules.chats import service as chat_service
-
     # Each member is its own sequential DB round trip below - an unbounded
     # list is an easy way to turn one call into millions of inserts.
     # Importing a huge membership list needs its own batched/background flow.
-    if len(initial_member_ids) > chat_service.MAX_INITIAL_GROUP_MEMBERS:
+    if len(initial_member_ids) > limits.max_initial_group_members:
         raise TooManyMembersError(
-            f"Cannot create a group with more than {chat_service.MAX_INITIAL_GROUP_MEMBERS} initial members"
+            f"Cannot create a group with more than {limits.max_initial_group_members} initial members"
         )
 
     chat = await create_chat(session, chat_id=await next_id(), is_group=True, title=title, about_text=about_text)

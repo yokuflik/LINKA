@@ -13,12 +13,8 @@ from typing import Optional, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import (
-    SCHEDULED_DUE_SET_KEY,
-    SCHEDULED_MAX_LEAD_DAYS,
-    SCHEDULED_MAX_PENDING_PER_USER,
-    SCHEDULED_MIN_LEAD_SECONDS,
-)
+from config import settings
+from modules.messaging.limits import DEFAULT_SCHEDULED_LIMITS, ScheduledLimits
 from infra.ids.client import next_id
 from infra.redis.client import redis_client
 from modules.chats.crud.crud_participant import is_participant
@@ -34,7 +30,6 @@ from modules.messaging.errors import (
 )
 from modules.messaging.media_validation import _clean_blur_hash
 from modules.messaging.models import ScheduledMessage
-from config import MEDIA_MESSAGE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -53,27 +48,27 @@ def _as_epoch(dt: datetime) -> float:
     return dt.timestamp()
 
 
-def _validate_time(scheduled_for: datetime) -> None:
+def _validate_time(scheduled_for: datetime, limits: ScheduledLimits) -> None:
     now = _utcnow()
     when = scheduled_for
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    earliest = now + timedelta(seconds=SCHEDULED_MIN_LEAD_SECONDS)
-    latest = now + timedelta(days=SCHEDULED_MAX_LEAD_DAYS)
+    earliest = now + timedelta(seconds=limits.min_lead_seconds)
+    latest = now + timedelta(days=limits.max_lead_days)
     if when < earliest:
         raise ScheduledTimeInvalidError(
-            f"scheduled_for must be at least {SCHEDULED_MIN_LEAD_SECONDS}s in the future"
+            f"scheduled_for must be at least {limits.min_lead_seconds}s in the future"
         )
     if when > latest:
         raise ScheduledTimeInvalidError(
-            f"scheduled_for must be within {SCHEDULED_MAX_LEAD_DAYS} days"
+            f"scheduled_for must be within {limits.max_lead_days} days"
         )
 
 
 async def _due_set_add(scheduled_message_id: int, scheduled_for: datetime) -> None:
     try:
         await redis_client.zadd(
-            SCHEDULED_DUE_SET_KEY, {str(scheduled_message_id): _as_epoch(scheduled_for)}
+            settings.SCHEDULED_DUE_SET_KEY, {str(scheduled_message_id): _as_epoch(scheduled_for)}
         )
     except Exception as exc:  # noqa: BLE001 - Postgres is the source of truth; reconcile self-heals
         logger.warning("scheduled: due-set ZADD failed for %s: %s", scheduled_message_id, exc)
@@ -81,7 +76,7 @@ async def _due_set_add(scheduled_message_id: int, scheduled_for: datetime) -> No
 
 async def _due_set_remove(scheduled_message_id: int) -> None:
     try:
-        await redis_client.zrem(SCHEDULED_DUE_SET_KEY, str(scheduled_message_id))
+        await redis_client.zrem(settings.SCHEDULED_DUE_SET_KEY, str(scheduled_message_id))
     except Exception as exc:  # noqa: BLE001 - a stale entry is harmless: the worker re-checks status
         logger.warning("scheduled: due-set ZREM failed for %s: %s", scheduled_message_id, exc)
 
@@ -97,7 +92,7 @@ async def _ref_media_for_schedule(
     Returns the captured media dict (key/mime/size/name/duration/blur_hash) or
     None for a non-media message.
     """
-    if message_type not in MEDIA_MESSAGE_TYPES:
+    if message_type not in settings.MEDIA_MESSAGE_TYPES:
         if media and media.get("key"):
             raise ScheduledTimeInvalidError("media is only valid for a media-type message")
         return None
@@ -160,6 +155,7 @@ async def schedule_message(
     content: Optional[str] = None,
     media: Optional[dict] = None,
     reply_to_message_id: Optional[int] = None,
+    limits: ScheduledLimits = DEFAULT_SCHEDULED_LIMITS,
 ) -> ScheduledMessage:
     """
     Validate and persist a pending scheduled message, then add it to the Redis
@@ -169,15 +165,15 @@ async def schedule_message(
     if message_type == _SYSTEM_MESSAGE_TYPE:
         raise ScheduledTimeInvalidError("system messages cannot be scheduled")
 
-    _validate_time(scheduled_for)
-    _check_content_length(content)
+    _validate_time(scheduled_for, limits)
+    _check_content_length(content, limits.max_message_content_length)
 
     if not await is_participant(session, chat_id, sender_id):
         raise NotAParticipantError(f"User {sender_id} is not a participant of chat {chat_id}")
 
-    if await crud_scheduled.count_pending_for_user(session, sender_id) >= SCHEDULED_MAX_PENDING_PER_USER:
+    if await crud_scheduled.count_pending_for_user(session, sender_id) >= limits.max_pending_per_user:
         raise ScheduledLimitExceededError(
-            f"at most {SCHEDULED_MAX_PENDING_PER_USER} pending scheduled messages"
+            f"at most {limits.max_pending_per_user} pending scheduled messages"
         )
 
     captured = await _ref_media_for_schedule(session, message_type, media)
@@ -219,6 +215,7 @@ async def reschedule(
     scheduled_for: Optional[datetime] = None,
     content: Optional[str] = None,
     set_content: bool = False,
+    limits: ScheduledLimits = DEFAULT_SCHEDULED_LIMITS,
 ) -> ScheduledMessage:
     """
     Change the fire time and/or caption of a pending row the user owns.
@@ -226,9 +223,9 @@ async def reschedule(
     ScheduledMessageNotFoundError.
     """
     if scheduled_for is not None:
-        _validate_time(scheduled_for)
+        _validate_time(scheduled_for, limits)
     if set_content:
-        _check_content_length(content)
+        _check_content_length(content, limits.max_message_content_length)
 
     row = await crud_scheduled.update_scheduled(
         session,

@@ -8,10 +8,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import main as main_module
 from modules.auth import service as auth_service
+from modules.auth.limits import AuthPolicy
+from modules.auth.router import get_auth_policy
 from modules.chats import service as chat_service
 from modules.messaging import service as message_service
+from modules.messaging.limits import MessagingLimits
+from modules.messaging.router import get_messaging_limits
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clear_dependency_overrides():
+    """ADR 0033: route tests tune limits via app.dependency_overrides instead
+    of monkeypatching a `from config import NAME` module global. Always reset
+    so one test's override can't leak into the next."""
+    yield
+    main_module.app.dependency_overrides.clear()
 
 
 @pytest_asyncio.fixture
@@ -67,8 +80,8 @@ async def test_otp_verify_wrong_code_returns_400(client, db_session: AsyncSessio
     assert resp.status_code == 400
 
 
-async def test_otp_request_is_rate_limited(client, redis_db, monkeypatch):
-    monkeypatch.setattr(auth_service, "OTP_REQUEST_RATE_LIMIT_MAX", 2)
+async def test_otp_request_is_rate_limited(client, redis_db):
+    main_module.app.dependency_overrides[get_auth_policy] = lambda: AuthPolicy(otp_request_max=2)
     phone = "+972500100003"
 
     for _ in range(2):
@@ -79,12 +92,10 @@ async def test_otp_request_is_rate_limited(client, redis_db, monkeypatch):
     assert resp.status_code == 429
 
 
-async def test_otp_request_is_rate_limited_per_ip(client, redis_db, monkeypatch):
+async def test_otp_request_is_rate_limited_per_ip(client, redis_db):
     # The per-IP ceiling bites regardless of which number is targeted - one
     # host must not be able to spray OTPs across many numbers.
-    from modules.auth import router as auth_router
-
-    monkeypatch.setattr(auth_router, "OTP_REQUEST_IP_RATE_LIMIT_MAX", 3)
+    main_module.app.dependency_overrides[get_auth_policy] = lambda: AuthPolicy(otp_request_ip_max=3)
 
     for i in range(3):
         resp = await client.post("/auth/otp/request", json={"phone_number": f"+9725001999{i:02d}"})
@@ -94,8 +105,8 @@ async def test_otp_request_is_rate_limited_per_ip(client, redis_db, monkeypatch)
     assert resp.status_code == 429
 
 
-async def test_new_account_creation_is_rate_limited_per_ip(client, db_session: AsyncSession, redis_db, monkeypatch):
-    monkeypatch.setattr(auth_service, "ACCOUNT_CREATE_IP_RATE_LIMIT_MAX", 2)
+async def test_new_account_creation_is_rate_limited_per_ip(client, db_session: AsyncSession, redis_db):
+    main_module.app.dependency_overrides[get_auth_policy] = lambda: AuthPolicy(account_create_ip_max=2)
 
     for i in range(2):
         await _login(client, redis_db, f"+9725001888{i:02d}")
@@ -110,9 +121,9 @@ async def test_new_account_creation_is_rate_limited_per_ip(client, db_session: A
 
 
 async def test_returning_user_login_is_not_blocked_by_account_creation_cap(
-    client, db_session: AsyncSession, redis_db, monkeypatch
+    client, db_session: AsyncSession, redis_db
 ):
-    monkeypatch.setattr(auth_service, "ACCOUNT_CREATE_IP_RATE_LIMIT_MAX", 1)
+    main_module.app.dependency_overrides[get_auth_policy] = lambda: AuthPolicy(account_create_ip_max=1)
     phone = "+972500177777"
     await _login(client, redis_db, phone)  # consumes the single account-creation slot
 
@@ -412,64 +423,46 @@ async def test_message_history_returns_messages_sent_over_the_service_layer(clie
 
 
 async def test_message_history_limit_is_clamped_server_side(client, db_session: AsyncSession, redis_db):
-    from modules.messaging import router as messages_router
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(messages_router, "MSG_HISTORY_MAX_LIMIT", 5)
-    try:
-        user, token, _ = await _login(client, redis_db, "+972500100061")
-        resp = await client.post("/chats/groups", json={"title": "G"}, headers=_auth_header(token))
-        chat_id = resp.json()["id"]
-        for _ in range(8):
-            await message_service.process_outgoing(
-                db_session, sender_id=int(user["id"]), chat_id=int(chat_id),
-                client_message_id=str(uuid.uuid4()), content="x",
-            )
-        resp = await client.get(f"/chats/{chat_id}/messages?limit=100000", headers=_auth_header(token))
-        assert resp.status_code == 200
-        assert len(resp.json()) == 5
-    finally:
-        monkeypatch.undo()
+    main_module.app.dependency_overrides[get_messaging_limits] = lambda: MessagingLimits(msg_history_max_limit=5)
+    user, token, _ = await _login(client, redis_db, "+972500100061")
+    resp = await client.post("/chats/groups", json={"title": "G"}, headers=_auth_header(token))
+    chat_id = resp.json()["id"]
+    for _ in range(8):
+        await message_service.process_outgoing(
+            db_session, sender_id=int(user["id"]), chat_id=int(chat_id),
+            client_message_id=str(uuid.uuid4()), content="x",
+        )
+    resp = await client.get(f"/chats/{chat_id}/messages?limit=100000", headers=_auth_header(token))
+    assert resp.status_code == 200
+    assert len(resp.json()) == 5
 
 
 async def test_message_history_is_rate_limited_per_user(client, db_session: AsyncSession, redis_db):
-    from modules.messaging import router as messages_router
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(messages_router, "MSG_HISTORY_RATE_MAX", 3)
-    try:
-        _, token, _ = await _login(client, redis_db, "+972500100062")
-        resp = await client.post("/chats/groups", json={"title": "G"}, headers=_auth_header(token))
-        chat_id = resp.json()["id"]
-        for _ in range(3):
-            resp = await client.get(f"/chats/{chat_id}/messages", headers=_auth_header(token))
-            assert resp.status_code == 200
+    main_module.app.dependency_overrides[get_messaging_limits] = lambda: MessagingLimits(msg_history_rate_max=3)
+    _, token, _ = await _login(client, redis_db, "+972500100062")
+    resp = await client.post("/chats/groups", json={"title": "G"}, headers=_auth_header(token))
+    chat_id = resp.json()["id"]
+    for _ in range(3):
         resp = await client.get(f"/chats/{chat_id}/messages", headers=_auth_header(token))
-        assert resp.status_code == 429
-    finally:
-        monkeypatch.undo()
+        assert resp.status_code == 200
+    resp = await client.get(f"/chats/{chat_id}/messages", headers=_auth_header(token))
+    assert resp.status_code == 429
 
 
 async def test_upload_ticket_is_rate_limited_per_ip(client, db_session: AsyncSession, redis_db):
-    from modules.messaging import router as messages_router
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(messages_router, "UPLOAD_TICKET_IP_RATE_LIMIT_MAX", 2)
-    try:
-        _, token, _ = await _login(client, redis_db, "+972500100063")
-        resp = await client.post("/chats/groups", json={"title": "G"}, headers=_auth_header(token))
-        chat_id = resp.json()["id"]
-        body = {"kind": "image", "mime_type": "image/png", "size_bytes": 1024, "sha256": "a" * 64}
-        seen_429 = False
-        for _ in range(4):
-            resp = await client.post(
-                f"/chats/{chat_id}/messages/upload-ticket", json=body, headers=_auth_header(token)
-            )
-            if resp.status_code == 429:
-                seen_429 = True
-        assert seen_429
-    finally:
-        monkeypatch.undo()
+    main_module.app.dependency_overrides[get_messaging_limits] = lambda: MessagingLimits(upload_ticket_ip_rate_max=2)
+    _, token, _ = await _login(client, redis_db, "+972500100063")
+    resp = await client.post("/chats/groups", json={"title": "G"}, headers=_auth_header(token))
+    chat_id = resp.json()["id"]
+    body = {"kind": "image", "mime_type": "image/png", "size_bytes": 1024, "sha256": "a" * 64}
+    seen_429 = False
+    for _ in range(4):
+        resp = await client.post(
+            f"/chats/{chat_id}/messages/upload-ticket", json=body, headers=_auth_header(token)
+        )
+        if resp.status_code == 429:
+            seen_429 = True
+    assert seen_429
 
 
 async def test_non_participant_cannot_read_message_history(client, db_session: AsyncSession, redis_db):

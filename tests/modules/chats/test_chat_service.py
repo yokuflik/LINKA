@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from modules.users.crud import create_user
 from modules.chats.models.chat import Chat
 from modules.chats import service as chat_service
+from modules.chats.limits import ChatLimits
 
 pytestmark = pytest.mark.asyncio
 
@@ -258,19 +259,23 @@ async def test_concurrent_add_member_calls_do_not_duplicate_or_crash(session_fac
     assert unexpected == [], f"unexpected crash(es): {unexpected}"
 
 
-async def test_create_group_chat_rejects_more_members_than_the_cap(db_session: AsyncSession, monkeypatch):
-    monkeypatch.setattr(chat_service, "MAX_INITIAL_GROUP_MEMBERS", 3)
+async def test_create_group_chat_rejects_more_members_than_the_cap(db_session: AsyncSession):
+    limits = ChatLimits(max_initial_group_members=3)
     await _make_users(db_session, 1, 2, 3, 4, 5)
 
     with pytest.raises(chat_service.TooManyMembersError):
-        await chat_service.create_group_chat(db_session, creator_id=1, title="Huge", initial_member_ids=[2, 3, 4, 5])
+        await chat_service.create_group_chat(
+            db_session, creator_id=1, title="Huge", initial_member_ids=[2, 3, 4, 5], limits=limits
+        )
 
 
-async def test_create_group_chat_allows_exactly_the_cap(db_session: AsyncSession, monkeypatch):
-    monkeypatch.setattr(chat_service, "MAX_INITIAL_GROUP_MEMBERS", 3)
+async def test_create_group_chat_allows_exactly_the_cap(db_session: AsyncSession):
+    limits = ChatLimits(max_initial_group_members=3)
     await _make_users(db_session, 1, 2, 3, 4)
 
-    group = await chat_service.create_group_chat(db_session, creator_id=1, title="Just fits", initial_member_ids=[2, 3, 4])
+    group = await chat_service.create_group_chat(
+        db_session, creator_id=1, title="Just fits", initial_member_ids=[2, 3, 4], limits=limits
+    )
     assert group is not None
 
 

@@ -150,6 +150,13 @@ async def create_message(
             chat_update_values["last_message_preview"] = build_last_message_preview(
                 new_message.content, new_message.type, new_message.is_encrypted
             )
+            # ADR 0034: carry the opaque payload the client needs to decrypt the
+            # preview line, or clear it when the new last message is plaintext.
+            chat_update_values["last_message_enc"] = (
+                {"ct": new_message.content, "header": new_message.enc_header}
+                if new_message.is_encrypted
+                else None
+            )
 
         await session.execute(update(Chat).where(Chat.id == chat_id).values(**chat_update_values))
 
@@ -321,7 +328,13 @@ async def edit_message_content(
             .values(
                 last_message_preview=build_last_message_preview(
                     new_content, message.type, message.is_encrypted
-                )
+                ),
+                # ADR 0034: keep the decryptable payload in step with the edit.
+                last_message_enc=(
+                    {"ct": new_content, "header": message.enc_header}
+                    if message.is_encrypted
+                    else None
+                ),
             )
         )
 
@@ -357,7 +370,7 @@ async def soft_delete_message(session: AsyncSession, chat_id: int, message_id: i
         await session.execute(
             update(Chat)
             .where(Chat.id == chat_id, Chat.last_message_id == message_id)
-            .values(last_message_preview=DELETED_MESSAGE_PREVIEW)
+            .values(last_message_preview=DELETED_MESSAGE_PREVIEW, last_message_enc=None)
         )
 
     await session.commit()
@@ -440,7 +453,17 @@ async def undelete_message(session: AsyncSession, chat_id: int, message_id: int)
         await session.execute(
             update(Chat)
             .where(Chat.id == chat_id, Chat.last_message_id == message_id)
-            .values(last_message_preview=build_last_message_preview(message.content, message.type))
+            .values(
+                last_message_preview=build_last_message_preview(
+                    message.content, message.type, message.is_encrypted
+                ),
+                # ADR 0034: an encrypted row comes back decryptable; else clear.
+                last_message_enc=(
+                    {"ct": message.content, "header": message.enc_header}
+                    if message.is_encrypted
+                    else None
+                ),
+            )
         )
 
     await session.commit()

@@ -214,11 +214,22 @@ function useChatOpen(ctx) {
     if (cached && cached.length) {
       if (ctx.activeChatId.value !== chatId) return;
       ctx.messagesLoading.value = false;
-      ctx.messages.value = cached.slice();
+      // E2E (ADR 0026): a row can be cached mid-decrypt (write-through fires on
+      // the array assignment, before decryptInPlace resolves) - it still has
+      // is_encrypted:true and ciphertext in `content`. Blank it now so the
+      // base64 blob never renders, then decrypt in place like the history path.
+      const cachedRows = cached.map((m) =>
+        (m && m.is_encrypted && !m._e2eDecrypted)
+          ? { ...m, content: '', enc_ct: m.enc_ct || m.content }
+          : m,
+      );
+      ctx.messages.value = cachedRows;
       // A cached bubble still marked pending is a message that was queued in
       // the outbox when the tab closed and never sent - show it as failed
       // (⚠️, retryable) rather than a clock that never resolves.
       if (ctx.markStalePendingAsFailed) ctx.markStalePendingAsFailed();
+      if (ctx.decryptListInPlace) await ctx.decryptListInPlace(ctx.messages.value);
+      if (ctx.activeChatId.value !== chatId) return;
       mergeBuffered();
       ctx.hasMoreMessages.value = cached.length >= ctx.MESSAGE_PAGE_SIZE;
       const item2 = ctx.chats.value.find((c) => c.chat.id === chatId);

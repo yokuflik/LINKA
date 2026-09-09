@@ -4,6 +4,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from config import auth_settings
 from modules.auth import service as auth_service
 from modules.auth import firebase as firebase_auth
 
@@ -20,7 +21,7 @@ def rsa_key():
 @pytest.fixture(autouse=True)
 def _wire_firebase(monkeypatch, rsa_key):
     """Point the verifier at our test project id + a single in-memory signing key."""
-    monkeypatch.setattr(firebase_auth, "FIREBASE_PROJECT_ID", _PROJECT_ID)
+    monkeypatch.setattr(auth_settings, "FIREBASE_PROJECT_ID", _PROJECT_ID)
     monkeypatch.setattr(firebase_auth, "_ISSUER", f"https://securetoken.google.com/{_PROJECT_ID}")
     monkeypatch.setattr(firebase_auth, "_certs", {"testkid": rsa_key.public_key()})
     monkeypatch.setattr(firebase_auth, "_certs_expiry", time.time() + 3600)

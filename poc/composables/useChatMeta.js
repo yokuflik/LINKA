@@ -51,12 +51,33 @@ function useChatMeta(ctx) {
   // GETs whose responses can land out of order, an early one clobbering the
   // final state. We debounce to one trailing fetch, and stamp each fetch with
   // a generation so a slow older response is discarded.
+  // Debounce (collapse a burst) + a hard floor between fetches (a steady
+  // trickle of receipt events - common with several tabs open - must not turn
+  // into a steady stream of GETs; that spins until the server 429s). And skip
+  // the fetch entirely when nothing on the loaded page can still change status
+  // (only our own not-yet-fully-read/delivered messages are worth re-checking).
+  const _STATUS_REFRESH_DEBOUNCE_MS = 250;
+  const _STATUS_REFRESH_MIN_INTERVAL_MS = 4000;
   let _statusRefreshTimer = null;
   let _statusRefreshGen = 0;
+  let _lastStatusRefreshAt = 0;
+  // Statuses that are terminal from the sender's view - once every message on
+  // the page has one of these (or isn't ours), there's nothing left to upgrade.
+  const _TERMINAL_STATUSES = new Set(['read', 'played']);
+  function _hasUpgradableStatus() {
+    const myId = ctx.currentUser.value && ctx.currentUser.value.id;
+    return ctx.messages.value.some(
+      (m) => m.sender_id === myId && m.id != null && !_TERMINAL_STATUSES.has(m.status),
+    );
+  }
   function refreshMessageStatuses(chatId) {
+    if (!_hasUpgradableStatus()) return;
     if (_statusRefreshTimer) clearTimeout(_statusRefreshTimer);
+    const sinceLast = Date.now() - _lastStatusRefreshAt;
+    const delay = Math.max(_STATUS_REFRESH_DEBOUNCE_MS, _STATUS_REFRESH_MIN_INTERVAL_MS - sinceLast);
     _statusRefreshTimer = setTimeout(() => {
       _statusRefreshTimer = null;
+      _lastStatusRefreshAt = Date.now();
       const gen = ++_statusRefreshGen;
       ctx.apiFetch(`/chats/${chatId}/messages?limit=50`)
         .then((page) => {
@@ -67,7 +88,7 @@ function useChatMeta(ctx) {
           }
         })
         .catch((err) => ctx.logError('failed to refresh message statuses for', chatId, err));
-    }, 250);
+    }, delay);
   }
 
   // Mirrors the server-side rule in crud_message: editing or deleting a

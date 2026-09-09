@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from modules.users.crud import create_user
 from modules.chats import service as chat_service
 from modules.messaging import service as message_service
+from modules.messaging.limits import MessagingLimits
 from realtime import presence_service
 from realtime.fanout import fanout_worker
 from realtime.fanout import send_queue
@@ -310,33 +311,37 @@ async def test_send_message_fans_out_over_realtime_pubsub(db_session: AsyncSessi
     assert isinstance(event["chat_id"], str)
 
 
-async def test_send_message_rejects_content_over_the_length_cap(db_session: AsyncSession, redis_db, monkeypatch):
-    monkeypatch.setattr(message_service, "MAX_MESSAGE_CONTENT_LENGTH", 10)
+async def test_send_message_rejects_content_over_the_length_cap(db_session: AsyncSession, redis_db):
+    limits = MessagingLimits(max_message_content_length=10)
     chat_id = await _make_group(db_session, 1, [2])
 
     with pytest.raises(message_service.MessageTooLongError):
         await message_service.process_outgoing(
-            db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="x" * 11
+            db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()),
+            content="x" * 11, limits=limits,
         )
 
 
-async def test_send_message_allows_content_at_exactly_the_cap(db_session: AsyncSession, redis_db, monkeypatch):
-    monkeypatch.setattr(message_service, "MAX_MESSAGE_CONTENT_LENGTH", 10)
+async def test_send_message_allows_content_at_exactly_the_cap(db_session: AsyncSession, redis_db):
+    limits = MessagingLimits(max_message_content_length=10)
     chat_id = await _make_group(db_session, 1, [2])
 
     message = await message_service.process_outgoing(
-        db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="x" * 10
+        db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()),
+        content="x" * 10, limits=limits,
     )
     assert message.content == "x" * 10
 
 
-async def test_edit_message_rejects_content_over_the_length_cap(db_session: AsyncSession, redis_db, monkeypatch):
+async def test_edit_message_rejects_content_over_the_length_cap(db_session: AsyncSession, redis_db):
     chat_id = await _make_group(db_session, 1, [2])
     message = await message_service.process_outgoing(db_session, sender_id=1, chat_id=chat_id, client_message_id=str(uuid.uuid4()), content="hi")
 
-    monkeypatch.setattr(message_service, "MAX_MESSAGE_CONTENT_LENGTH", 10)
     with pytest.raises(message_service.MessageTooLongError):
-        await message_service.edit_message(db_session, user_id=1, chat_id=chat_id, message_id=message.id, new_content="x" * 11)
+        await message_service.edit_message(
+            db_session, user_id=1, chat_id=chat_id, message_id=message.id, new_content="x" * 11,
+            limits=MessagingLimits(max_message_content_length=10),
+        )
 
 
 async def test_send_message_threads_a_reply(db_session: AsyncSession, redis_db):

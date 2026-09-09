@@ -1,23 +1,22 @@
 """Application configuration.
 
-Split into focused sub-modules (ADR 0019); this package is a thin facade that
-re-exports every setting, so `from config import X` and `import config` /
-`config.X` keep working exactly as before. Each sub-module declares `__all__`,
-so nothing but the settings themselves leaks into this namespace.
+Split into focused sub-modules (ADR 0019). New code reads settings through the
+flat accessor (ADR 0029):
+
+    from config import settings
+    settings.MAX_MESSAGE_CONTENT_LENGTH
+
+`settings` resolves every name live off the sub-module that owns it, so
+`monkeypatch.setattr(config.app_settings, "X", ...)` is reflected through it.
+
+The old `from config import NAME` / `config.NAME` flat style is kept ONLY for
+the names still consumed by `realtime/` (Rust-bound rewrite pending), `scripts/`
+and `infra/` - listed explicitly below. Everything under `modules/` and the
+test suite uses `settings`.
 
 To re-evaluate an env-var default in a test, reload the sub-module that owns
-the setting (e.g. `importlib.reload(config.app_settings)`), not this package -
-reloading a package returns the cached sub-modules.
+the setting (`importlib.reload(config.app_settings)`), not this package.
 """
-
-from .app_settings import *  # noqa: F401,F403
-from .auth_settings import *  # noqa: F401,F403
-from .redis_settings import *  # noqa: F401,F403
-from .security_settings import *  # noqa: F401,F403
-from .username_settings import *  # noqa: F401,F403
-from .storage_settings import *  # noqa: F401,F403
-from .messaging_settings import *  # noqa: F401,F403
-from .partition_settings import *  # noqa: F401,F403
 
 from . import (  # noqa: F401
     app_settings,
@@ -30,17 +29,153 @@ from . import (  # noqa: F401
     partition_settings,
 )
 
-# ADR 0029: single flat accessor over every setting - `from config import settings`.
+# ADR 0029: single flat accessor over every setting - the preferred surface.
 from ._accessor import settings  # noqa: F401
+
+# --- Legacy flat re-exports: realtime/ + scripts/ + infra/ only (ADR 0029) ---
+# Trimmed from `from .<sub> import *` to this explicit allow-list. Regenerate by
+# scanning those three trees for `from config import` / `config.<NAME>` usage.
+from .app_settings import (  # noqa: F401
+    ID_SERVICE_ADDR,
+    ID_SERVICE_TIMEOUT_SECONDS,
+    SERVER_ID,
+    SNOWFLAKE_MACHINE_ID,
+)
+from .redis_settings import (  # noqa: F401
+    REDIS_MAX_CONNECTIONS,
+    REDIS_URL,
+)
+from .security_settings import (  # noqa: F401
+    CORS_ALLOW_ORIGINS,
+    TRUSTED_PROXY_IPS,
+    WS_CONN_MAX_AGE_SECONDS,
+    WS_CONN_MAX_CONNECTIONS,
+    WS_EDIT_RATE_MAX,
+    WS_EDIT_RATE_WINDOW_SECONDS,
+    WS_FRAME_FLOOD_STRIKES,
+    WS_FRAME_RATE_MAX,
+    WS_FRAME_RATE_WINDOW_SECONDS,
+    WS_MAX_CHAT_IDS_ON_CONNECT,
+    WS_RECEIPTS_RATE_MAX,
+    WS_RECEIPTS_RATE_WINDOW_SECONDS,
+    WS_SEND_MESSAGE_BURST_MAX,
+    WS_SEND_MESSAGE_BURST_WINDOW_SECONDS,
+    WS_SEND_MESSAGE_RATE_MAX,
+    WS_SEND_MESSAGE_RATE_WINDOW_SECONDS,
+    WS_SUBSCRIBE_PRESENCE_RATE_MAX,
+    WS_SUBSCRIBE_PRESENCE_RATE_WINDOW_SECONDS,
+    WS_TYPING_RATE_MAX,
+    WS_TYPING_RATE_WINDOW_SECONDS,
+    WS_UPGRADE_IP_RATE_LIMIT_MAX,
+    WS_UPGRADE_IP_RATE_LIMIT_WINDOW_SECONDS,
+    WS_UPGRADE_USER_RATE_LIMIT_MAX,
+    WS_UPGRADE_USER_RATE_LIMIT_WINDOW_SECONDS,
+)
+from .storage_settings import (  # noqa: F401
+    S3_BUCKET_AVATARS,
+    S3_BUCKET_MEDIA,
+    S3_ENDPOINT_URL,
+)
+from .messaging_settings import (  # noqa: F401
+    CHAT_INSTANCE_TTL_SECONDS,
+    FANOUT_STREAM_CLAIM_IDLE_MS,
+    FANOUT_STREAM_SHARDS,
+    FANOUT_WORKER_BATCH,
+    FANOUT_WORKER_BLOCK_MS,
+    MESSAGE_FANOUT_STREAM_GROUP,
+    MESSAGE_FANOUT_STREAM_KEY,
+    MESSAGE_FANOUT_STREAM_MAXLEN,
+    MESSAGE_SEND_STREAM_GROUP,
+    MESSAGE_SEND_STREAM_KEY,
+    MESSAGE_SEND_STREAM_MAXLEN,
+    RECEIPT_KIND_DELIVERED,
+    RECEIPT_KIND_PLAYED,
+    RECEIPT_KIND_READ,
+    RECEIPT_LOG_RETENTION_DAYS,
+    SCHEDULED_DUE_SET_KEY,
+    SCHEDULED_FIRE_BACKOFF_SECONDS,
+    SCHEDULED_MAX_FIRE_ATTEMPTS,
+    SCHEDULED_POLL_INTERVAL_SECONDS,
+    SCHEDULED_RECONCILE_INTERVAL_SECONDS,
+    SCHEDULED_WORKER_BATCH,
+    SEND_STREAM_CLAIM_IDLE_MS,
+    SEND_STREAM_SHARDS,
+    SEND_WORKER_BATCH,
+    SEND_WORKER_BLOCK_MS,
+)
+from .partition_settings import (  # noqa: F401
+    MESSAGE_PARTITION_COLD_AFTER_MONTHS,
+    MESSAGE_PARTITION_COLD_TABLESPACE,
+    MESSAGE_PARTITION_INTERVAL,
+    MESSAGE_PARTITION_PRECREATE_WEEKS,
+    RECEIPT_LOG_PARTITION_INTERVAL,
+    RECEIPT_LOG_PRECREATE_DAYS,
+)
 
 __all__ = [
     "settings",
-    *app_settings.__all__,
-    *auth_settings.__all__,
-    *redis_settings.__all__,
-    *security_settings.__all__,
-    *username_settings.__all__,
-    *storage_settings.__all__,
-    *messaging_settings.__all__,
-    *partition_settings.__all__,
+    "CHAT_INSTANCE_TTL_SECONDS",
+    "CORS_ALLOW_ORIGINS",
+    "FANOUT_STREAM_CLAIM_IDLE_MS",
+    "FANOUT_STREAM_SHARDS",
+    "FANOUT_WORKER_BATCH",
+    "FANOUT_WORKER_BLOCK_MS",
+    "ID_SERVICE_ADDR",
+    "ID_SERVICE_TIMEOUT_SECONDS",
+    "MESSAGE_FANOUT_STREAM_GROUP",
+    "MESSAGE_FANOUT_STREAM_KEY",
+    "MESSAGE_FANOUT_STREAM_MAXLEN",
+    "MESSAGE_PARTITION_COLD_AFTER_MONTHS",
+    "MESSAGE_PARTITION_COLD_TABLESPACE",
+    "MESSAGE_PARTITION_INTERVAL",
+    "MESSAGE_PARTITION_PRECREATE_WEEKS",
+    "MESSAGE_SEND_STREAM_GROUP",
+    "MESSAGE_SEND_STREAM_KEY",
+    "MESSAGE_SEND_STREAM_MAXLEN",
+    "RECEIPT_KIND_DELIVERED",
+    "RECEIPT_KIND_PLAYED",
+    "RECEIPT_KIND_READ",
+    "RECEIPT_LOG_PARTITION_INTERVAL",
+    "RECEIPT_LOG_PRECREATE_DAYS",
+    "RECEIPT_LOG_RETENTION_DAYS",
+    "REDIS_MAX_CONNECTIONS",
+    "REDIS_URL",
+    "S3_BUCKET_AVATARS",
+    "S3_BUCKET_MEDIA",
+    "S3_ENDPOINT_URL",
+    "SCHEDULED_DUE_SET_KEY",
+    "SCHEDULED_FIRE_BACKOFF_SECONDS",
+    "SCHEDULED_MAX_FIRE_ATTEMPTS",
+    "SCHEDULED_POLL_INTERVAL_SECONDS",
+    "SCHEDULED_RECONCILE_INTERVAL_SECONDS",
+    "SCHEDULED_WORKER_BATCH",
+    "SEND_STREAM_CLAIM_IDLE_MS",
+    "SEND_STREAM_SHARDS",
+    "SEND_WORKER_BATCH",
+    "SEND_WORKER_BLOCK_MS",
+    "SERVER_ID",
+    "SNOWFLAKE_MACHINE_ID",
+    "TRUSTED_PROXY_IPS",
+    "WS_CONN_MAX_AGE_SECONDS",
+    "WS_CONN_MAX_CONNECTIONS",
+    "WS_EDIT_RATE_MAX",
+    "WS_EDIT_RATE_WINDOW_SECONDS",
+    "WS_FRAME_FLOOD_STRIKES",
+    "WS_FRAME_RATE_MAX",
+    "WS_FRAME_RATE_WINDOW_SECONDS",
+    "WS_MAX_CHAT_IDS_ON_CONNECT",
+    "WS_RECEIPTS_RATE_MAX",
+    "WS_RECEIPTS_RATE_WINDOW_SECONDS",
+    "WS_SEND_MESSAGE_BURST_MAX",
+    "WS_SEND_MESSAGE_BURST_WINDOW_SECONDS",
+    "WS_SEND_MESSAGE_RATE_MAX",
+    "WS_SEND_MESSAGE_RATE_WINDOW_SECONDS",
+    "WS_SUBSCRIBE_PRESENCE_RATE_MAX",
+    "WS_SUBSCRIBE_PRESENCE_RATE_WINDOW_SECONDS",
+    "WS_TYPING_RATE_MAX",
+    "WS_TYPING_RATE_WINDOW_SECONDS",
+    "WS_UPGRADE_IP_RATE_LIMIT_MAX",
+    "WS_UPGRADE_IP_RATE_LIMIT_WINDOW_SECONDS",
+    "WS_UPGRADE_USER_RATE_LIMIT_MAX",
+    "WS_UPGRADE_USER_RATE_LIMIT_WINDOW_SECONDS",
 ]

@@ -238,6 +238,7 @@ function useMembers(ctx) {
       await ctx.apiFetch(`/chats/${chatId}/members/${ctx.currentUser.value.id}${qs}`, { method: 'DELETE' });
       showMembersModal.value = false;
       showOwnerTransferPicker.value = false;
+      ctx.closeChatProfile?.();  // close the group-details slide-over on leave
       ctx.chats.value = ctx.chats.value.filter((c) => c.chat.id !== chatId);
       ctx.activeChatId.value = null;
       ctx.messages.value = [];

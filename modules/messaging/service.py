@@ -5,11 +5,8 @@ the public API so main.py, routers/*, chat_service, and the fan-out workers keep
 importing from one stable place - no behavior change.
 """
 
-# Config values kept importable here because tests monkeypatch them on this
-# module (message_service.MAX_MESSAGE_CONTENT_LENGTH / RECEIPT_NAMED_LIST_MAX_MEMBERS);
-# the messaging submodules read them back off this module at call time.
-from config import MAX_MESSAGE_CONTENT_LENGTH, RECEIPT_NAMED_LIST_MAX_MEMBERS  # noqa: F401
-
+# ADR 0033: size/limit caps are injected via modules.messaging.limits
+# (MessagingLimits / ScheduledLimits), not read off this facade module.
 from modules.messaging.common import SYSTEM_MESSAGE_TYPE
 from modules.messaging.common import _check_content_length  # noqa: F401
 from modules.messaging.errors import EncryptionRequiredError

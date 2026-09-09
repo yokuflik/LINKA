@@ -19,9 +19,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 import main as main_module
 from modules.auth import service as auth_service
-from modules.messaging import router as messaging_router
+from modules.messaging.limits import ScheduledLimits
+from modules.messaging.router import get_scheduled_limits
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clear_dependency_overrides():
+    """ADR 0033: route tests tune limits via app.dependency_overrides."""
+    yield
+    main_module.app.dependency_overrides.clear()
 
 
 @pytest_asyncio.fixture
@@ -157,9 +165,8 @@ async def test_scheduling_too_soon_is_400(client, db_session: AsyncSession, redi
     assert resp.status_code == 400
 
 
-async def test_pending_limit_is_409(client, db_session: AsyncSession, redis_db, monkeypatch):
-    from modules.messaging import scheduled_service
-    monkeypatch.setattr(scheduled_service, "SCHEDULED_MAX_PENDING_PER_USER", 1)
+async def test_pending_limit_is_409(client, db_session: AsyncSession, redis_db):
+    main_module.app.dependency_overrides[get_scheduled_limits] = lambda: ScheduledLimits(max_pending_per_user=1)
 
     user_a, token_a = await _login(client, redis_db, "+972500200050")
     user_b, _ = await _login(client, redis_db, "+972500200051")
@@ -178,8 +185,8 @@ async def test_pending_limit_is_409(client, db_session: AsyncSession, redis_db, 
     assert resp.status_code == 409
 
 
-async def test_scheduled_write_is_rate_limited(client, db_session: AsyncSession, redis_db, monkeypatch):
-    monkeypatch.setattr(messaging_router, "SCHEDULED_WRITE_RATE_MAX", 2)
+async def test_scheduled_write_is_rate_limited(client, db_session: AsyncSession, redis_db):
+    main_module.app.dependency_overrides[get_scheduled_limits] = lambda: ScheduledLimits(write_rate_max=2)
 
     user_a, token_a = await _login(client, redis_db, "+972500200060")
     user_b, _ = await _login(client, redis_db, "+972500200061")

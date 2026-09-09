@@ -4,21 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import (
-    DETAIL_READ_RATE_MAX,
-    DETAIL_READ_RATE_WINDOW_SECONDS,
-    MSG_HISTORY_MAX_LIMIT,
-    MSG_HISTORY_RATE_MAX,
-    MSG_HISTORY_RATE_WINDOW_SECONDS,
-    SCHEDULED_WRITE_RATE_MAX,
-    SCHEDULED_WRITE_RATE_WINDOW_SECONDS,
-    UPLOAD_TICKET_IP_RATE_LIMIT_MAX,
-    UPLOAD_TICKET_IP_RATE_LIMIT_WINDOW_SECONDS,
-    UPLOAD_TICKET_RATE_MAX,
-    UPLOAD_TICKET_RATE_WINDOW_SECONDS,
-    STORAGE_QUOTA_BYTES,
-)
+from config import settings
 from infra.db.connection import get_db
+from modules.messaging.limits import (
+    DEFAULT_MESSAGING_LIMITS,
+    DEFAULT_SCHEDULED_LIMITS,
+    MessagingLimits,
+    ScheduledLimits,
+)
 from modules.media.crud import get_blob_by_hash
 from modules.media.crud import reserve_blob
 from modules.media.errors import StorageQuotaExceededError
@@ -40,6 +33,17 @@ from modules.media import media_service
 router = APIRouter(prefix="/chats/{chat_id}/messages", tags=["messages"])
 
 
+def get_messaging_limits() -> MessagingLimits:
+    """FastAPI dependency (ADR 0033). Tests override via
+    app.dependency_overrides[get_messaging_limits]."""
+    return DEFAULT_MESSAGING_LIMITS
+
+
+def get_scheduled_limits() -> ScheduledLimits:
+    """FastAPI dependency (ADR 0033)."""
+    return DEFAULT_SCHEDULED_LIMITS
+
+
 @router.get("", response_model=list[MessageOut])
 async def get_message_history(
     chat_id: int,
@@ -47,12 +51,13 @@ async def get_message_history(
     limit: int = 50,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
+    limits: MessagingLimits = Depends(get_messaging_limits),
 ):
     await rate_limit_service.enforce_sliding_window(
-        user_id, "msg_history", MSG_HISTORY_RATE_MAX, MSG_HISTORY_RATE_WINDOW_SECONDS
+        user_id, "msg_history", limits.msg_history_rate_max, limits.msg_history_rate_window_s
     )
     # Clamp pagination size server-side so a client can't ask for the whole chat.
-    limit = max(1, min(limit, MSG_HISTORY_MAX_LIMIT))
+    limit = max(1, min(limit, limits.msg_history_max_limit))
     return await message_service.get_message_history(session, user_id=user_id, chat_id=chat_id, before_id=before_id, limit=limit)
 
 
@@ -62,6 +67,7 @@ async def get_message_receipts(
     message_id: int,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
+    limits: MessagingLimits = Depends(get_messaging_limits),
 ):
     """
     Per-message "info": when each participant received / read / played this
@@ -69,11 +75,11 @@ async def get_message_receipts(
     members) who has. Any participant may view it for any message.
     """
     await rate_limit_service.enforce_sliding_window(
-        user_id, "detail_read", DETAIL_READ_RATE_MAX, DETAIL_READ_RATE_WINDOW_SECONDS
+        user_id, "detail_read", limits.detail_read_rate_max, limits.detail_read_rate_window_s
     )
     try:
         return await message_service.get_message_receipts(
-            session, user_id=user_id, chat_id=chat_id, message_id=message_id
+            session, user_id=user_id, chat_id=chat_id, message_id=message_id, limits=limits
         )
     except message_service.MessageNotFoundError:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -86,6 +92,7 @@ async def create_media_upload_ticket(
     request: Request,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
+    limits: MessagingLimits = Depends(get_messaging_limits),
 ):
     """
     Presigned PUT for a message attachment. The client uploads its bytes
@@ -94,14 +101,14 @@ async def create_media_upload_ticket(
     so a stranger can't mint upload URLs against a chat.
     """
     await rate_limit_service.enforce_sliding_window(
-        user_id, "upload_ticket", UPLOAD_TICKET_RATE_MAX, UPLOAD_TICKET_RATE_WINDOW_SECONDS
+        user_id, "upload_ticket", limits.upload_ticket_rate_max, limits.upload_ticket_rate_window_s
     )
     ip = rate_limit_service.client_ip(request)
     if not await rate_limit_service.check_and_increment(
-        ip, "upload_ticket_ip", max_per_window=UPLOAD_TICKET_IP_RATE_LIMIT_MAX,
-        window_seconds=UPLOAD_TICKET_IP_RATE_LIMIT_WINDOW_SECONDS,
+        ip, "upload_ticket_ip", max_per_window=limits.upload_ticket_ip_rate_max,
+        window_seconds=limits.upload_ticket_ip_rate_window_s,
     ):
-        raise RateLimited("upload_ticket_ip", retry_after=UPLOAD_TICKET_IP_RATE_LIMIT_WINDOW_SECONDS)
+        raise RateLimited("upload_ticket_ip", retry_after=limits.upload_ticket_ip_rate_window_s)
 
     if not await is_participant(session, chat_id, user_id):
         raise message_service.NotAParticipantError(
@@ -111,7 +118,7 @@ async def create_media_upload_ticket(
     # Per-user hard storage quota (ADR 0028): checked before the dedup branch -
     # a deduped send still becomes a ref this user holds, so it still counts.
     used = await get_storage_bytes_used(session, user_id)
-    if used + body.size_bytes > STORAGE_QUOTA_BYTES:
+    if used + body.size_bytes > settings.STORAGE_QUOTA_BYTES:
         raise StorageQuotaExceededError(
             "storage quota exceeded - delete some files to upload more"
         )
@@ -178,10 +185,10 @@ def _scheduled_out(row) -> ScheduledMessageOut:
     )
 
 
-async def _enforce_scheduled_write(user_id: int) -> None:
+async def _enforce_scheduled_write(user_id: int, limits: ScheduledLimits) -> None:
     await rate_limit_service.enforce_sliding_window(
         user_id, "scheduled_write",
-        SCHEDULED_WRITE_RATE_MAX, SCHEDULED_WRITE_RATE_WINDOW_SECONDS,
+        limits.write_rate_max, limits.write_rate_window_s,
     )
 
 
@@ -191,8 +198,9 @@ async def schedule_message(
     body: ScheduledMessageIn,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
+    limits: ScheduledLimits = Depends(get_scheduled_limits),
 ):
-    await _enforce_scheduled_write(user_id)
+    await _enforce_scheduled_write(user_id, limits)
     row = await message_service.schedule_message(
         session,
         sender_id=user_id,
@@ -203,6 +211,7 @@ async def schedule_message(
         content=body.content,
         media=body.media.model_dump() if body.media else None,
         reply_to_message_id=body.reply_to_message_id,
+        limits=limits,
     )
     return _scheduled_out(row)
 
@@ -223,8 +232,9 @@ async def patch_scheduled_message(
     body: ScheduledMessagePatchIn,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
+    limits: ScheduledLimits = Depends(get_scheduled_limits),
 ):
-    await _enforce_scheduled_write(user_id)
+    await _enforce_scheduled_write(user_id, limits)
     set_content = "content" in body.model_fields_set
     row = await message_service.reschedule(
         session,
@@ -233,6 +243,7 @@ async def patch_scheduled_message(
         scheduled_for=body.scheduled_for,
         content=body.content,
         set_content=set_content,
+        limits=limits,
     )
     return _scheduled_out(row)
 
@@ -242,8 +253,9 @@ async def cancel_scheduled_message(
     scheduled_message_id: int,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
+    limits: ScheduledLimits = Depends(get_scheduled_limits),
 ):
-    await _enforce_scheduled_write(user_id)
+    await _enforce_scheduled_write(user_id, limits)
     await message_service.cancel_scheduled(
         session, sender_id=user_id, scheduled_message_id=scheduled_message_id
     )

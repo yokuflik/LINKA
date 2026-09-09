@@ -85,7 +85,20 @@ Problems in the "INDEX — docs/adr/" table:
 
 ---
 
-## C. Ephemeral test database in `tests/conftest.py`  — needs a short ADR
+## C. Ephemeral test database in `tests/conftest.py`  — ✅ DONE (2026-09-09)
+
+ADR 0032 written. `conftest.py` derives `test_db_<uuid4 hex>` from the fixed
+server coordinate, rewrites `os.environ["DATABASE_URL"]` before any project
+import (so `infra.db.connection` binds to it), and a session-scoped autouse
+`_ephemeral_database` fixture `CREATE DATABASE` / `DROP DATABASE ... WITH
+(FORCE)` via an AUTOCOMMIT engine on the server's `postgres` db.
+`session_factory` unchanged in shape (`.kw["bind"]` still works). Runbook:
+`tests/README.md`. CLAUDE.md + `database_schema.md` testing notes updated.
+Original task text kept below for the record.
+
+---
+
+## C (original). Ephemeral test database in `tests/conftest.py`  — needs a short ADR
 
 Today `tests/conftest.py::session_factory` runs `Base.metadata.create_all` then
 `drop_all` against `TEST_DATABASE_URL`, which is the **same** database a
@@ -129,7 +142,39 @@ Not started. Each needs its own ADR before code.
 - Behavioral-risk change — do it with the ephemeral test DB (task C) in place
   so iteration is cheap.
 
-### D2. Remove monkeypatching in `tests/api/test_rest_api.py` via DI
+### D2. Remove monkeypatching via DI  — ✅ DONE (2026-09-09)
+
+ADR 0033. Per-feature frozen dataclasses: `modules/auth/limits.py::AuthPolicy`,
+`modules/messaging/limits.py::{MessagingLimits,ScheduledLimits}`,
+`modules/chats/limits.py::ChatLimits`. Service fns take a keyword-only
+`policy=` / `limits=` (default = the module's `DEFAULT_*`); routers expose
+`get_auth_policy` / `get_messaging_limits` / `get_scheduled_limits` /
+`get_chat_limits` as FastAPI deps. Route tests use
+`app.dependency_overrides` (+ an autouse `_clear_dependency_overrides`
+fixture); service-unit tests pass `AuthPolicy(...)` / `MessagingLimits(...)`
+directly. `monkeypatch` remains only for non-config collaborator stubs
+(`notification_service.send_push`, `chat_service.realtime_service.publish_event`).
+`realtime/` callers pass nothing and get the defaults (untouched, Rust rewrite).
+347 pass; the 2 `test_message_service.py` fan-out failures are the known
+pre-existing pollution (identical set on clean `main`).
+
+### D2b. Finish the ADR 0029 migration (Task 4)  — ✅ DONE (2026-09-09)
+
+Last flat `from config import NAME` / `import config` consumers under
+`modules/` + `tests/` moved to `settings.X`: `modules/auth/{service,firebase}.py`,
+`modules/auth/limits.py`, `modules/messaging/limits.py`, `modules/chats/limits.py`,
+`modules/messaging/{router,scheduled_service}.py`, `modules/users/service.py`,
+`tests/modules/users/test_user_service.py`. `tests/modules/auth/test_firebase_auth.py`
+now patches `config.auth_settings.FIREBASE_PROJECT_ID` (accessor resolves live)
+instead of a module global. `config/__init__.py` flat re-exports shrunk from
+`from .<sub> import *` to an explicit 64-name allow-list — only what `realtime/`
++ `scripts/` + `infra/` still consume. 452 pass; the 3 remaining full-run
+failures (`test_message_service` fan-out x2, `test_send_queue` duplicate) are
+pre-existing Redis-timing flakes — all pass in isolation and on clean `main`.
+
+Original task text kept below for the record.
+
+### D2 (original). Remove monkeypatching in `tests/api/test_rest_api.py` via DI
 - 26 `monkeypatch` calls; the pattern is `monkeypatch.setattr(<consumer
   module>, "<CONFIG_NAME>", value)` — it works only because the consumer does
   `from config import CONFIG_NAME` binding the name locally.

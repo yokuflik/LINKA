@@ -97,21 +97,23 @@ async def test_schedule_message_rejects_a_system_message_type(db_session: AsyncS
 
 
 async def test_schedule_message_enforces_the_pending_limit(
-    db_session: AsyncSession, redis_db, monkeypatch
+    db_session: AsyncSession, redis_db
 ):
-    monkeypatch.setattr(scheduled_service, "SCHEDULED_MAX_PENDING_PER_USER", 2)
+    from modules.messaging.limits import ScheduledLimits
+
+    limits = ScheduledLimits(max_pending_per_user=2)
     chat_id = await _make_group(db_session, 1, [2])
 
     for _ in range(2):
         await scheduled_service.schedule_message(
             db_session, sender_id=1, chat_id=chat_id,
-            client_message_id=str(uuid.uuid4()), scheduled_for=_soon(), content="x",
+            client_message_id=str(uuid.uuid4()), scheduled_for=_soon(), content="x", limits=limits,
         )
 
     with pytest.raises(scheduled_service.ScheduledLimitExceededError):
         await scheduled_service.schedule_message(
             db_session, sender_id=1, chat_id=chat_id,
-            client_message_id=str(uuid.uuid4()), scheduled_for=_soon(), content="x",
+            client_message_id=str(uuid.uuid4()), scheduled_for=_soon(), content="x", limits=limits,
         )
 
 

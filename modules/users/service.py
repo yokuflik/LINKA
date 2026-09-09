@@ -8,7 +8,7 @@ from typing import Optional, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import config
+from config import settings
 from modules.chats.crud.crud_participant import get_all_chat_ids_for_user
 from modules.users import crud as crud_user
 from modules.users.crud import UsernameTakenError
@@ -38,15 +38,15 @@ def validate_username_format(raw: str) -> str:
     """Normalise + validate an untrusted username. Returns the canonical
     (lowercased, trimmed) form or raises ``UsernameError`` with a reason code."""
     norm = (raw or "").strip().lower()
-    if len(norm) < config.USERNAME_MIN_LEN:
+    if len(norm) < settings.USERNAME_MIN_LEN:
         raise UsernameError("too_short")
-    if len(norm) > config.USERNAME_MAX_LEN:
+    if len(norm) > settings.USERNAME_MAX_LEN:
         raise UsernameError("too_long")
     if not norm[0].isalpha():
         raise UsernameError("must_start_letter")
-    if not re.match(config.USERNAME_REGEX, norm):
+    if not re.match(settings.USERNAME_REGEX, norm):
         raise UsernameError("bad_chars")
-    if norm in config.USERNAME_RESERVED:
+    if norm in settings.USERNAME_RESERVED:
         raise UsernameError("reserved")
     return norm
 
@@ -70,7 +70,7 @@ async def generate_free_username(session: AsyncSession) -> str:
     handle is only *probably* still free - ``create_user`` treats the unique
     index as the authority and this is retried on collision."""
     digits = 3
-    for attempt in range(config.USERNAME_GENERATE_ATTEMPTS):
+    for attempt in range(settings.USERNAME_GENERATE_ATTEMPTS):
         adj = random.choice(_USERNAME_ADJECTIVES)
         noun = random.choice(_USERNAME_NOUNS)
         num = random.randint(10 ** (digits - 1), 10 ** digits - 1)
@@ -87,13 +87,13 @@ async def generate_free_username(session: AsyncSession) -> str:
 async def _change_quota_exceeded(user: User) -> Optional[str]:
     """Return an ISO timestamp of when the username-change quota frees up, or
     None if a change is allowed now (ADR 0023). The first
-    ``config.USERNAME_CHANGE_MAX_PER_WINDOW`` user-initiated changes in any
-    rolling ``config.USERNAME_CHANGE_WINDOW_DAYS`` are free; the initial
+    ``settings.USERNAME_CHANGE_MAX_PER_WINDOW`` user-initiated changes in any
+    rolling ``settings.USERNAME_CHANGE_WINDOW_DAYS`` are free; the initial
     auto-assignment leaves ``username_change_log`` empty and never counts."""
     log = user.username_change_log or []
     if not log:
         return None
-    window = timedelta(days=config.USERNAME_CHANGE_WINDOW_DAYS)
+    window = timedelta(days=settings.USERNAME_CHANGE_WINDOW_DAYS)
     now = datetime.now(timezone.utc)
     recent = []
     for raw_ts in log:
@@ -105,7 +105,7 @@ async def _change_quota_exceeded(user: User) -> Optional[str]:
             ts = ts.replace(tzinfo=timezone.utc)
         if now - ts < window:
             recent.append(ts)
-    if len(recent) < config.USERNAME_CHANGE_MAX_PER_WINDOW:
+    if len(recent) < settings.USERNAME_CHANGE_MAX_PER_WINDOW:
         return None
     return (min(recent) + window).isoformat()
 
@@ -181,7 +181,7 @@ _DISPLAY_NAME_STRIP_TABLE = {cp: None for cp in _DISPLAY_NAME_STRIP_CODEPOINTS}
 def sanitize_display_name(raw: Optional[str]) -> Optional[str]:
     """Clean an untrusted display name (ADR 0024). Strips control / bidi /
     zero-width code points, NFC-normalises, trims surrounding whitespace and
-    truncates to ``config.DISPLAY_NAME_MAX_LEN`` code points. An empty result
+    truncates to ``settings.DISPLAY_NAME_MAX_LEN`` code points. An empty result
     (or ``None`` in) returns ``None`` - that's how the nickname is cleared."""
     if raw is None:
         return None
@@ -189,7 +189,7 @@ def sanitize_display_name(raw: Optional[str]) -> Optional[str]:
     cleaned = unicodedata.normalize("NFC", cleaned).strip()
     if not cleaned:
         return None
-    return cleaned[: config.DISPLAY_NAME_MAX_LEN]
+    return cleaned[: settings.DISPLAY_NAME_MAX_LEN]
 
 
 async def get_profile(session: AsyncSession, user_id: int) -> Optional[User]:

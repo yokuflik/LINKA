@@ -151,8 +151,13 @@ function useWsRouter(ctx) {
           media_blur_hash: msg.media_blur_hash,
         };
         ctx.messages.value.push(row);
-        // E2E (ADR 0026): decrypt in place before it's read on screen.
-        if (row.is_encrypted && ctx.decryptInPlace) ctx.decryptInPlace(row);
+        // E2E (ADR 0026): decrypt in place before it's read on screen. Must
+        // target the reactive array element (the proxy), not the raw `row`
+        // reference - mutating the latter never triggers a re-render, which is
+        // why an encrypted bubble showed up blank while the sidebar preview
+        // (decrypted via a returned value) was fine.
+        const reactiveRow = ctx.messages.value[ctx.messages.value.length - 1];
+        if (reactiveRow.is_encrypted && ctx.decryptInPlace) ctx.decryptInPlace(reactiveRow);
         if (msg.type === 2 && msg.media_url) ctx.probeMediaOrientation(msg.media_url, 'image', msg.media_blur_hash);
         else if (msg.type === 3 && msg.media_url) ctx.probeMediaOrientation(msg.media_url, 'video', msg.media_blur_hash);
         // Always follow your own message down; for someone else's, only if

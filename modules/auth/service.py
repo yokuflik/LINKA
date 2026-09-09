@@ -6,20 +6,8 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import (
-    JWT_SECRET_KEY,
-    JWT_ALGORITHM,
-    ACCESS_TOKEN_EXPIRE_MINUTES,
-    ACCOUNT_CREATE_IP_RATE_LIMIT_MAX,
-    ACCOUNT_CREATE_IP_RATE_LIMIT_WINDOW_SECONDS,
-    REFRESH_TOKEN_EXPIRE_DAYS,
-    REFRESH_JTI_RATE_LIMIT_MAX,
-    REFRESH_JTI_RATE_LIMIT_WINDOW_SECONDS,
-    DEV_AUTH_WHITELIST,
-    OTP_REQUEST_RATE_LIMIT_MAX,
-    OTP_REQUEST_RATE_LIMIT_WINDOW_SECONDS,
-    OTP_VERIFY_MAX_ATTEMPTS,
-)
+from config import settings
+from modules.auth.limits import AuthPolicy, DEFAULT_AUTH_POLICY
 from modules.users.crud import create_user
 from modules.users.crud import get_user_by_phone
 from modules.users.models import User
@@ -64,7 +52,13 @@ def _otp_key(phone_number: str) -> str:
     return f"{_OTP_KEY_PREFIX}{phone_number}"
 
 
-async def request_otp(phone_number: str, intent: str | None = None, session: AsyncSession | None = None) -> None:
+async def request_otp(
+    phone_number: str,
+    intent: str | None = None,
+    session: AsyncSession | None = None,
+    *,
+    policy: AuthPolicy = DEFAULT_AUTH_POLICY,
+) -> None:
     """
     Generates a one-time login code and hands it to the SMS provider.
 
@@ -79,11 +73,12 @@ async def request_otp(phone_number: str, intent: str | None = None, session: Asy
     """
     # Dev whitelist (ADR 0009): a handful of non-real test phone strings ("1".."5")
     # skip SMS entirely - no code is stored, and verify accepts any input.
-    if phone_number in DEV_AUTH_WHITELIST:
+    if phone_number in settings.DEV_AUTH_WHITELIST:
         return
 
     allowed = await rate_limit_service.check_and_increment(
-        phone_number, "otp_request", max_per_window=OTP_REQUEST_RATE_LIMIT_MAX, window_seconds=OTP_REQUEST_RATE_LIMIT_WINDOW_SECONDS
+        phone_number, "otp_request",
+        max_per_window=policy.otp_request_max, window_seconds=policy.otp_request_window_s,
     )
     if not allowed:
         raise OTPRequestRateLimitedError(f"Too many OTP requests for {phone_number}")
@@ -99,8 +94,9 @@ async def _deliver_otp(phone_number: str, code: str) -> None:
 
 
 async def verify_otp_and_login(
-    session: AsyncSession, phone_number: str, code: str, client_ip: str | None = None
-) -> tuple[User, str, str]:
+    session: AsyncSession, phone_number: str, code: str, client_ip: str | None = None,
+    *, policy: AuthPolicy = DEFAULT_AUTH_POLICY,
+) -> tuple[User, str, str, bool]:
     """
     Verifies the code, creates the user on first login, and issues a fresh
     access/refresh token pair. Returns (user, access_token, refresh_token).
@@ -112,11 +108,12 @@ async def verify_otp_and_login(
     minutes the code is valid.
     """
     # Dev whitelist (ADR 0009): non-real test numbers log straight in.
-    if phone_number in DEV_AUTH_WHITELIST:
-        return await _find_or_create_and_issue(session, phone_number, client_ip)
+    if phone_number in settings.DEV_AUTH_WHITELIST:
+        return await _find_or_create_and_issue(session, phone_number, client_ip, policy=policy)
 
     attempts_allowed = await rate_limit_service.check_and_increment(
-        phone_number, "otp_verify", max_per_window=OTP_VERIFY_MAX_ATTEMPTS, window_seconds=_OTP_TTL_SECONDS
+        phone_number, "otp_verify",
+        max_per_window=policy.otp_verify_max_attempts, window_seconds=_OTP_TTL_SECONDS,
     )
     if not attempts_allowed:
         raise InvalidOTPError("Too many attempts - request a new code")
@@ -128,12 +125,13 @@ async def verify_otp_and_login(
     # One-time: consume the code so it can't be replayed
     await redis_client.delete(_otp_key(phone_number))
 
-    return await _find_or_create_and_issue(session, phone_number, client_ip)
+    return await _find_or_create_and_issue(session, phone_number, client_ip, policy=policy)
 
 
 async def verify_firebase_and_login(
-    session: AsyncSession, id_token: str, client_ip: str | None = None
-) -> tuple[User, str, str]:
+    session: AsyncSession, id_token: str, client_ip: str | None = None,
+    *, policy: AuthPolicy = DEFAULT_AUTH_POLICY,
+) -> tuple[User, str, str, bool]:
     """
     Trades a verified Firebase Phone Auth ID token for our own access/refresh
     pair (ADR 0009). The SMS + code check already happened client-side; here we
@@ -154,16 +152,18 @@ async def verify_firebase_and_login(
 
     # Cheap replay/abuse guard even though Firebase already gates the SMS send.
     attempts_allowed = await rate_limit_service.check_and_increment(
-        phone_number, "firebase_verify", max_per_window=OTP_VERIFY_MAX_ATTEMPTS, window_seconds=_OTP_TTL_SECONDS
+        phone_number, "firebase_verify",
+        max_per_window=policy.otp_verify_max_attempts, window_seconds=_OTP_TTL_SECONDS,
     )
     if not attempts_allowed:
         raise InvalidOTPError("Too many attempts - try again shortly")
 
-    return await _find_or_create_and_issue(session, phone_number, client_ip)
+    return await _find_or_create_and_issue(session, phone_number, client_ip, policy=policy)
 
 
 async def _find_or_create_and_issue(
-    session: AsyncSession, phone_number: str, client_ip: str | None = None
+    session: AsyncSession, phone_number: str, client_ip: str | None = None,
+    *, policy: AuthPolicy = DEFAULT_AUTH_POLICY,
 ) -> tuple[User, str, str, bool]:
     """Shared login tail: find-or-create the user, mint an access/refresh pair.
     Returns ``(user, access, refresh, is_new_user)`` - the frontend uses the
@@ -180,8 +180,8 @@ async def _find_or_create_and_issue(
             allowed = await rate_limit_service.check_and_increment(
                 client_ip,
                 "acct_create",
-                max_per_window=ACCOUNT_CREATE_IP_RATE_LIMIT_MAX,
-                window_seconds=ACCOUNT_CREATE_IP_RATE_LIMIT_WINDOW_SECONDS,
+                max_per_window=policy.account_create_ip_max,
+                window_seconds=policy.account_create_ip_window_s,
             )
             if not allowed:
                 raise AccountCreationRateLimitedError("Too many new accounts from this network - try again later")
@@ -202,21 +202,21 @@ async def _find_or_create_and_issue(
             user = await get_user_by_phone(session, phone_number)
             is_new_user = False
 
-    access_token = _create_access_token(user.id)
+    access_token = _create_access_token(user.id, policy=policy)
     refresh_token = await _issue_refresh_token(user.id)
 
     return user, access_token, refresh_token, is_new_user
 
 
-def _create_access_token(user_id: int) -> str:
+def _create_access_token(user_id: int, *, policy: AuthPolicy = DEFAULT_AUTH_POLICY) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": str(user_id),
         "type": "access",
         "iat": now,
-        "exp": now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        "exp": now + timedelta(minutes=policy.access_token_expire_minutes),
     }
-    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
 async def _issue_refresh_token(user_id: int) -> str:
@@ -227,14 +227,14 @@ async def _issue_refresh_token(user_id: int) -> str:
         "type": "refresh",
         "jti": jti,
         "iat": now,
-        "exp": now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+        "exp": now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
     }
-    token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    token = jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
     # Tracking valid jti's (instead of trusting the JWT alone) is what makes
     # logout/rotation possible - a bare JWT can't be revoked before it expires.
     await redis_client.sadd(f"{_REFRESH_JTI_KEY_PREFIX}{user_id}", jti)
-    await redis_client.expire(f"{_REFRESH_JTI_KEY_PREFIX}{user_id}", REFRESH_TOKEN_EXPIRE_DAYS * 86400)
+    await redis_client.expire(f"{_REFRESH_JTI_KEY_PREFIX}{user_id}", settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400)
 
     return token
 
@@ -244,19 +244,21 @@ def verify_access_token(token: str) -> int:
     Returns the user_id. Used as a FastAPI dependency on every REST route and
     on the WebSocket handshake. Raises jwt.PyJWTError (expired/invalid) on failure.
     """
-    payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+    payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     if payload.get("type") != "access":
         raise jwt.InvalidTokenError("Not an access token")
     return int(payload["sub"])
 
 
-async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
+async def refresh_access_token(
+    refresh_token: str, *, policy: AuthPolicy = DEFAULT_AUTH_POLICY
+) -> tuple[str, str]:
     """
     Validates the refresh token, rotates it (old jti invalidated, new one
     issued), and returns a new (access_token, refresh_token) pair.
     """
     try:
-        payload = jwt.decode(refresh_token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(refresh_token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     except jwt.PyJWTError as e:
         raise InvalidRefreshTokenError(str(e))
 
@@ -272,8 +274,8 @@ async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
     jti_allowed = await rate_limit_service.check_and_increment(
         jti,
         "refresh_jti",
-        max_per_window=REFRESH_JTI_RATE_LIMIT_MAX,
-        window_seconds=REFRESH_JTI_RATE_LIMIT_WINDOW_SECONDS,
+        max_per_window=policy.refresh_jti_max,
+        window_seconds=policy.refresh_jti_window_s,
     )
     if not jti_allowed:
         raise InvalidRefreshTokenError("This refresh token is being used too frequently")
@@ -290,7 +292,7 @@ async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
     if removed_count == 0:
         raise InvalidRefreshTokenError("Refresh token has been revoked or already rotated")
 
-    new_access_token = _create_access_token(user_id)
+    new_access_token = _create_access_token(user_id, policy=policy)
     new_refresh_token = await _issue_refresh_token(user_id)
     return new_access_token, new_refresh_token
 
@@ -298,7 +300,7 @@ async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
 async def logout(refresh_token: str) -> None:
     """Revokes a single refresh token (e.g. "log out this device")."""
     try:
-        payload = jwt.decode(refresh_token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(refresh_token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     except jwt.PyJWTError:
         return  # already invalid/expired - nothing to revoke
 

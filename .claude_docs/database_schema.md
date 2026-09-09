@@ -99,6 +99,7 @@ Read this before any change to models, CRUD, partitioning, unread counts, or the
 ## Client-side E2E encryption (ADR 0026)
 - `messages.is_encrypted` (BOOLEAN NOT NULL DEFAULT FALSE) + `messages.enc_header` (JSONB, nullable). Added via `ADD COLUMN IF NOT EXISTS` in `scripts/init_db.py` (no migration). When `is_encrypted`, `content` is base64 AES-256-GCM ciphertext and `enc_header` = `{v, alg, iv, eph_pub (ECDH P-256 public JWK), wraps:{user_id:{ek,iv}}}` — all opaque to the server. Set by `crud.create_message(enc_header=...)`, which derives `is_encrypted = enc_header is not None`.
 - `build_last_message_preview(content, type, is_encrypted=False)` → constant `ENCRYPTED_MESSAGE_PREVIEW` ("🔒 Encrypted message") when encrypted; the server never derives a plaintext preview.
+- **`chats.last_message_enc`** (JSONB, nullable — ADR 0034, `ADD COLUMN IF NOT EXISTS`). When the last previewable message is encrypted, `{"ct": <base64 ciphertext>, "header": <enc_header>}` — the same opaque blob every recipient already got over the socket — so the client can decrypt the sidebar preview on load. `crud_message` sets it in lockstep with `last_message_preview` on every write path (send / edit-of-last / soft-delete / purge / undelete); `NULL` whenever that message is plaintext, deleted, purged, or absent. Never read server-side. Exposed as `ChatOut.last_message_enc`.
 - `user_public_keys` table (`modules/users/models.py::UserPublicKey`): `user_id` PK/FK→users ON DELETE CASCADE, `public_key` JSONB (public EC/P-256 JWK), `algo` VARCHAR(32), `fingerprint` TEXT (SHA-256 hex of canonical JWK), `created_at`, `updated_at`. One current key/user; `crud.upsert_public_key` (pg_insert on_conflict). `user_service.validate_public_key` rejects a JWK carrying `d`.
 
 ## Scheduled messages (ADR 0031)
@@ -112,5 +113,5 @@ Read this before any change to models, CRUD, partitioning, unread counts, or the
 
 ## Testing note
 - 200+ tests against real Postgres/Redis/MinIO containers, no mocks.
-- **Any DB-backed test wipes the dev DB** — the suite `drop_all`s on teardown. Dump first (`docker exec linka-test_db-1 pg_dump -U test_user -d test_db --clean --if-exists > dump.sql`) or re-run `init_db` + `seed_mock_data`. MinIO unaffected.
-- When manually verifying against dev Postgres, always leave the schema created (not dropped).
+- **Ephemeral test DB (ADR 0032):** the suite creates a throwaway `test_db_<uuid hex>` per `pytest` session and drops it on teardown; the seeded dev DB and MinIO are left untouched. `conftest.py` derives the ephemeral name from the fixed server coordinate — `DATABASE_URL` need not be set. Runbook + straggler cleanup: `tests/README.md`.
+- The `test_message_service.py` fan-out tests have a **pre-existing** order-dependent pollution bug (fails on clean `main` too); the failing test shifts run to run.

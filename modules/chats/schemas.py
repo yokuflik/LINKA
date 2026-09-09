@@ -34,6 +34,13 @@ class ChatOut(BaseModel):
     last_message_id: Optional[IdStr]
     last_message_preview: Optional[str]
 
+    # E2E (ADR 0034): when the last message is encrypted, the opaque
+    # {"ct": <base64 ciphertext>, "header": <enc_header>} the client decrypts to
+    # render a real preview line instead of the "🔒 Encrypted message"
+    # placeholder. NULL for a plaintext / deleted / absent last message. The
+    # server never inspects it.
+    last_message_enc: Optional[dict] = None
+
     # MessageStatus for last_message_id (1=sent, 2=delivered, 3=read; 4=played
     # is voice-recording-only and not computed here - see
     # database/models/message.py), for the chat list's own tick next to your

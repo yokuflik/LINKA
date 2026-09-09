@@ -15,6 +15,7 @@ from modules.messaging.crud import soft_delete_message
 from modules.messaging.crud import undelete_message
 from realtime import realtime_service
 from modules.messaging.common import _check_content_length
+from modules.messaging.limits import DEFAULT_MESSAGING_LIMITS, MessagingLimits
 from modules.messaging.errors import EncryptionRequiredError
 from modules.messaging.errors import NotAParticipantError
 from modules.media import media_service
@@ -28,8 +29,10 @@ async def edit_message(
     message_id: int,
     new_content: str,
     enc_header: dict | None = None,
+    *,
+    limits: MessagingLimits = DEFAULT_MESSAGING_LIMITS,
 ) -> "object":
-    _check_content_length(new_content)
+    _check_content_length(new_content, limits.max_message_content_length)
 
     existing = await get_message_by_id(session, chat_id=chat_id, message_id=message_id)
     if existing is None or existing.sender_id != user_id:

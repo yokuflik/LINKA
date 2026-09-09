@@ -8,12 +8,13 @@ from modules.messaging.errors import MessageTooLongError
 SYSTEM_MESSAGE_TYPE = 6
 
 
-def _check_content_length(content: Optional[str]) -> None:
-    # Read the limit off the facade module at call time so a test that does
-    # monkeypatch.setattr(message_service, "MAX_MESSAGE_CONTENT_LENGTH", ...)
-    # still takes effect after the split into services/messaging/.
-    from modules.messaging import service as message_service
+def _check_content_length(content: Optional[str], max_length: Optional[int] = None) -> None:
+    # ADR 0033: callers thread the cap in from their injected Limits object.
+    # `max_length=None` falls back to the default so any not-yet-migrated
+    # caller keeps working.
+    if max_length is None:
+        from modules.messaging.limits import DEFAULT_MESSAGING_LIMITS
 
-    limit = message_service.MAX_MESSAGE_CONTENT_LENGTH
-    if content is not None and len(content) > limit:
-        raise MessageTooLongError(f"Message content exceeds {limit} characters")
+        max_length = DEFAULT_MESSAGING_LIMITS.max_message_content_length
+    if content is not None and len(content) > max_length:
+        raise MessageTooLongError(f"Message content exceeds {max_length} characters")

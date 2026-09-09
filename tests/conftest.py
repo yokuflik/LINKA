@@ -1,9 +1,23 @@
 import os
+import uuid
 
-# Must be set before services.redis_client / database.connection is imported
-# by anything below (both read these once, at import time).
+# Server coordinate for the test Postgres instance (usually spun up via Docker
+# before running the tests). The suite never touches this database directly -
+# see _ephemeral_database below and ADR 0032.
+TEST_SERVER_URL = "postgresql+asyncpg://test_user:test_password@localhost:5433/test_db"
+
+# Derive a throwaway per-run database name from the server coordinate, so a
+# test run creates and drops its own database and never wipes the developer's
+# seeded `test_db`. Computed here, before any project import, because
+# infra.db.connection reads DATABASE_URL exactly once at import time.
+_EPHEMERAL_DB_NAME = f"test_db_{uuid.uuid4().hex}"
+_base, _, _ = TEST_SERVER_URL.rpartition("/")
+TEST_DATABASE_URL = f"{_base}/{_EPHEMERAL_DB_NAME}"
+
+# Must be set before infra.redis.client / infra.db.connection is imported by
+# anything below (both read these once, at import time).
 os.environ.setdefault("REDIS_URL", "redis://localhost:6380/0")
-os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test_user:test_password@localhost:5433/test_db")
+os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
 import pytest
 import pytest_asyncio
@@ -27,10 +41,37 @@ from modules.chats.models import private_chat_pair as _private_chat_pair  # noqa
 from modules.settings import models as _user_settings  # noqa: F401
 from modules.auth import models as _reserved_username  # noqa: F401
 
-# Pointing to a local PostgreSQL instance dedicated ONLY for tests
-# (Usually spun up via Docker before running the tests)
-TEST_DATABASE_URL = "postgresql+asyncpg://test_user:test_password@localhost:5433/test_db"
-#TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+@pytest.fixture(scope="session", autouse=True)
+def _ephemeral_database():
+    """
+    Creates a throwaway Postgres database for this test session and drops it
+    on teardown, so running the suite never disturbs the developer's seeded
+    `test_db` (ADR 0032). Everything below - session_factory and, via the
+    DATABASE_URL rewrite at the top of this module, infra.db.connection -
+    points at this database.
+
+    Uses a plain (sync) psycopg2-free path via asyncpg through a short-lived
+    engine in AUTOCOMMIT mode against the server's default `postgres` db;
+    CREATE/DROP DATABASE cannot run inside a transaction block.
+    """
+    import asyncio
+
+    admin_url = f"{_base}/postgres"
+
+    async def _run(sql: str):
+        engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text(sql))
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run(f'CREATE DATABASE "{_EPHEMERAL_DB_NAME}"'))
+    try:
+        yield
+    finally:
+        asyncio.run(_run(f'DROP DATABASE IF EXISTS "{_EPHEMERAL_DB_NAME}" WITH (FORCE)'))
+
 
 @pytest_asyncio.fixture(scope="function")
 async def session_factory():

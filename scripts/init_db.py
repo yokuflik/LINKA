@@ -79,6 +79,8 @@ async def main(drop: bool) -> None:
                 # `content` + per-message header; public-key distribution table.
                 "ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_encrypted BOOLEAN NOT NULL DEFAULT FALSE",
                 "ALTER TABLE messages ADD COLUMN IF NOT EXISTS enc_header JSONB",
+                # ADR 0034: decryptable last-message preview for the chat list.
+                "ALTER TABLE chats ADD COLUMN IF NOT EXISTS last_message_enc JSONB",
                 "CREATE TABLE IF NOT EXISTS user_public_keys ("
                 "  user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,"
                 "  public_key JSONB NOT NULL,"

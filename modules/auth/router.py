@@ -1,15 +1,8 @@
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import (
-    OTP_REQUEST_IP_RATE_LIMIT_MAX,
-    OTP_REQUEST_IP_RATE_LIMIT_WINDOW_SECONDS,
-    OTP_VERIFY_IP_RATE_LIMIT_MAX,
-    OTP_VERIFY_IP_RATE_LIMIT_WINDOW_SECONDS,
-    REFRESH_IP_RATE_LIMIT_MAX,
-    REFRESH_IP_RATE_LIMIT_WINDOW_SECONDS,
-)
 from infra.db.connection import get_db
+from modules.auth.limits import AuthPolicy, DEFAULT_AUTH_POLICY
 from modules.auth.schemas import FirebaseVerifyIn
 from modules.auth.schemas import LoginOut
 from modules.auth.schemas import OTPRequestIn
@@ -21,6 +14,12 @@ from infra.ratelimit import service as rate_limit_service
 from infra.ratelimit.service import RateLimited
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def get_auth_policy() -> AuthPolicy:
+    """FastAPI dependency (ADR 0033). Tests override this with
+    `app.dependency_overrides[get_auth_policy]` to shrink a limit/window."""
+    return DEFAULT_AUTH_POLICY
 
 
 def _client_ip(request: Request) -> str:
@@ -38,22 +37,28 @@ async def _enforce_ip(ip: str, action: str, max_per_window: int, window_seconds:
 
 
 @router.post("/otp/request", status_code=status.HTTP_204_NO_CONTENT)
-async def request_otp(body: OTPRequestIn, request: Request, session: AsyncSession = Depends(get_db)):
+async def request_otp(
+    body: OTPRequestIn,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+    policy: AuthPolicy = Depends(get_auth_policy),
+):
     ip = _client_ip(request)
-    await _enforce_ip(
-        ip, "otp_request_ip", OTP_REQUEST_IP_RATE_LIMIT_MAX, OTP_REQUEST_IP_RATE_LIMIT_WINDOW_SECONDS
-    )
-    await auth_service.request_otp(body.phone_number, intent=body.intent, session=session)
+    await _enforce_ip(ip, "otp_request_ip", policy.otp_request_ip_max, policy.otp_request_ip_window_s)
+    await auth_service.request_otp(body.phone_number, intent=body.intent, session=session, policy=policy)
 
 
 @router.post("/otp/verify", response_model=LoginOut)
-async def verify_otp(body: OTPVerifyIn, request: Request, session: AsyncSession = Depends(get_db)):
+async def verify_otp(
+    body: OTPVerifyIn,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+    policy: AuthPolicy = Depends(get_auth_policy),
+):
     ip = _client_ip(request)
-    await _enforce_ip(
-        ip, "otp_verify_ip", OTP_VERIFY_IP_RATE_LIMIT_MAX, OTP_VERIFY_IP_RATE_LIMIT_WINDOW_SECONDS
-    )
+    await _enforce_ip(ip, "otp_verify_ip", policy.otp_verify_ip_max, policy.otp_verify_ip_window_s)
     user, access_token, refresh_token, is_new_user = await auth_service.verify_otp_and_login(
-        session, body.phone_number, body.code, client_ip=ip
+        session, body.phone_number, body.code, client_ip=ip, policy=policy
     )
     return LoginOut(
         user=user, access_token=access_token, refresh_token=refresh_token, is_new_user=is_new_user
@@ -61,13 +66,16 @@ async def verify_otp(body: OTPVerifyIn, request: Request, session: AsyncSession 
 
 
 @router.post("/firebase/verify", response_model=LoginOut)
-async def firebase_verify(body: FirebaseVerifyIn, request: Request, session: AsyncSession = Depends(get_db)):
+async def firebase_verify(
+    body: FirebaseVerifyIn,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+    policy: AuthPolicy = Depends(get_auth_policy),
+):
     ip = _client_ip(request)
-    await _enforce_ip(
-        ip, "otp_verify_ip", OTP_VERIFY_IP_RATE_LIMIT_MAX, OTP_VERIFY_IP_RATE_LIMIT_WINDOW_SECONDS
-    )
+    await _enforce_ip(ip, "otp_verify_ip", policy.otp_verify_ip_max, policy.otp_verify_ip_window_s)
     user, access_token, refresh_token, is_new_user = await auth_service.verify_firebase_and_login(
-        session, body.id_token, client_ip=ip
+        session, body.id_token, client_ip=ip, policy=policy
     )
     return LoginOut(
         user=user, access_token=access_token, refresh_token=refresh_token, is_new_user=is_new_user
@@ -75,12 +83,14 @@ async def firebase_verify(body: FirebaseVerifyIn, request: Request, session: Asy
 
 
 @router.post("/refresh", response_model=TokenPairOut)
-async def refresh(body: RefreshTokenIn, request: Request):
+async def refresh(
+    body: RefreshTokenIn,
+    request: Request,
+    policy: AuthPolicy = Depends(get_auth_policy),
+):
     ip = _client_ip(request)
-    await _enforce_ip(
-        ip, "refresh_ip", REFRESH_IP_RATE_LIMIT_MAX, REFRESH_IP_RATE_LIMIT_WINDOW_SECONDS
-    )
-    access_token, refresh_token = await auth_service.refresh_access_token(body.refresh_token)
+    await _enforce_ip(ip, "refresh_ip", policy.refresh_ip_max, policy.refresh_ip_window_s)
+    access_token, refresh_token = await auth_service.refresh_access_token(body.refresh_token, policy=policy)
     return TokenPairOut(access_token=access_token, refresh_token=refresh_token)
 
 

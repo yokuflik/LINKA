@@ -16,6 +16,7 @@ from realtime import realtime_service
 from realtime.fanout import send_queue
 from modules.messaging.common import SYSTEM_MESSAGE_TYPE
 from modules.messaging.common import _check_content_length
+from modules.messaging.limits import DEFAULT_MESSAGING_LIMITS, MessagingLimits
 from modules.messaging.errors import MessageAlreadySentError
 from modules.messaging.errors import NotAParticipantError
 from modules.messaging.media_validation import _validate_media
@@ -43,6 +44,8 @@ async def process_outgoing(
     reply_to_message_id: Optional[int] = None,
     media: Optional[dict] = None,
     enc_header: Optional[dict] = None,
+    *,
+    limits: MessagingLimits = DEFAULT_MESSAGING_LIMITS,
 ) -> Message:
     """
     The full send flow, run by the fan-out worker off ``message_send_stream``
@@ -58,7 +61,7 @@ async def process_outgoing(
     Raises MessageAlreadySentError if this client_message_id was already
     written (duplicate stream entry).
     """
-    _check_content_length(content)
+    _check_content_length(content, limits.max_message_content_length)
 
     if not await is_participant(session, chat_id, sender_id):
         raise NotAParticipantError(f"User {sender_id} is not a participant of chat {chat_id}")

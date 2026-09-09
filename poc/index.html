@@ -82,7 +82,7 @@
 <script src="components/ChatContextMenu.js?v=2026.09.08-1"></script>
 <script src="components/ChatHeader.js?v=2026.09.08-1"></script>
 <script src="components/VoiceMessage.js?v=2026.09.08-1"></script>
-<script src="components/MessageList.js?v=2026.09.08-1"></script>
+<script src="components/MessageList.js?v=2026.09.10-1"></script>
 <script src="components/MessageInput.js?v=2026.09.08-1"></script>
 <script src="components/MessageContextMenu.js?v=2026.09.08-1"></script>
 <script src="components/ForwardModal.js?v=2026.09.08-1"></script>
@@ -108,7 +108,7 @@
 <script src="composables/useMessageCache.js?v=2026.09.09-1"></script>
 <script src="composables/useOutbox.js?v=2026.09.09-1"></script>
 <!-- useChats is a facade over these four; load order = merge order -->
-<script src="composables/useChatStore.js?v=2026.09.08-1"></script>
+<script src="composables/useChatStore.js?v=2026.09.10-1"></script>
 <script src="composables/useChatMembers.js?v=2026.09.08-1"></script>
 <script src="composables/useChatList.js?v=2026.09.09-1"></script>
 <script src="composables/useChatOpen.js?v=2026.09.09-1"></script>
@@ -130,7 +130,7 @@
 <script src="composables/useProfileEdit.js?v=2026.09.09-1"></script>
 <script src="composables/useAvatarCache.js?v=2026.09.08-1"></script>
 <script src="composables/useAvatarLightbox.js?v=2026.09.08-1"></script>
-<script src="composables/useWsRouter.js?v=2026.09.09-1"></script>
+<script src="composables/useWsRouter.js?v=2026.09.10-1"></script>
 <style>
   /* Chat-bubble speech tail - a smooth curved shape (WhatsApp/Telegram/
      iMessage-style), not a hard-cornered triangle. Drawn as a solid-color
@@ -303,6 +303,8 @@ const app = createApp({
     Object.assign(ctx, useAvatarLightbox(ctx));
     Object.assign(ctx, useWsRouter(ctx));
 
+    // Shared chat state singleton (ADR 0035) - <MessageList> injects it for `messages`.
+    provide('chatStore', LinkaChatStore);
     // ThumbHash decoder for <MessageList>'s media blur bubbles (ADR 0014).
     provide('thumbHashToDataUrl', ctx.thumbHashToDataUrl);
     // Avatar tap -> shared full-screen lightbox (ADR 0016), provided so every
@@ -418,7 +420,7 @@ const app = createApp({
               @open-chat-profile="openChatProfile" />
 
             <MessageList ref="messagesEl"
-              :messages="messages" :currentUser="currentUser" :isGroup="activeChatIsGroup"
+              :currentUser="currentUser" :isGroup="activeChatIsGroup"
               :shouldShowSystemMessage="shouldShowSystemMessage" :systemMessageText="systemMessageText"
               :senderLabel="senderLabel" :statusTickSymbol="statusTickSymbol" :statusTickClass="statusTickClass"
               :senderAvatarUrl="senderAvatarUrl" :senderAvatarPreview="senderAvatarPreview"

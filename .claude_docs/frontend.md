@@ -20,6 +20,13 @@ There is **no real client app** — only a single-file HTML/Vue PoC (`poc/`) for
 - `setup()` logic split into `poc/composables/*.js` (`useX(ctx)` factories merged onto one shared `ctx`).
 - Plan/progress in `poc/composables/REFACTOR_PLAN.md`.
 
+## Shared chat state — `LinkaChatStore` singleton (ADR 0035)
+- **`poc/composables/useChatStore.js`** builds a module-level singleton **`LinkaChatStore`** (IIFE, runs at script-load) — the single source of truth for chats / messages / message-pane flags / pagination / `privateChatTitles` / `privateChatOtherUserId` / `userById` / `groupChatMembers`, the **unread-badge** state (`unreadCountByChatId` + `bumpUnreadCount` / `clearUnreadCount`), the **buffered-live-message** map (`bufferMessage` / `takeBufferedMessages`), and the pure helpers (`sortChats`, mute/tick helpers, `roleLabel`, `statusTick*`, consts). Takes no `ctx`.
+- **Legacy path:** `useChatStore.js` still exports `function useChatStore(_ctx){ return LinkaChatStore; }`, so the `useChats` facade's `Object.assign(ctx, useChatStore(ctx))` keeps copying the **same ref objects** onto `ctx`. The ~31 composables still on `ctx.*` (`useChatOpen`, `useChatList`, `useChatMeta`, `useAuth`, …) and `ChatSidebar :unreadCountByChatId` are unchanged.
+- **New path:** `useWsRouter.js` holds `const store = LinkaChatStore` and does every state read/write through `store.*` (never mutates refs via `ctx`); it still *calls* sibling behaviour off `ctx` (scroll, receipts, previews, E2E decrypt, toast, media-orientation probe) — those are service calls, not ref mutation. Returns only `handleWsMessage`.
+- **`MessageList.js`** dropped its `messages` prop: `Vue.inject('chatStore')` (root does `provide('chatStore', LinkaChatStore)`) → `computed(() => store.messages.value)`. Its other props are presentation helpers and stay.
+- `ctx` still exists for every other composable and is still what `setup()` returns for template binding — full `ctx` removal is a later change.
+
 ## Branding / logo
 - Current logo `poc/assets/maskable_icon.png` (~2048², maskable-safe padding). Downscaled variants beside it: `maskable_icon_x512/x192/x128/x48.png` (regenerate with `sips -s format png -Z <size> maskable_icon.png --out …`). Old `linka-icon.jpeg` / `linka-logo-*` / `favicon-32.png` are unreferenced legacy.
 - `index.html`: `<link rel="icon">` and `apple-touch-icon` → `assets/maskable_icon_x192.png`; `<link rel="manifest" href="manifest.webmanifest">` — icons array is `maskable_icon_x192/x512.png` with `"purpose": "maskable any"`; `<meta name="theme-color" content="#0f766e">`.

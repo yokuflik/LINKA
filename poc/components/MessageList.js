@@ -4,8 +4,9 @@
 // branches share the same list and messagesEl ref must stay on this
 // scrolling container for scrollMessagesToBottom to keep working unchanged.
 const MessageList = {
+  // `messages` is read straight from the LinkaChatStore singleton (ADR 0035),
+  // injected by the app root in setup() - not passed down as a prop.
   props: {
-    messages: { type: Array, required: true },
     currentUser: { type: Object, required: true },
     // Group chat? Sender names above bubbles only show in groups; in a 1:1
     // chat the peer's name is already in the header, so it's noise here.
@@ -46,6 +47,11 @@ const MessageList = {
   // unchanged across the component boundary.
   setup(props, { emit }) {
     const messagesEl = Vue.ref(null);
+    // Shared message list - the single source of truth (ADR 0035). Falls back
+    // to the global singleton if injection is unavailable (e.g. isolated test).
+    const store = Vue.inject('chatStore', null)
+      || (typeof LinkaChatStore !== 'undefined' ? LinkaChatStore : null);
+    const messages = Vue.computed(() => (store ? store.messages.value : []));
     // On scroll, count how many message rows are still fully above the top of
     // the viewport and hand that to the root - it decides when to page.
     // Only real message rows carry data-row="msg"; sticky day separators are
@@ -103,7 +109,7 @@ const MessageList = {
     const rows = Vue.computed(() => {
       const out = [];
       let lastKey = null;
-      const list = props.messages;
+      const list = messages.value;
       for (let i = 0; i < list.length; i++) {
         const m = list[i];
         if (!m.created_at) {
@@ -269,6 +275,7 @@ const MessageList = {
     }
 
     return {
+      messages,
       messagesEl, onScroll, isBareMedia, rows,
       onTouchStart, onTouchMove, onTouchEnd,
       imageLoaded, markImageLoaded,

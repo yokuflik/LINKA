@@ -95,6 +95,7 @@ Rows are one-liners; the ADR file holds the full rationale (this index is loaded
 | `0032-ephemeral-test-database.md` | Test suite creates/drops a throwaway `test_db_<uuid>` per session; seeded dev DB never touched. `conftest.py` rewrites `DATABASE_URL` before import | Accepted |
 | `0033-inject-limits-into-services-and-routers.md` | Per-feature frozen `AuthPolicy` / `MessagingLimits` / `ScheduledLimits` / `ChatLimits`; services take keyword-only `policy=`/`limits=`, routers expose FastAPI deps; tests use `dependency_overrides` not `monkeypatch` | Accepted |
 | `0034-encrypted-chat-list-preview.md` | Denormalise the encrypted last message's `{ct, header}` onto `chats.last_message_enc` (JSONB, kept in lockstep with `last_message_preview` in `crud_message`); `ChatOut` exposes it; client decrypts it for the sidebar preview on load | Accepted |
+| `0035-poc-chat-store-singleton.md` | PoC frontend: `useChatStore` promoted to a module-level singleton `LinkaChatStore` (single source of truth for chats/messages/unread/buffered-messages + pure helpers); `useChatStore(ctx)` kept as a back-compat shim so `useChats` still merges the same refs onto `ctx` for the ~31 un-migrated composables. `useWsRouter` → pure `wsEvent → LinkaChatStore` mapper (state via `store.*`, sibling behaviour still off `ctx`), owns zero refs. `MessageList` drops its `messages` prop → `inject('chatStore')`. Frontend-only, no behaviour change | Accepted |
 
 ---
 

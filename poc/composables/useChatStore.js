@@ -1,16 +1,20 @@
-// Chat domain — SHARED STATE.
+// Chat domain — SINGLE SOURCE OF TRUTH for shared chat state (ADR 0035).
 //
-// Owns every reactive ref the chat list + message pane touch, plus the pure
-// derived pieces that need no I/O: the `sortChats` comparator, the tick-based
-// mute helpers, and the small status/role formatters. No fetching, no WS.
+// `LinkaChatStore` is a module-level singleton, built once at script-load. It
+// owns every reactive ref the chat list + message pane touch, the unread-badge
+// state, the buffered-live-message map, plus the pure derived helpers that need
+// no I/O: the `sortChats` comparator, the tick-based mute helpers, and the small
+// status/role formatters. No fetching, no WS.
 //
-// Merge order: this is the FIRST of the useChat* group (store -> members ->
-// list -> open -> menu -> facade). Everything else reads these off `ctx.*` at
-// call time.
+// Legacy path: the `useChats` facade still does
+// `Object.assign(ctx, useChatStore(ctx))`, so every store member also appears on
+// the shared `ctx` for the composables not yet migrated off it — the SAME ref
+// objects, so reactivity and existing consumers are unaffected.
 //
-// Global `useChatStore(ctx)` factory.
-function useChatStore(ctx) {
-  const { ref, computed } = Vue;
+// New path: `useWsRouter` and `MessageList` read/write state through
+// `LinkaChatStore.*` directly (imported / injected), never through `ctx`.
+const LinkaChatStore = (function buildChatStore() {
+  const { ref } = Vue;
 
   // ---------------------------------------------------------------
   // Chats + message pane
@@ -68,6 +72,52 @@ function useChatStore(ctx) {
   // rendered for your own messages.
   function statusTickSymbol(status) { return status >= 2 ? '✓✓' : '✓'; }
   function statusTickClass(status) { return status === 3 ? 'text-sky-500' : 'text-slate-400'; }
+
+  // ---------------------------------------------------------------
+  // Unread-count badge (WhatsApp-style number on each sidebar chat) — ADR 0035
+  // ---------------------------------------------------------------
+  // Seeded from the server on every loadChats() call - GET /chats returns each
+  // chat's real unread_count, so a fresh login/reload shows the true count.
+  // Then kept current live by useWsRouter: incremented for a real message (not
+  // a system message, not our own) arriving for a chat that isn't the active
+  // one, and reset to 0 the moment that chat is opened (see selectChat).
+  const unreadCountByChatId = ref({});
+
+  function bumpUnreadCount(chatId) {
+    unreadCountByChatId.value = {
+      ...unreadCountByChatId.value,
+      [chatId]: (unreadCountByChatId.value[chatId] || 0) + 1,
+    };
+  }
+
+  function clearUnreadCount(chatId) {
+    if (!unreadCountByChatId.value[chatId]) return;
+    const next = { ...unreadCountByChatId.value };
+    delete next[chatId];
+    unreadCountByChatId.value = next;
+  }
+
+  // ---------------------------------------------------------------
+  // Buffered live messages for a chat that wasn't open at the time — ADR 0035
+  // ---------------------------------------------------------------
+  // selectChat() drains the matching entry and merges it with the history
+  // fetch (dedupe by message_id) so opening a chat mid-burst doesn't lose the
+  // messages that landed before you switched to it. chat_id -> [msg,...].
+  const pendingChatMessages = new Map();
+
+  function bufferMessage(chatId, row) {
+    const buf = pendingChatMessages.get(chatId) || [];
+    buf.push(row);
+    // Cap so a chat that's never opened can't grow this without bound.
+    if (buf.length > 200) buf.shift();
+    pendingChatMessages.set(chatId, buf);
+  }
+
+  function takeBufferedMessages(chatId) {
+    const buf = pendingChatMessages.get(chatId) || [];
+    pendingChatMessages.delete(chatId);
+    return buf;
+  }
 
   // ---------------------------------------------------------------
   // Chat-list ordering
@@ -143,7 +193,15 @@ function useChatStore(ctx) {
     privateChatTitles, privateChatOtherUserId, userById, groupChatMembers,
     ROLE_LABELS, roleLabel, statusTickSymbol, statusTickClass,
     sortChats,
+    unreadCountByChatId, bumpUnreadCount, clearUnreadCount,
+    bufferMessage, takeBufferedMessages,
     MUTE_PRESETS, MUTE_FOREVER_ISO, presetExpiryIso,
     nowTick, isChatMuted, mutedUntilLabel,
   };
-}
+})();
+
+// Back-compat shim (ADR 0035): the `useChats` facade still calls this and
+// `Object.assign`s the result onto `ctx`, so every store member keeps
+// appearing on `ctx` for the composables not yet migrated. Same object
+// identity => reactivity and existing consumers are unaffected.
+function useChatStore(_ctx) { return LinkaChatStore; }

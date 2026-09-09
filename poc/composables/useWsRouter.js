@@ -1,52 +1,28 @@
-// WebSocket message router + the unread-count badge state it drives.
+// WebSocket message router (ADR 0035).
 // Global `useWsRouter(ctx)` factory. handleWsMessage is the single entry point
 // for every frame the socket receives (useWebsocket's ws.onmessage calls
 // ctx.handleWsMessage) - it dispatches acks/errors, presence replies, and the
 // chat-channel fan-out events (new_message, typing, edits, receipts, membership).
 //
-// It reaches into a lot of still-inline state via ctx.* (call-time, so merge
-// order doesn't matter): messages, activeChatId, isPinnedToBottom,
-// scrollMessagesToBottom, probeMediaOrientation, bumpChatPreview, previewText,
-// groupChatMembers, resolveChatMemberPhones, userById, updateChatPreviewIfLast,
+// SHARED STATE lives in the `LinkaChatStore` singleton (useChatStore.js) - this
+// router reads and writes it through `store.*` only, never mutating refs passed
+// via ctx: messages, chats, activeChatId, userById, groupChatMembers,
+// privateChatTitles, privateChatOtherUserId, sortChats, unread-count +
+// buffered-message helpers.
+//
+// It still CALLS sibling behaviour off ctx (call-time, so merge order doesn't
+// matter) - these are service calls, not ref mutation: isPinnedToBottom,
+// scrollMessagesToBottom, probeMediaOrientation, carryOverImageOrientation,
+// bumpChatPreview, previewText, updateChatPreviewIfLast, resolveChatMemberPhones,
 // detailsModalMessage, loadMessageReceipts, refreshMessageStatuses, showToast,
-// loadChats, showMembersModal, chats. From other composables: presenceByUserId,
-// clearUserTyping, noteUserTyping, sendReceipt, currentUser, log, logError.
+// loadChats, showMembersModal, markActiveChatReadIfVisible, noteAvatarUrl,
+// decryptInPlace/decryptMessage, invalidatePeer/invalidateChatBundle,
+// removeFromOutbox, onSendError, onScheduledMessageSent/Failed, onPresenceRevoked.
+// From other composables: presenceByUserId, clearUserTyping, noteUserTyping,
+// sendReceipt, currentUser, log, logError.
 function useWsRouter(ctx) {
-  const { ref, nextTick } = Vue;
-
-  // Unread count badge (WhatsApp-style number on each sidebar chat).
-  // Seeded from the server on every loadChats() call - GET /chats returns each
-  // chat's real unread_count (chat_service.get_chat_list), so a fresh
-  // login/reload shows the true count, not just what arrived this session.
-  // Then kept current live: incremented here for a real message (not a system
-  // message, not our own) arriving for a chat that isn't the active one, and
-  // reset to 0 the moment that chat is opened (see selectChat / clearUnreadCount).
-  const unreadCountByChatId = ref({});
-
-  // Live messages that arrived for a chat that wasn't open at the time.
-  // selectChat() drains the matching entry and merges it with the history
-  // fetch (dedupe by message_id) so opening a chat mid-burst doesn't lose the
-  // messages that landed before you switched to it. chat_id -> [msg,...].
-  const pendingChatMessages = new Map();
-  function takeBufferedMessages(chatId) {
-    const buf = pendingChatMessages.get(chatId) || [];
-    pendingChatMessages.delete(chatId);
-    return buf;
-  }
-
-  function bumpUnreadCount(chatId) {
-    unreadCountByChatId.value = {
-      ...unreadCountByChatId.value,
-      [chatId]: (unreadCountByChatId.value[chatId] || 0) + 1,
-    };
-  }
-
-  function clearUnreadCount(chatId) {
-    if (!unreadCountByChatId.value[chatId]) return;
-    const next = { ...unreadCountByChatId.value };
-    delete next[chatId];
-    unreadCountByChatId.value = next;
-  }
+  const { nextTick } = Vue;
+  const store = LinkaChatStore;
 
   function handleWsMessage(msg) {
     const {
@@ -71,7 +47,7 @@ function useWsRouter(ctx) {
     // a participant, too long). Flag the optimistic bubble so the user sees it
     // failed rather than hanging on 🕓 forever.
     if (msg.event === 'message_failed') {
-      const m = ctx.messages.value.find((x) => x.client_message_id === msg.client_message_id);
+      const m = store.messages.value.find((x) => x.client_message_id === msg.client_message_id);
       if (m) { m.pending = false; m.send_failed = true; }
       if (ctx.removeFromOutbox) ctx.removeFromOutbox(msg.client_message_id);
       logError('message failed to send:', msg.reason);
@@ -81,7 +57,7 @@ function useWsRouter(ctx) {
     // A duplicate stream entry for a client_message_id already written - just
     // reconcile the optimistic bubble, no new bubble to render.
     if (msg.event === 'message_already_sent') {
-      const m = ctx.messages.value.find((x) => x.client_message_id === msg.client_message_id);
+      const m = store.messages.value.find((x) => x.client_message_id === msg.client_message_id);
       if (m) { m.id = msg.message_id; m.pending = false; m.send_failed = false; }
       if (ctx.removeFromOutbox) ctx.removeFromOutbox(msg.client_message_id);
       return;
@@ -111,7 +87,7 @@ function useWsRouter(ctx) {
       // duplicate. Match by client_message_id, which the server echoes on the
       // event for exactly this purpose (never persisted on the message).
       const optimistic = msg.client_message_id
-        ? ctx.messages.value.find((x) => x.client_message_id === msg.client_message_id)
+        ? store.messages.value.find((x) => x.client_message_id === msg.client_message_id)
         : null;
       if (optimistic) {
         optimistic.id = msg.message_id;
@@ -135,7 +111,7 @@ function useWsRouter(ctx) {
         optimistic.pending = false;
         optimistic.send_failed = false;
         if (ctx.removeFromOutbox && msg.client_message_id) ctx.removeFromOutbox(msg.client_message_id);
-      } else if (msg.chat_id === ctx.activeChatId.value) {
+      } else if (msg.chat_id === store.activeChatId.value) {
         // Decide before pushing: was the user already at the bottom?
         const wasPinned = ctx.isPinnedToBottom();
         const row = {
@@ -150,13 +126,13 @@ function useWsRouter(ctx) {
           media_name: msg.media_name, media_duration_seconds: msg.media_duration_seconds,
           media_blur_hash: msg.media_blur_hash,
         };
-        ctx.messages.value.push(row);
+        store.messages.value.push(row);
         // E2E (ADR 0026): decrypt in place before it's read on screen. Must
         // target the reactive array element (the proxy), not the raw `row`
         // reference - mutating the latter never triggers a re-render, which is
         // why an encrypted bubble showed up blank while the sidebar preview
         // (decrypted via a returned value) was fine.
-        const reactiveRow = ctx.messages.value[ctx.messages.value.length - 1];
+        const reactiveRow = store.messages.value[store.messages.value.length - 1];
         if (reactiveRow.is_encrypted && ctx.decryptInPlace) ctx.decryptInPlace(reactiveRow);
         if (msg.type === 2 && msg.media_url) ctx.probeMediaOrientation(msg.media_url, 'image', msg.media_blur_hash);
         else if (msg.type === 3 && msg.media_url) ctx.probeMediaOrientation(msg.media_url, 'video', msg.media_blur_hash);
@@ -171,7 +147,6 @@ function useWsRouter(ctx) {
         // history fetch instead of losing the messages that arrived before the
         // switch (the server's read-after-write lag means the GET may not see
         // them yet either).
-        const buf = pendingChatMessages.get(msg.chat_id) || [];
         const bufRow = {
           id: msg.message_id, chat_id: msg.chat_id, sender_id: msg.sender_id,
           type: msg.type, content: msg.is_encrypted ? '' : msg.content, created_at: msg.created_at, is_edited: false, edited_at: null,
@@ -183,10 +158,7 @@ function useWsRouter(ctx) {
         };
         // Decrypt now so it's ready when selectChat merges the buffer in.
         if (bufRow.is_encrypted && ctx.decryptInPlace) ctx.decryptInPlace(bufRow);
-        buf.push(bufRow);
-        // Cap so a chat that's never opened can't grow this without bound.
-        if (buf.length > 200) buf.shift();
-        pendingChatMessages.set(msg.chat_id, buf);
+        store.bufferMessage(msg.chat_id, bufRow);
       }
       // System messages ("X joined the group", or a private "role_changed"
       // notice - see shouldShowSystemMessage) must never become the sidebar
@@ -210,7 +182,7 @@ function useWsRouter(ctx) {
         // header's participant row and the members modal update live for
         // everyone with this chat loaded, not just whoever triggered it.
         // Only bother for chats whose members were already fetched once.
-        if (ctx.groupChatMembers.value[msg.chat_id]) ctx.resolveChatMemberPhones(msg.chat_id);
+        if (store.groupChatMembers.value[msg.chat_id]) ctx.resolveChatMemberPhones(msg.chat_id);
         // Membership may have changed - re-seed the E2E key bundle on next send.
         if (ctx.invalidateChatBundle) ctx.invalidateChatBundle(msg.chat_id);
       }
@@ -222,15 +194,15 @@ function useWsRouter(ctx) {
         // "Read" only for the chat actually on screen AND only while the
         // window is really being looked at (foreground tab, screen on). If it
         // arrives while hidden, flushReadOnActivate() marks it on return.
-        if (msg.chat_id === ctx.activeChatId.value) {
+        if (msg.chat_id === store.activeChatId.value) {
           ctx.markActiveChatReadIfVisible(msg.chat_id, msg.message_id);
         }
       }
 
       // Unread badge: only real messages from someone else, and only for a
       // chat that isn't the one currently open.
-      if (msg.sender_id != null && msg.sender_id !== currentUser.value.id && msg.chat_id !== ctx.activeChatId.value) {
-        bumpUnreadCount(msg.chat_id);
+      if (msg.sender_id != null && msg.sender_id !== currentUser.value.id && msg.chat_id !== store.activeChatId.value) {
+        store.bumpUnreadCount(msg.chat_id);
       }
       return;
     }
@@ -244,7 +216,7 @@ function useWsRouter(ctx) {
         // chat, including one never opened this session - userById only gets
         // populated by resolveChatMemberPhones, which normally only runs on
         // selectChat/openMembersModal. Lazily resolve here too.
-        if (!ctx.userById.value[msg.user_id]) ctx.resolveChatMemberPhones(msg.chat_id);
+        if (!store.userById.value[msg.user_id]) ctx.resolveChatMemberPhones(msg.chat_id);
       }
       return;
     }
@@ -257,7 +229,7 @@ function useWsRouter(ctx) {
       // Learned of a (possibly new) group photo - drop the previous full-res
       // avatar from the device cache so the lightbox re-downloads the new one.
       if (ctx.noteAvatarUrl) ctx.noteAvatarUrl('chat:' + msg.chat_id, msg.profile_pic_url || null);
-      const item = ctx.chats.value.find((c) => c.chat.id === msg.chat_id);
+      const item = store.chats.value.find((c) => c.chat.id === msg.chat_id);
       if (item) {
         item.chat.title = msg.title;
         item.chat.about_text = msg.about_text;
@@ -282,8 +254,8 @@ function useWsRouter(ctx) {
       // A peer profile change may coincide with a rotated E2E key - drop the
       // cached public key so the next encrypted send re-fetches it (ADR 0026).
       if (ctx.invalidatePeer) ctx.invalidatePeer(msg.user_id);
-      const existing = ctx.userById.value[msg.user_id] || { id: msg.user_id };
-      ctx.userById.value[msg.user_id] = {
+      const existing = store.userById.value[msg.user_id] || { id: msg.user_id };
+      store.userById.value[msg.user_id] = {
         ...existing,
         username: msg.username,
         display_name: msg.display_name || null,
@@ -297,18 +269,15 @@ function useWsRouter(ctx) {
       // we refresh it here. The fan-out is per shared chat, so msg.chat_id is
       // the private chat and privateChatOtherUserId tells us this user is its
       // peer.
-      if (
-        ctx.privateChatTitles &&
-        String(ctx.privateChatOtherUserId.value[msg.chat_id]) === String(msg.user_id)
-      ) {
-        const u = ctx.userById.value[msg.user_id] || {};
-        ctx.privateChatTitles.value[msg.chat_id] = msg.display_name || msg.username || u.phone_number || '';
+      if (String(store.privateChatOtherUserId.value[msg.chat_id]) === String(msg.user_id)) {
+        const u = store.userById.value[msg.user_id] || {};
+        store.privateChatTitles.value[msg.chat_id] = msg.display_name || msg.username || u.phone_number || '';
       }
       // Group member rows in groupChatMembers hold their own copy:
-      const members = ctx.groupChatMembers.value[msg.chat_id];
+      const members = store.groupChatMembers.value[msg.chat_id];
       if (members) {
         const row = members.find((m) => m.user.id === msg.user_id);
-        if (row) row.user = ctx.userById.value[msg.user_id];
+        if (row) row.user = store.userById.value[msg.user_id];
       }
       // Our own avatar in the app header comes from currentUser, not the cache.
       if (currentUser.value && msg.user_id === currentUser.value.id) {
@@ -325,7 +294,7 @@ function useWsRouter(ctx) {
     }
 
     if (msg.event === 'message_edited') {
-      const m = ctx.messages.value.find((x) => x.id === msg.message_id);
+      const m = store.messages.value.find((x) => x.id === msg.message_id);
       // E2E (ADR 0027): an encrypted edit carries ciphertext + enc_header.
       if (msg.is_encrypted && ctx.decryptMessage) {
         // Our own tab already reflected the plaintext (_e2eDecrypted) - skip.
@@ -344,7 +313,7 @@ function useWsRouter(ctx) {
     if (msg.event === 'message_deleted') {
       // Soft delete: keep the bubble in place, just flag it so it re-renders
       // as "This message was deleted" (WhatsApp-style tombstone).
-      const m = ctx.messages.value.find((x) => x.id === msg.message_id);
+      const m = store.messages.value.find((x) => x.id === msg.message_id);
       if (m) {
         m.deleted_at = new Date().toISOString();
         m.content = null;
@@ -365,7 +334,7 @@ function useWsRouter(ctx) {
       // Hard "delete forever" (ADR 0021): the text is gone server-side and any
       // media object may already be deleted from S3. Keep the bubble as a
       // permanent tombstone and drop any Restore/Delete-forever affordance.
-      const m = ctx.messages.value.find((x) => x.id === msg.message_id);
+      const m = store.messages.value.find((x) => x.id === msg.message_id);
       if (m) {
         m.purged_at = new Date().toISOString();
         m.deleted_at = m.deleted_at || m.purged_at;
@@ -383,7 +352,7 @@ function useWsRouter(ctx) {
     if (msg.event === 'message_restored') {
       // Undo the tombstone: bring the content/media back from the event
       // (the row was never physically removed server-side).
-      const m = ctx.messages.value.find((x) => x.id === msg.message_id);
+      const m = store.messages.value.find((x) => x.id === msg.message_id);
       if (m) {
         const oldMediaUrl = m._deletedMediaUrl || null;
         m.deleted_at = null;
@@ -412,7 +381,7 @@ function useWsRouter(ctx) {
     if (msg.event === 'delivery_receipt' || msg.event === 'read_receipt' || msg.event === 'played_receipt') {
       // If the message-info popup is open on this chat, re-pull it so the
       // per-person "read at / played at" list stays current live.
-      if (ctx.detailsModalMessage.value && msg.chat_id === ctx.activeChatId.value) {
+      if (ctx.detailsModalMessage.value && msg.chat_id === store.activeChatId.value) {
         ctx.loadMessageReceipts(msg.chat_id, ctx.detailsModalMessage.value.id);
       }
       if (msg.event === 'played_receipt') return;
@@ -420,14 +389,14 @@ function useWsRouter(ctx) {
       // on every other participant's own watermark, not just this one event -
       // simplest correct move is to ask the server, which already recomputed
       // it, rather than guess client-side.
-      if (msg.chat_id === ctx.activeChatId.value) ctx.refreshMessageStatuses(msg.chat_id);
+      if (msg.chat_id === store.activeChatId.value) ctx.refreshMessageStatuses(msg.chat_id);
 
       // Cross-tab/cross-device unread sync: a read_receipt's user_id is
       // whoever just marked the chat read - if that's ME, one of my own other
       // tabs/devices just read this chat, so this tab's badge for it should
       // clear too, even though it isn't the active chat here.
       if (msg.event === 'read_receipt' && msg.user_id === currentUser.value.id) {
-        clearUnreadCount(msg.chat_id);
+        store.clearUnreadCount(msg.chat_id);
       }
       return;
     }
@@ -448,10 +417,10 @@ function useWsRouter(ctx) {
       // (chat_service.set_chat_pinned pushes it over the personal channel).
       // Apply the flag + re-sort in place - no reload needed. The tab that
       // did it also gets this echo; re-setting the same value is a no-op.
-      const item = ctx.chats.value.find((c) => c.chat.id === msg.chat_id);
+      const item = store.chats.value.find((c) => c.chat.id === msg.chat_id);
       if (item) {
         item.pinned = !!msg.pinned;
-        ctx.sortChats();
+        store.sortChats();
       }
       return;
     }
@@ -461,7 +430,7 @@ function useWsRouter(ctx) {
       // (chat_service.set_chat_muted pushes it over the personal channel).
       // Apply the new muted_until in place; the acting tab gets the echo too
       // (setting the same value is a no-op).
-      const item = ctx.chats.value.find((c) => c.chat.id === msg.chat_id);
+      const item = store.chats.value.find((c) => c.chat.id === msg.chat_id);
       if (item) item.muted_until = msg.muted_until || null;
       return;
     }
@@ -470,10 +439,10 @@ function useWsRouter(ctx) {
       // Mirror of added_to_chat: fired when someone else removes this user
       // from a group (or this user leaves from another device).
       log('removed from chat', msg.chat_id);
-      ctx.chats.value = ctx.chats.value.filter((c) => c.chat.id !== msg.chat_id);
-      if (ctx.activeChatId.value === msg.chat_id) {
-        ctx.activeChatId.value = null;
-        ctx.messages.value = [];
+      store.chats.value = store.chats.value.filter((c) => c.chat.id !== msg.chat_id);
+      if (store.activeChatId.value === msg.chat_id) {
+        store.activeChatId.value = null;
+        store.messages.value = [];
         ctx.showMembersModal.value = false;
       }
       // Only toast when someone else did the removing - self-initiated leaves
@@ -498,9 +467,5 @@ function useWsRouter(ctx) {
     log('unhandled WS message shape:', msg);
   }
 
-  return {
-    unreadCountByChatId, bumpUnreadCount, clearUnreadCount,
-    takeBufferedMessages,
-    handleWsMessage,
-  };
+  return { handleWsMessage };
 }

@@ -10,6 +10,8 @@ from config import (
     MSG_HISTORY_MAX_LIMIT,
     MSG_HISTORY_RATE_MAX,
     MSG_HISTORY_RATE_WINDOW_SECONDS,
+    SCHEDULED_WRITE_RATE_MAX,
+    SCHEDULED_WRITE_RATE_WINDOW_SECONDS,
     UPLOAD_TICKET_IP_RATE_LIMIT_MAX,
     UPLOAD_TICKET_IP_RATE_LIMIT_WINDOW_SECONDS,
     UPLOAD_TICKET_RATE_MAX,
@@ -27,6 +29,9 @@ from api.schemas import MediaUploadTicketIn
 from api.schemas import MediaUploadTicketOut
 from api.schemas import MessageOut
 from api.schemas import MessageReceiptsOut
+from api.schemas import ScheduledMessageIn
+from api.schemas import ScheduledMessageOut
+from api.schemas import ScheduledMessagePatchIn
 from modules.messaging import service as message_service
 from infra.ratelimit import service as rate_limit_service
 from infra.ratelimit.service import RateLimited
@@ -137,4 +142,108 @@ async def create_media_upload_ticket(
         upload_url=ticket.upload_url,
         required_headers=ticket.required_headers,
         expires_in=ticket.expires_in,
+    )
+
+
+# --- Scheduled messages (ADR 0026) ---
+# Management state (like chat pin/mute), so REST not WS. Two mount points: the
+# create route is chat-scoped, the rest key off the scheduled-message id.
+
+scheduled_create_router = APIRouter(
+    prefix="/chats/{chat_id}/scheduled-messages", tags=["scheduled-messages"]
+)
+scheduled_router = APIRouter(prefix="/scheduled-messages", tags=["scheduled-messages"])
+
+
+def _scheduled_out(row) -> ScheduledMessageOut:
+    """Build the response model, mapping `type` -> `message_type` and attaching
+    a presigned media_url (not a stored column)."""
+    return ScheduledMessageOut(
+        id=row.id,
+        chat_id=row.chat_id,
+        scheduled_for=row.scheduled_for,
+        message_type=row.type,
+        content=row.content,
+        reply_to_message_id=row.reply_to_message_id,
+        status=row.status,
+        last_error=row.last_error,
+        media_url=media_service.message_media_download_url(row.media_key),
+        media_mime=row.media_mime,
+        media_size=row.media_size,
+        media_name=row.media_name,
+        media_duration_seconds=row.media_duration_seconds,
+        media_blur_hash=row.media_blur_hash,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+async def _enforce_scheduled_write(user_id: int) -> None:
+    await rate_limit_service.enforce_sliding_window(
+        user_id, "scheduled_write",
+        SCHEDULED_WRITE_RATE_MAX, SCHEDULED_WRITE_RATE_WINDOW_SECONDS,
+    )
+
+
+@scheduled_create_router.post("", response_model=ScheduledMessageOut, status_code=201)
+async def schedule_message(
+    chat_id: int,
+    body: ScheduledMessageIn,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    await _enforce_scheduled_write(user_id)
+    row = await message_service.schedule_message(
+        session,
+        sender_id=user_id,
+        chat_id=chat_id,
+        client_message_id=body.client_message_id,
+        scheduled_for=body.scheduled_for,
+        message_type=body.message_type,
+        content=body.content,
+        media=body.media.model_dump() if body.media else None,
+        reply_to_message_id=body.reply_to_message_id,
+    )
+    return _scheduled_out(row)
+
+
+@scheduled_router.get("", response_model=list[ScheduledMessageOut])
+async def list_scheduled_messages(
+    chat_id: Optional[int] = None,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    rows = await message_service.list_scheduled(session, sender_id=user_id, chat_id=chat_id)
+    return [_scheduled_out(r) for r in rows]
+
+
+@scheduled_router.patch("/{scheduled_message_id}", response_model=ScheduledMessageOut)
+async def patch_scheduled_message(
+    scheduled_message_id: int,
+    body: ScheduledMessagePatchIn,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    await _enforce_scheduled_write(user_id)
+    set_content = "content" in body.model_fields_set
+    row = await message_service.reschedule(
+        session,
+        sender_id=user_id,
+        scheduled_message_id=scheduled_message_id,
+        scheduled_for=body.scheduled_for,
+        content=body.content,
+        set_content=set_content,
+    )
+    return _scheduled_out(row)
+
+
+@scheduled_router.delete("/{scheduled_message_id}", status_code=204)
+async def cancel_scheduled_message(
+    scheduled_message_id: int,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    await _enforce_scheduled_write(user_id)
+    await message_service.cancel_scheduled(
+        session, sender_id=user_id, scheduled_message_id=scheduled_message_id
     )

@@ -102,6 +102,18 @@ now takes `request: Request`); `modules/chats/router.py::list_my_chats` and
 - **Server only acts on mute in one place**: `modules/messaging/send.py::fan_out_message` skips offline push for recipients with `muted_until > now()`. Everything else (hiding badges/notifications) is the client's job.
 - Multi-device sync via `chat_mute_changed` on `user_events:{user_id}` (like `chat_pin_changed`). No system message.
 
+## Scheduled messages (ADR 0026)
+- Management state (like chat pin/mute), so **REST not WS**. Routes in `modules/messaging/router.py`, thin over `modules/messaging/scheduled_service.py`:
+  - `POST /chats/{chat_id}/scheduled-messages` — body `{client_message_id, scheduled_for, message_type?, content?, media?{key,name?,duration_seconds?,blur_hash?}, reply_to_message_id?}` → `ScheduledMessageOut` (201).
+  - `GET /scheduled-messages?chat_id=` — pending only, `scheduled_for` asc → `[ScheduledMessageOut]`.
+  - `PATCH /scheduled-messages/{id}` — `{scheduled_for?, content?}`, sender-only, pending-only.
+  - `DELETE /scheduled-messages/{id}` — 204, sender-only, pending-only.
+- `modules/messaging/scheduled_service.py` (re-exported via the `service.py` facade — `message_service.schedule_message` etc.): `schedule_message`, `list_scheduled`, `reschedule` (`set_content` flag: a *sent* content key sets/clears the caption), `cancel_scheduled`. Validation: `message_type != 6`; `scheduled_for` ∈ `[now + SCHEDULED_MIN_LEAD_SECONDS (10), now + SCHEDULED_MAX_LEAD_DAYS (365)]`; `_check_content_length`; participant check; `count_pending_for_user < SCHEDULED_MAX_PENDING_PER_USER (100)`. Media checked leniently against the `media_blob` row (bytes just PUT) — authoritative HEAD is at fire time; a **+1 blob ref** is taken at schedule time and released on cancel (`deref_blob` → S3 `delete_object` + row delete on last ref). CRUD is the flat module `modules/messaging/crud_scheduled.py` (not a `crud/` package). On create/reschedule the row id is `ZADD`-ed to `scheduled_messages:due`; on cancel it's `ZREM`-ed (Redis failures are logged, not fatal — the worker's reconcile scan self-heals).
+- `main.py` error mapping: `ScheduledTimeInvalidError` 400, `ScheduledLimitExceededError` 409, `NotAParticipantError` 403, `ScheduledMessageNotFoundError` 404.
+- Rate limit: new `scheduled_write` sliding bucket (`SCHEDULED_WRITE_RATE_MAX` 20 / `SCHEDULED_WRITE_RATE_WINDOW_SECONDS` 60, per user) in the router (step-7 pattern).
+- Schemas (`api/schemas.py`): `ScheduledMessageIn` (`{client_message_id, scheduled_for, message_type, content?, media?{key,name?,duration_seconds?,blur_hash?}, reply_to_message_id?}`), `ScheduledMessagePatchIn` (`{scheduled_for?, content?}` — a *sent* `content` key, even null, sets/clears the caption; the router checks `model_fields_set`), `ScheduledMessageOut` (ids as `IdStr`, `scheduled_for`/`created_at`/`updated_at` ISO, `media_url` presigned GET attached by the router, `status`, `content`, `message_type`, `last_error`, `chat_id`, media_* mirrors). The Out model is built by the router helper `_scheduled_out(row)` — the model column is `type`, the API field is `message_type`.
+- Fire mechanism (Redis ZSET + `realtime/fanout/scheduled_worker.py` + reconcile): realtime_and_redis.md. Table: database_schema.md. Media ref lifecycle: storage_and_media.md.
+
 ## Known gaps (deliberately not built)
 - No REST routes for sending/editing/deleting messages (WebSocket-only by design).
 - No `call_service.py` / WebRTC — explicitly deferred.

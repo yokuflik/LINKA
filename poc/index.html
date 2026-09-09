@@ -93,6 +93,7 @@
 <script src="components/SettingsModal.js?v=2026.09.08-1"></script>
 <script src="components/NewChatModal.js?v=2026.09.08-1"></script>
 <script src="components/NewGroupModal.js?v=2026.09.08-1"></script>
+<script src="components/ScheduleMessageModal.js?v=2026.09.09-1"></script>
 <script src="components/InlineAlert.js?v=2026.09.08-1"></script>
 <script src="components/ToastList.js?v=2026.09.08-1"></script>
 
@@ -123,6 +124,7 @@
 <script src="composables/useMessageEdit.js?v=2026.09.08-1"></script>
 <script src="composables/useAudioWaveform.js?v=2026.09.09-1"></script>
 <script src="composables/useMediaUpload.js?v=2026.09.09-1"></script>
+<script src="composables/useScheduleMessage.js?v=2026.09.09-1"></script>
 <script src="composables/useMediaPlaceholder.js?v=2026.09.08-1"></script>
 <script src="composables/useSettings.js?v=2026.09.08-1"></script>
 <script src="composables/useProfileEdit.js?v=2026.09.09-1"></script>
@@ -261,7 +263,7 @@ const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick
 
 const app = createApp({
   components: {
-    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, ForwardModal, MessageDetailsModal, MembersModal, ChatProfileModal, ProfileEditModal, SettingsModal, NewChatModal, NewGroupModal, ToastList, AvatarLightbox,
+    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, ForwardModal, MessageDetailsModal, MembersModal, ChatProfileModal, ProfileEditModal, SettingsModal, NewChatModal, NewGroupModal, ScheduleMessageModal, ScheduleListModal, ToastList, AvatarLightbox,
   },
   setup() {
     // ---------------------------------------------------------------
@@ -293,6 +295,7 @@ const app = createApp({
     Object.assign(ctx, useMessageEdit(ctx));
     Object.assign(ctx, useAudioWaveform(ctx));
     Object.assign(ctx, useMediaUpload(ctx));
+    Object.assign(ctx, useScheduleMessage(ctx));
     Object.assign(ctx, useMediaPlaceholder(ctx));
     Object.assign(ctx, useSettings(ctx));
     Object.assign(ctx, useProfileEdit(ctx));
@@ -432,7 +435,20 @@ const app = createApp({
             <div v-if="showOutboxBanner" class="px-4 py-1.5 text-center text-xs text-amber-700 bg-amber-50 border-t border-amber-100">
               {{ outboxBannerText }}
             </div>
+            <div v-if="scheduledCount" class="px-4 py-1.5 border-t border-slate-100 bg-slate-50">
+              <button @click="showScheduleList = true"
+                      class="text-xs text-teal-700 font-medium hover:underline inline-flex items-center gap-1.5">
+                <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor"
+                     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="13" r="8"></circle>
+                  <path d="M12 9v4l2.5 2.5"></path>
+                  <path d="M5 3 2.5 5.5M19 3l2.5 2.5"></path>
+                </svg>
+                <span>{{ scheduledCount }} scheduled</span>
+              </button>
+            </div>
             <MessageInput v-model:messageInput="messageInput" @send-message="sendMessage" @typing="notifyTyping"
+              @open-schedule="openScheduleModal()"
               :attachError="messagesError" @clear-attach-error="messagesError = ''"
               :replyingToMessage="replyingToMessage" :senderLabel="replySenderLabel" @cancel-reply="cancelReply"
               :editingMessage="editingMessage" @cancel-edit="cancelEdit"
@@ -450,6 +466,7 @@ const app = createApp({
             :canShowDetails="canShowMessageDetails(contextMenuMessage)"
             :canCopy="canCopyMessage(contextMenuMessage)"
             :canForward="canForwardMessage(contextMenuMessage)"
+            :canSaveMedia="canSaveMessageMedia(contextMenuMessage)"
             :canEdit="canEditMessage(contextMenuMessage)"
             :canDelete="canDeleteMessage(contextMenuMessage)"
             :canRestore="canRestoreMessage(contextMenuMessage)"
@@ -458,6 +475,7 @@ const app = createApp({
             @reply="startReplyTo(contextMenuMessage)"
             @copy="copyMessage(contextMenuMessage)"
             @forward="openForwardModal(contextMenuMessage)"
+            @save-media="saveMessageMedia(contextMenuMessage)"
             @details="openMessageDetails(contextMenuMessage)"
             @edit="startEditMessage(contextMenuMessage)"
             @delete="deleteMessage(contextMenuMessage)"
@@ -519,6 +537,18 @@ const app = createApp({
       :onlineVisibilityOptions="ONLINE_VISIBILITY_OPTIONS"
       :busy="settingsBusy" :error="settingsError"
       @save="submitSettings" @close="showSettingsModal = false" />
+
+    <ScheduleMessageModal v-if="showScheduleModal"
+      v-model:form="scheduleForm"
+      :busy="scheduleBusy" :error="scheduleError"
+      @submit="submitSchedule"
+      @preset-1h="presetIn1Hour" @preset-tonight="presetTonight8pm" @preset-tomorrow="presetTomorrow9am"
+      @close="showScheduleModal = false" />
+
+    <ScheduleListModal v-if="showScheduleList"
+      :items="scheduledMessages" :relativeLabel="scheduleRelativeLabel"
+      @edit="editScheduled" @cancel="cancelScheduled"
+      @close="showScheduleList = false" />
 
     <ProfileEditModal v-if="showGroupEditModal"
       heading="Edit group info"

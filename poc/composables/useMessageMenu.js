@@ -21,7 +21,7 @@ function useMessageMenu(ctx) {
   // right-clicking near an edge.
   const contextMenuPosition = computed(() => ({
     x: Math.min(contextMenuRawPosition.value.x, window.innerWidth - 168),
-    y: Math.min(contextMenuRawPosition.value.y, window.innerHeight - 264),
+    y: Math.min(contextMenuRawPosition.value.y, window.innerHeight - 300),
   }));
 
   function openMessageContextMenu({ message, event }) {
@@ -78,6 +78,42 @@ function useMessageMenu(ctx) {
       } catch (err2) {
         ctx.logError('copy to clipboard failed', err2);
       }
+    }
+  }
+
+  // "Save to device" is offered for any non-deleted media message (image /
+  // video / file / voice). Fetches the presigned bytes into a blob and
+  // triggers a real browser download via a synthetic <a download>.
+  function canSaveMessageMedia(m) {
+    return !!m && m.deleted_at == null && (m.type === 2 || m.type === 3 || m.type === 4 || m.type === 5)
+      && !!(m.media_url_remote || m.media_url);
+  }
+
+  function defaultMediaName(m) {
+    if (m.media_name) return m.media_name;
+    const ext = m.type === 2 ? 'jpg' : m.type === 3 ? 'mp4' : m.type === 4 ? 'ogg' : 'bin';
+    return `linka-${m.id || Date.now()}.${ext}`;
+  }
+
+  async function saveMessageMedia(m) {
+    closeMessageContextMenu();
+    const url = m.media_url_remote || m.media_url;
+    if (!url) return;
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('http ' + resp.status);
+      const blob = await resp.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = defaultMediaName(m);
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
+    } catch (err) {
+      ctx.logError('save media to device failed', err);
+      ctx.showErrorToast("Couldn't save this file. Please try again.");
     }
   }
 
@@ -190,6 +226,7 @@ function useMessageMenu(ctx) {
   return {
     contextMenuMessage, contextMenuPosition, openMessageContextMenu, closeMessageContextMenu,
     canShowMessageDetails, canCopyMessage, copyMessage,
+    canSaveMessageMedia, saveMessageMedia,
     detailsModalMessage, messageReceipts, messageReceiptsLoading,
     messageReceiptsError, messageDetailsSnippet, loadMessageReceipts,
     openMessageDetails, closeMessageDetails,

@@ -115,6 +115,62 @@ function useMediaUpload(ctx) {
     return null;
   }
 
+  // Shared "prepare + upload, return a media block" pipeline used by both the
+  // live media send (sendMediaMessage) and the scheduled-message flow
+  // (useScheduleMessage). Downscales an oversize photo, computes the ThumbHash
+  // placeholder, hashes the bytes, asks for an upload ticket, PUTs the bytes
+  // (skipped on an already-uploaded dedup hit), and returns everything the
+  // caller needs to build a send_message frame or a scheduled-message body.
+  //
+  // Returns { key, name, mime, size, blur_hash, duration_seconds, file } - the
+  // (possibly shrunk) file is handed back so the caller can build an optimistic
+  // preview from it. `onProgress(blurHash)` is an optional early callback fired
+  // once the blur hash is known (before the upload) so an already-rendered
+  // optimistic bubble can adopt it.
+  async function prepareMediaBlock(file, kind, { chatId, durationSeconds = null, onBlurHash } = {}) {
+    const targetChatId = chatId || ctx.activeChatId.value;
+    const mimeType = file.type || 'application/octet-stream';
+    // Downscale/recompress an oversize photo in-browser (not documents/video/audio).
+    if (kind === 'image' && file.size > ctx.MEDIA_MAX_BYTES.image) {
+      file = await ctx.shrinkImageToFit(file, ctx.MEDIA_MAX_BYTES.image, { maxDim: 1600 });
+    }
+    if (file.size > ctx.MEDIA_MAX_BYTES[kind]) {
+      throw new Error(kind === 'image'
+        ? 'image is still too large after downscaling'
+        : 'file is too large');
+    }
+    // Blur placeholder (ADR 0014): computed from the final (post-shrink) file.
+    let blurHash = null;
+    if (kind === 'image') blurHash = await computeImageBlurHash(file);
+    else if (kind === 'video') blurHash = await computeVideoBlurHash(file);
+    if (blurHash && typeof onBlurHash === 'function') onBlurHash(blurHash);
+
+    const sha256 = await sha256Hex(file);
+    const ticket = await ctx.apiFetch(`/chats/${targetChatId}/messages/upload-ticket`, {
+      method: 'POST',
+      body: JSON.stringify({ kind, mime_type: mimeType, size_bytes: file.size, sha256 }),
+    });
+    // already_uploaded => the bytes are on the server from a prior send;
+    // skip the PUT entirely (the whole point of ADR 0010).
+    if (!ticket.already_uploaded) {
+      const putResp = await fetch(ticket.upload_url, {
+        method: 'PUT',
+        headers: ticket.required_headers || { 'Content-Type': mimeType },
+        body: file,
+      });
+      if (!putResp.ok) throw new Error('upload failed (' + putResp.status + ')');
+    }
+    return {
+      key: ticket.storage_key,
+      name: file.name,
+      mime: mimeType,
+      size: file.size,
+      blur_hash: blurHash,
+      duration_seconds: durationSeconds,
+      file,
+    };
+  }
+
   async function sendMediaMessage(file, forceKind) {
     ctx.messagesError.value = '';
     if (!ctx.activeChatId.value) {
@@ -181,41 +237,18 @@ function useMediaUpload(ctx) {
     mediaUploadBusy.value = true;
     try {
       const chatId = ctx.activeChatId.value;
-      // Downscale/recompress an oversize photo in-browser (not documents/video).
-      if (kind === 'image' && file.size > ctx.MEDIA_MAX_BYTES.image) {
-        file = await ctx.shrinkImageToFit(file, ctx.MEDIA_MAX_BYTES.image, { maxDim: 1600 });
-      }
-      if (file.size > ctx.MEDIA_MAX_BYTES[kind]) {
-        throw new Error('image is still too large after downscaling');
-      }
-      // Blur placeholder (ADR 0014): computed from the final (post-shrink) file.
-      let blurHash = null;
-      if (kind === 'image') blurHash = await computeImageBlurHash(file);
-      else if (kind === 'video') blurHash = await computeVideoBlurHash(file);
-      if (optimistic && blurHash) optimistic.media_blur_hash = blurHash;
-
-      const sha256 = await sha256Hex(file);
-      const ticket = await ctx.apiFetch(`/chats/${chatId}/messages/upload-ticket`, {
-        method: 'POST',
-        body: JSON.stringify({ kind, mime_type: mimeType, size_bytes: file.size, sha256 }),
+      const block = await prepareMediaBlock(file, kind, {
+        chatId,
+        onBlurHash: (h) => { if (optimistic) optimistic.media_blur_hash = h; },
       });
-      // already_uploaded => the bytes are on the server from a prior send;
-      // skip the PUT entirely (the whole point of ADR 0010).
-      if (!ticket.already_uploaded) {
-        const putResp = await fetch(ticket.upload_url, {
-          method: 'PUT',
-          headers: ticket.required_headers || { 'Content-Type': mimeType },
-          body: file,
-        });
-        if (!putResp.ok) throw new Error('upload failed (' + putResp.status + ')');
-      }
+      const blurHash = block.blur_hash;
 
       const payload = {
         type: 'send_message',
         chat_id: chatId,
         client_message_id: clientMessageId,
         message_type: MEDIA_MESSAGE_TYPE[kind],
-        media: { key: ticket.storage_key, name: file.name },
+        media: { key: block.key, name: block.name },
       };
       if (blurHash) payload.media.blur_hash = blurHash;
       if (caption) payload.content = caption;
@@ -403,7 +436,7 @@ function useMediaUpload(ctx) {
   }
 
   return {
-    sendMediaMessage, mediaUploadBusy,
+    sendMediaMessage, mediaUploadBusy, prepareMediaBlock, mediaKindForMime,
     isRecording, recordingSeconds, liveWaveform, startRecording, stopRecording,
   };
 }

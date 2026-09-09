@@ -25,6 +25,21 @@ class MessageNotFoundError(Exception):
     pass
 
 
+class ScheduledTimeInvalidError(Exception):
+    """`scheduled_for` is outside [now + MIN_LEAD, now + MAX_LEAD] (ADR 0026)."""
+    pass
+
+
+class ScheduledLimitExceededError(Exception):
+    """The user already has SCHEDULED_MAX_PENDING_PER_USER pending rows (ADR 0026)."""
+    pass
+
+
+class ScheduledMessageNotFoundError(Exception):
+    """No pending scheduled message with this id owned by the caller (ADR 0026)."""
+    pass
+
+
 class MessageAlreadySentError(Exception):
     """
     Raised by process_outgoing when the idempotency key already holds a real

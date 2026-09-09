@@ -10,7 +10,7 @@
 // (native picker filtered to image/video types -> pick-media) and "Documents"
 // (unfiltered picker, any file type -> pick-document).
 const MessageInput = {
-  emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'cancel-edit', 'pick-media', 'pick-document', 'start-recording', 'stop-recording', 'clear-attach-error'],
+  emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'cancel-edit', 'pick-media', 'pick-document', 'start-recording', 'stop-recording', 'clear-attach-error', 'open-schedule'],
   props: {
     messageInput: { type: String, required: true },
     // error from the last attach attempt (e.g. file too large), shown as a
@@ -97,6 +97,10 @@ const MessageInput = {
       this.$refs.documentFileInput.value = '';
       this.$refs.documentFileInput.click();
     },
+    openSchedule() {
+      this.closeAttachMenu();
+      this.$emit('open-schedule');
+    },
     onDocumentFileChosen(event) {
       const file = event.target.files && event.target.files[0];
       if (file) this.$emit('pick-document', file);
@@ -182,6 +186,15 @@ const MessageInput = {
             <button type="button" @click="openDocumentPicker"
                     class="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
               <span>📄</span><span>Documents</span>
+            </button>
+            <button type="button" @click="openSchedule"
+                    class="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
+              <svg viewBox="0 0 24 24" class="w-4 h-4 shrink-0" fill="none" stroke="currentColor"
+                   stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="13" r="8"></circle>
+                <path d="M12 9v4l2.5 2.5"></path>
+                <path d="M5 3 2.5 5.5M19 3l2.5 2.5"></path>
+              </svg><span>Schedule message</span>
             </button>
           </div>
         </div>

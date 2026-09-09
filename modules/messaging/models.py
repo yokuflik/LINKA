@@ -131,3 +131,72 @@ class Message(Base):
 
         {"postgresql_partition_by": "RANGE (created_at)"},
     )
+
+
+class ScheduledMessageStatus(enum.IntEnum):
+    """Lifecycle of a ScheduledMessage row (ADR 0026)."""
+    PENDING = 0
+    SENT = 1
+    CANCELLED = 2
+    FAILED = 3
+
+
+class ScheduledMessage(Base):
+    """
+    A message the user composed now to be delivered at `scheduled_for` (ADR 0026).
+
+    Deliberately NOT a `messages` row and NOT partitioned: it is not a real
+    message yet, has no Snowflake-id/created_at partition semantics, and is
+    low-volume (bounded by SCHEDULED_MAX_PENDING_PER_USER per user). At fire
+    time an in-process poll worker turns it into a real message via the normal
+    async send path, reusing `client_message_id` as the idempotency key.
+    """
+    __tablename__ = "scheduled_messages"
+
+    # Snowflake id, minted via infra.ids.client.next_id. Not a partition key,
+    # so there is no created_at-window constraint on it.
+    id = Column(BigInteger, primary_key=True)
+
+    chat_id = Column(BigInteger, ForeignKey("chats.id", ondelete="CASCADE"), nullable=False)
+    sender_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+
+    # Absolute UTC fire time; the client converts from local time.
+    scheduled_for = Column(DateTime(timezone=True), nullable=False)
+
+    # 1=text, 2=image, 3=video, 4=audio, 5=file. 6 (system) is rejected.
+    type = Column(SMALLINT, nullable=False, default=1)
+
+    content = Column(Text, nullable=True)
+
+    # Same shape as Message, captured at schedule time.
+    media_key = Column(Text, nullable=True)
+    media_mime = Column(Text, nullable=True)
+    media_size = Column(BigInteger, nullable=True)
+    media_name = Column(Text, nullable=True)
+    media_duration_seconds = Column(BigInteger, nullable=True)
+    media_blur_hash = Column(Text, nullable=True)
+
+    # FK-less, same as Message.reply_to_message_id.
+    reply_to_message_id = Column(BigInteger, nullable=True)
+
+    # Generated at schedule time, reused as the send idempotency key when the
+    # message fires so a worker crash/retry can't double-send.
+    client_message_id = Column(Text, nullable=False)
+
+    # ScheduledMessageStatus: 0=pending, 1=sent, 2=cancelled, 3=failed.
+    status = Column(SMALLINT, nullable=False, default=0)
+
+    # Set when status=3.
+    last_error = Column(Text, nullable=True)
+
+    # Number of times the worker has tried and transiently failed to fire this
+    # row; capped by SCHEDULED_MAX_FIRE_ATTEMPTS.
+    fire_attempts = Column(SMALLINT, nullable=False, default=0)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_scheduled_messages_sender_scheduled", "sender_id", "scheduled_for"),
+        Index("ix_scheduled_messages_status_scheduled", "status", "scheduled_for"),
+    )

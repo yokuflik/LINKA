@@ -99,6 +99,29 @@ FANOUT_STREAM_SHARDS = int(os.environ.get("FANOUT_STREAM_SHARDS", "4"))
 CHAT_INSTANCE_TTL_SECONDS = int(os.environ.get("CHAT_INSTANCE_TTL_SECONDS", "90"))
 ROUTING_HEARTBEAT_INTERVAL_SECONDS = int(os.environ.get("ROUTING_HEARTBEAT_INTERVAL_SECONDS", "30"))
 
+
+# --- Scheduled messages (ADR 0026) ---
+# A scheduled message lives in the `scheduled_messages` table and is turned
+# into a real message at `scheduled_for` by an in-process poll worker
+# (realtime/fanout/scheduled_worker.py) that re-uses the normal async send
+# path. Postgres is the source of truth; the Redis ZSET `scheduled_messages:due`
+# is a fast index rebuilt by the reconcile scan.
+SCHEDULED_DUE_SET_KEY = os.environ.get("SCHEDULED_DUE_SET_KEY", "scheduled_messages:due")
+SCHEDULED_POLL_INTERVAL_SECONDS = int(os.environ.get("SCHEDULED_POLL_INTERVAL_SECONDS", "5"))
+SCHEDULED_WORKER_BATCH = int(os.environ.get("SCHEDULED_WORKER_BATCH", "100"))
+SCHEDULED_RECONCILE_INTERVAL_SECONDS = int(os.environ.get("SCHEDULED_RECONCILE_INTERVAL_SECONDS", "60"))
+# Transient (DB/Redis) fire failures re-queue with a short backoff; after this
+# many attempts the row is marked failed.
+SCHEDULED_MAX_FIRE_ATTEMPTS = int(os.environ.get("SCHEDULED_MAX_FIRE_ATTEMPTS", "5"))
+SCHEDULED_FIRE_BACKOFF_SECONDS = int(os.environ.get("SCHEDULED_FIRE_BACKOFF_SECONDS", "30"))
+# Validation limits for the schedule endpoint.
+SCHEDULED_MAX_PENDING_PER_USER = int(os.environ.get("SCHEDULED_MAX_PENDING_PER_USER", "100"))
+SCHEDULED_MIN_LEAD_SECONDS = int(os.environ.get("SCHEDULED_MIN_LEAD_SECONDS", "10"))
+SCHEDULED_MAX_LEAD_DAYS = int(os.environ.get("SCHEDULED_MAX_LEAD_DAYS", "365"))
+# `scheduled_write` sliding rate bucket (per user).
+SCHEDULED_WRITE_RATE_MAX = int(os.environ.get("SCHEDULED_WRITE_RATE_MAX", "20"))
+SCHEDULED_WRITE_RATE_WINDOW_SECONDS = int(os.environ.get("SCHEDULED_WRITE_RATE_WINDOW_SECONDS", "60"))
+
 __all__ = [
     "RECEIPT_KIND_DELIVERED",
     "RECEIPT_KIND_READ",
@@ -128,4 +151,15 @@ __all__ = [
     "FANOUT_STREAM_SHARDS",
     "CHAT_INSTANCE_TTL_SECONDS",
     "ROUTING_HEARTBEAT_INTERVAL_SECONDS",
+    "SCHEDULED_DUE_SET_KEY",
+    "SCHEDULED_POLL_INTERVAL_SECONDS",
+    "SCHEDULED_WORKER_BATCH",
+    "SCHEDULED_RECONCILE_INTERVAL_SECONDS",
+    "SCHEDULED_MAX_FIRE_ATTEMPTS",
+    "SCHEDULED_FIRE_BACKOFF_SECONDS",
+    "SCHEDULED_MAX_PENDING_PER_USER",
+    "SCHEDULED_MIN_LEAD_SECONDS",
+    "SCHEDULED_MAX_LEAD_DAYS",
+    "SCHEDULED_WRITE_RATE_MAX",
+    "SCHEDULED_WRITE_RATE_WINDOW_SECONDS",
 ]

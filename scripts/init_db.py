@@ -144,6 +144,34 @@ async def main(drop: bool) -> None:
                 # Optional free-form display name (ADR 0024). No uniqueness/index.
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(80)",
                 # Released-username grace hold (ADR 0017).
+                # Scheduled messages (ADR 0026). Unpartitioned, low-volume.
+                # Spelled out so an already-initialised dev DB picks it up
+                # without a --drop; a deployed DB runs this once by hand.
+                "CREATE TABLE IF NOT EXISTS scheduled_messages ("
+                "  id BIGINT PRIMARY KEY,"
+                "  chat_id BIGINT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,"
+                "  sender_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,"
+                "  scheduled_for TIMESTAMPTZ NOT NULL,"
+                "  type SMALLINT NOT NULL DEFAULT 1,"
+                "  content TEXT,"
+                "  media_key TEXT,"
+                "  media_mime TEXT,"
+                "  media_size BIGINT,"
+                "  media_name TEXT,"
+                "  media_duration_seconds BIGINT,"
+                "  media_blur_hash TEXT,"
+                "  reply_to_message_id BIGINT,"
+                "  client_message_id TEXT NOT NULL,"
+                "  status SMALLINT NOT NULL DEFAULT 0,"
+                "  last_error TEXT,"
+                "  fire_attempts SMALLINT NOT NULL DEFAULT 0,"
+                "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+                "  updated_at TIMESTAMPTZ"
+                ")",
+                "CREATE INDEX IF NOT EXISTS ix_scheduled_messages_sender_scheduled "
+                "ON scheduled_messages (sender_id, scheduled_for)",
+                "CREATE INDEX IF NOT EXISTS ix_scheduled_messages_status_scheduled "
+                "ON scheduled_messages (status, scheduled_for)",
                 "CREATE TABLE IF NOT EXISTS reserved_usernames ("
                 "  username VARCHAR(32) PRIMARY KEY,"
                 "  reserved_for_user_id BIGINT NOT NULL,"

@@ -480,6 +480,16 @@ function useWsRouter(ctx) {
       return;
     }
 
+    if (msg.event === 'scheduled_message_sent') {
+      // The scheduled worker fired it; the real message lands via new_message.
+      if (ctx.onScheduledMessageSent) ctx.onScheduledMessageSent(msg);
+      return;
+    }
+    if (msg.event === 'scheduled_message_failed') {
+      if (ctx.onScheduledMessageFailed) ctx.onScheduledMessageFailed(msg);
+      return;
+    }
+
     log('unhandled WS message shape:', msg);
   }
 

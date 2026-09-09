@@ -12,6 +12,8 @@ from infra.db.connection import dispose_engine
 from modules.auth.router import router as auth_router
 from modules.chats.router import router as chats_router
 from modules.messaging.router import router as messages_router
+from modules.messaging.router import scheduled_create_router
+from modules.messaging.router import scheduled_router
 from modules.users.router import router as users_router
 from realtime.ws_router import router as websocket_router
 from config import (
@@ -30,6 +32,7 @@ from modules.users import service as user_service
 from infra.ratelimit.service import RateLimited
 from realtime.fanout import fanout_worker
 from realtime.fanout import routing
+from realtime.fanout import scheduled_worker
 from realtime.fanout import worker as send_worker
 from modules.receipts import worker as receipt_worker
 from infra.redis.client import close_redis
@@ -82,11 +85,16 @@ async def lifespan(app: FastAPI):
 
     heartbeat_task = asyncio.create_task(_routing_heartbeat())
 
+    # Poll worker that fires scheduled messages at their `scheduled_for` time
+    # (ADR 0026). Postgres is the source of truth; it reconciles the Redis
+    # due-set on startup and periodically. One task per process.
+    scheduled_task = asyncio.create_task(scheduled_worker.run_forever())
+
     yield
 
-    for task in (receipt_task, send_task, fanout_task, heartbeat_task):
+    for task in (receipt_task, send_task, fanout_task, heartbeat_task, scheduled_task):
         task.cancel()
-    for task in (receipt_task, send_task, fanout_task, heartbeat_task):
+    for task in (receipt_task, send_task, fanout_task, heartbeat_task, scheduled_task):
         try:
             await task
         except asyncio.CancelledError:
@@ -148,6 +156,8 @@ app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(chats_router)
 app.include_router(messages_router)
+app.include_router(scheduled_create_router)
+app.include_router(scheduled_router)
 app.include_router(websocket_router)
 
 
@@ -228,6 +238,21 @@ async def _handle_not_a_participant(request: Request, exc: Exception):
 @app.exception_handler(message_service.MessageTooLongError)
 async def _handle_message_too_long(request: Request, exc: Exception):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(message_service.ScheduledTimeInvalidError)
+async def _handle_scheduled_time_invalid(request: Request, exc: Exception):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
+@app.exception_handler(message_service.ScheduledLimitExceededError)
+async def _handle_scheduled_limit(request: Request, exc: Exception):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(message_service.ScheduledMessageNotFoundError)
+async def _handle_scheduled_not_found(request: Request, exc: Exception):
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
 
 
 @app.exception_handler(user_service.UsernameError)

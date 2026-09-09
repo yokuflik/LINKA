@@ -397,3 +397,57 @@ class MessageReceiptsOut(BaseModel):
     played_by: list[MessageReceiptEntryOut] = []
     # Current participants (excluding sender) with no read row yet.
     pending: list[IdStr] = []
+
+
+# --- Scheduled messages (ADR 0026) ---
+
+class ScheduledMediaIn(BaseModel):
+    # Storage key the client got from an upload ticket and already PUT bytes to.
+    key: str
+    name: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    blur_hash: Optional[str] = None
+
+
+class ScheduledMessageIn(BaseModel):
+    # Generated client-side; reused as the send idempotency key when the
+    # message fires so a worker retry can't double-send.
+    client_message_id: str
+    # Absolute UTC instant to deliver at (client converts from local time).
+    scheduled_for: datetime
+    message_type: int = 1
+    content: Optional[str] = None
+    media: Optional[ScheduledMediaIn] = None
+    reply_to_message_id: Optional[int] = None
+
+
+class ScheduledMessagePatchIn(BaseModel):
+    scheduled_for: Optional[datetime] = None
+    # A *sent* `content` key (even null) sets/clears the caption; an absent key
+    # leaves it untouched. `model_fields_set` tells the two apart in the router.
+    content: Optional[str] = None
+
+
+class ScheduledMessageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: IdStr
+    chat_id: IdStr
+    scheduled_for: datetime
+    # 1=text…5=file (mirrors the model's `type` column).
+    message_type: int
+    content: Optional[str]
+    reply_to_message_id: Optional[IdStr]
+    # 0=pending, 1=sent, 2=cancelled, 3=failed.
+    status: int
+    last_error: Optional[str] = None
+    # Short-lived presigned GET, attached by the router (not a stored column) so
+    # the client can preview a scheduled photo. None for a text message.
+    media_url: Optional[str] = None
+    media_mime: Optional[str] = None
+    media_size: Optional[int] = None
+    media_name: Optional[str] = None
+    media_duration_seconds: Optional[int] = None
+    media_blur_hash: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None

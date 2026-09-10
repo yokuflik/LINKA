@@ -49,10 +49,20 @@ pub struct SendMessageFrame {
     pub client_message_id: String,
     #[serde(default)]
     pub content: Option<String>,
-    #[serde(default = "one")]
+    /// The PoC sends `message_type` (1 for text, 2/3/4/5 for media). Mirrors
+    /// the old Python `_handle_send_message` (`payload.get("message_type", 1)`).
+    /// `type` itself is the enum tag and consumed by serde before we get here.
+    #[serde(default = "one", rename = "message_type")]
     pub r#type: i32,
     #[serde(default, deserialize_with = "de_opt_id")]
     pub reply_to_message_id: Option<i64>,
+    /// Media messages arrive as a nested object
+    /// `{"media": {"key", "name"?, "duration_seconds"?, "blur_hash"?}}` plus
+    /// `message_type` 2/3/4/5 - same shape the deleted Python WS handler took.
+    /// Flat `media_key` / ... are also accepted (stream-entry shape) as a
+    /// fallback.
+    #[serde(default)]
+    pub media: Option<MediaBlock>,
     #[serde(default)]
     pub media_key: Option<String>,
     #[serde(default)]
@@ -61,6 +71,46 @@ pub struct SendMessageFrame {
     pub media_duration_seconds: Option<i64>,
     #[serde(default)]
     pub media_blur_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MediaBlock {
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub duration_seconds: Option<i64>,
+    #[serde(default)]
+    pub blur_hash: Option<String>,
+}
+
+impl SendMessageFrame {
+    /// The media key, from the nested `media` object or the flat field.
+    fn media_key(&self) -> Option<String> {
+        self.media
+            .as_ref()
+            .and_then(|m| m.key.clone())
+            .or_else(|| self.media_key.clone())
+    }
+    fn media_name(&self) -> Option<String> {
+        self.media
+            .as_ref()
+            .and_then(|m| m.name.clone())
+            .or_else(|| self.media_name.clone())
+    }
+    fn media_duration_seconds(&self) -> Option<i64> {
+        self.media
+            .as_ref()
+            .and_then(|m| m.duration_seconds)
+            .or(self.media_duration_seconds)
+    }
+    fn media_blur_hash(&self) -> Option<String> {
+        self.media
+            .as_ref()
+            .and_then(|m| m.blur_hash.clone())
+            .or_else(|| self.media_blur_hash.clone())
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -114,13 +164,13 @@ impl SendStreamEntry {
                 .reply_to_message_id
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
-            media_key: clean_opt(&f.media_key),
-            media_name: clean_opt(&f.media_name),
+            media_key: f.media_key().unwrap_or_default(),
+            media_name: f.media_name().unwrap_or_default(),
             media_duration_seconds: f
-                .media_duration_seconds
+                .media_duration_seconds()
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
-            media_blur_hash: clean_opt(&f.media_blur_hash),
+            media_blur_hash: f.media_blur_hash().unwrap_or_default(),
         }
     }
 
@@ -232,6 +282,25 @@ mod tests {
                 let e = SendStreamEntry::from_frame(&m, 999);
                 assert_eq!(e.sender_id, "999");
                 assert_eq!(e.reply_to_message_id, "");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn parses_media_send_frame() {
+        // The exact shape the PoC sends for a photo (useMediaUpload.js).
+        let raw = r#"{"type":"send_message","chat_id":"123","client_message_id":"c1",
+            "message_type":2,"media":{"key":"m/abc","name":"pic.jpg","blur_hash":"aGk=="}}"#;
+        let f: ClientFrame = serde_json::from_str(raw).unwrap();
+        match f {
+            ClientFrame::SendMessage(m) => {
+                assert_eq!(m.r#type, 2);
+                let e = SendStreamEntry::from_frame(&m, 999);
+                assert_eq!(e.r#type, "2");
+                assert_eq!(e.media_key, "m/abc");
+                assert_eq!(e.media_name, "pic.jpg");
+                assert_eq!(e.media_blur_hash, "aGk==");
             }
             _ => panic!("wrong variant"),
         }

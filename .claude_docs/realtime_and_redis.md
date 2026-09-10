@@ -21,6 +21,7 @@ Redis 7 is used for: presence, pub/sub fan-out routing, rate limiting, idempoten
 - **Read-after-write caveat:** `GET /chats` won't see a message until the send worker commits (sub-second). PoC is optimistic so it's invisible there.
 - **Step 4 sharding:** `message_send_stream` and `message_fanout_stream` are sharded by `chat_id` (`SEND_STREAM_SHARDS`/`FANOUT_STREAM_SHARDS`, default 4). `send_queue.shard_for_chat`/`stream_key` (shard 0 = bare key, upgrade-safe). Each worker's `run_forever` runs one consumer task per shard; `drain_once(shard=None)` drains all shards, `drain_once(shard=n)` one. One consumer group per shard.
 
+- **Media send frame shape:** the PoC sends media as `{message_type: 2|3|4|5, media: {key, name?, duration_seconds?, blur_hash?}}` (nested), not the flat stream-entry field names. The Rust gateway's `SendMessageFrame` (`crates/common/src/events.rs`) maps `message_type`→`type` and the nested `media` object→flat `media_key`/`media_name`/`media_duration_seconds`/`media_blur_hash` on `SendStreamEntry`, matching the deleted Python `_handle_send_message`. A frame missing this mapping silently becomes a type-1 text message with no content/media.
 - **No E2EE (ADR 0039):** `send_message` / `edit_message` carry `content` as plain text — no `enc` / `enc_header` field on the frame, the stream, or the `new_message` / `message_edited` events. `messages.content` is stored and indexed as plaintext.
 
 ## Routing layer (FANOUT_REWRITE_PLAN.md step 3, landed)

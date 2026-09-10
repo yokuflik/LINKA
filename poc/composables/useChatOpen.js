@@ -181,16 +181,21 @@ function useChatOpen(ctx) {
     if (ctx.activeChatId.value !== chatId || !Array.isArray(history)) return;
     const seen = new Set(ctx.messages.value.map((m) => m.id).filter((id) => id != null));
     const missing = history.slice().reverse().filter((m) => m.id != null && !seen.has(m.id));
-    if (!missing.length) return;
-    const pinned = isPinnedToBottom();
-    ctx.messages.value = ctx.messages.value.concat(missing).sort((a, b) => {
-      if (a.id == null) return 1;
-      if (b.id == null) return -1;
-      return String(a.id).localeCompare(String(b.id));
-    });
-    ctx.saveChatMessages(chatId, ctx.messages.value);
-    await nextTick();
-    if (pinned) scrollMessagesToBottom();
+    if (missing.length) {
+      const pinned = isPinnedToBottom();
+      ctx.messages.value = ctx.messages.value.concat(missing).sort((a, b) => {
+        if (a.id == null) return 1;
+        if (b.id == null) return -1;
+        return String(a.id).localeCompare(String(b.id));
+      });
+      ctx.saveChatMessages(chatId, ctx.messages.value);
+      await nextTick();
+      if (pinned) scrollMessagesToBottom();
+    }
+    // Always re-fire the catch-up receipts, even when nothing was missing: a
+    // message may have arrived live while the tab was hidden (delivered-only)
+    // and the focus-time flushReadOnActivate can race ahead of this refetch.
+    if (!ctx.messages.value.length) return;
     const newestId = ctx.messages.value[ctx.messages.value.length - 1].id;
     if (newestId != null) {
       ctx.sendReceipt('mark_delivered', chatId, newestId);
@@ -349,6 +354,19 @@ function useChatOpen(ctx) {
     }
   }
 
+  // Called from useWebsocket's ws.onopen too: the open chat IS loaded, but the
+  // socket was down for a while (backgrounded tab, flaky network) and any
+  // message that arrived meanwhile went to an offline push only - it never
+  // reached the live list or the write-through cache. Pull the newest page,
+  // merge what's missing, and re-fire delivered/read for the true newest id.
+  // Without this the missed message only shows on the next manual chat re-open,
+  // and the catch-up mark_read fires against a stale watermark.
+  function revalidateActiveChatOnReconnect() {
+    const id = ctx.activeChatId.value;
+    if (!id || !ctx.messages.value.length) return;
+    revalidateFromCache(id);
+  }
+
   // ---------------------------------------------------------------
   // Read receipts only count when the window is actually on screen
   //   `document.visibilityState === 'visible'` is true only when this tab is
@@ -419,7 +437,8 @@ function useChatOpen(ctx) {
     messagesScrollEl, isPinnedToBottom, scrollMessagesToBottom,
     loadOlderMessages, onMessagesScroll,
     openDraftChat, discardDraftChat, closeActiveChat,
-    selectChat, reloadActiveChatIfUnloaded, refreshActiveChatUsers,
+    selectChat, reloadActiveChatIfUnloaded, revalidateActiveChatOnReconnect,
+    refreshActiveChatUsers,
     markActiveChatReadIfVisible, windowIsActive,
   };
 }

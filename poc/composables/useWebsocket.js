@@ -69,6 +69,11 @@ function useWebsocket(ctx) {
       // If the open chat failed to load its history while we were offline
       // (empty pane + "Waiting for connection…"), retry that fetch now.
       if (ctx.reloadActiveChatIfUnloaded) ctx.reloadActiveChatIfUnloaded();
+
+      // If the open chat IS loaded, revalidate it: a message that arrived while
+      // the socket was down went to an offline push only and never hit the
+      // live list - pull it in and re-fire delivered/read for the newest id.
+      if (ctx.revalidateActiveChatOnReconnect) ctx.revalidateActiveChatOnReconnect();
     };
 
     ws.onmessage = (evt) => {

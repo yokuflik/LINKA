@@ -23,9 +23,26 @@ pub enum ClientFrame {
     PresenceActive {
         active: bool,
     },
+    // WS-only message mutations (ADR 0038) — relayed to `/internal/message/*`.
+    EditMessage(EditFrame),
+    DeleteMessage(MarkFrame),
+    RestoreMessage(MarkFrame),
+    PurgeMessage(MarkFrame),
     Heartbeat,
     #[serde(other)]
     Other,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EditFrame {
+    #[serde(deserialize_with = "de_id")]
+    pub chat_id: i64,
+    #[serde(deserialize_with = "de_id")]
+    pub message_id: i64,
+    pub content: String,
+    /// E2E header (ADR 0027), opaque; carried verbatim.
+    #[serde(default)]
+    pub enc: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

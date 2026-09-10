@@ -385,10 +385,33 @@ function useWsRouter(ctx) {
         ctx.loadMessageReceipts(msg.chat_id, ctx.detailsModalMessage.value.id);
       }
       if (msg.event === 'played_receipt') return;
-      // Which of *my* sent messages this actually changed the tick on depends
-      // on every other participant's own watermark, not just this one event -
-      // simplest correct move is to ask the server, which already recomputed
-      // it, rather than guess client-side.
+
+      // 1:1 fast path: the other participant's watermark *is* the message
+      // status, so flip the ticks straight from the event instead of waiting
+      // on the debounced status re-pull (groups still need that - a group
+      // tick depends on every member's watermark, not this one event).
+      // status is a number: 1 sent, 2 delivered, 3 read, 4 played.
+      if (
+        msg.chat_id === store.activeChatId.value &&
+        msg.user_id !== currentUser.value.id &&
+        store.privateChatOtherUserId.value[msg.chat_id] != null
+      ) {
+        const myId = currentUser.value.id;
+        const target = msg.event === 'read_receipt' ? 3 : 2;
+        let upTo = null;
+        try { upTo = BigInt(msg.message_id); } catch (_) { /* non-numeric id */ }
+        if (upTo != null) {
+          for (const m of store.messages.value) {
+            if (m.sender_id !== myId || m.id == null) continue;
+            let mid;
+            try { mid = BigInt(m.id); } catch (_) { continue; }
+            if (mid <= upTo && (m.status ?? 1) < target) m.status = target;
+          }
+        }
+      }
+
+      // Reconcile with the server (authoritative, covers groups). Debounced +
+      // rate-limited in useChatMeta, so this can't storm.
       if (msg.chat_id === store.activeChatId.value) ctx.refreshMessageStatuses(msg.chat_id);
 
       // Cross-tab/cross-device unread sync: a read_receipt's user_id is

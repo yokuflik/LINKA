@@ -72,6 +72,52 @@ pub async fn presence_authorized(
     .await
 }
 
+/// Outcome of a `/internal/message/*` POST.
+pub enum PostOutcome {
+    /// 2xx — the JSON body (the ack payload the gateway relays).
+    Ok(serde_json::Value),
+    /// 4xx — a client-visible error: (`code`, human message).
+    ClientError(String, String),
+    /// 5xx / network / parse — surface as a generic internal error.
+    Failed,
+}
+
+/// POST a JSON body to `path` on the app and classify the response.
+pub async fn post_json(
+    client: &reqwest::Client,
+    base_url: &str,
+    path: &str,
+    body: &serde_json::Value,
+) -> PostOutcome {
+    let url = format!("{}{}", base_url.trim_end_matches('/'), path);
+    let resp = match client.post(&url).json(body).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, path, "internal POST failed");
+            return PostOutcome::Failed;
+        }
+    };
+    let status = resp.status();
+    if status.is_success() {
+        return match resp.json::<serde_json::Value>().await {
+            Ok(v) => PostOutcome::Ok(v),
+            Err(_) => PostOutcome::Ok(serde_json::json!({})),
+        };
+    }
+    if status.is_client_error() {
+        let detail = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("detail").and_then(|d| d.as_str()).map(str::to_string))
+            .unwrap_or_default();
+        let code = if status.as_u16() == 403 { "forbidden" } else { "bad_request" };
+        return PostOutcome::ClientError(code.to_string(), detail);
+    }
+    tracing::warn!(status = %status, path, "internal POST returned a server error");
+    PostOutcome::Failed
+}
+
 /// `GET /internal/typing-allowed` — full server-side gate for a typing event.
 pub async fn typing_allowed(
     client: &reqwest::Client,

@@ -376,26 +376,33 @@ Original checklist:
 - **Verify:** staging canary — a fraction of PoC clients pointed at `/ws`
   (Rust), the rest at `/ws-legacy`; watch RSS, reconnect rate, message loss.
 
-### Step 8 — Cutover + cleanup — PARTIALLY DONE (blockers cleared; live canary owed)
+### Step 8 — Cutover + cleanup — blockers cleared; live canary owed
 
 Landed:
-- **Receipt async redesign — ADR 0037** (the last hard blocker): `mark_*` is
-  fire-and-forget on both fleets, the `receipt_log` worker does watermark +
-  privacy + live event. 455 tests pass.
+- **Receipt async redesign — ADR 0037**: `mark_*` fire-and-forget on both
+  fleets, the `receipt_log` worker does watermark + privacy + live event.
+- **`edit`/`delete`/`restore`/`purge` on the gateway — ADR 0038 option 1**
+  (risk 8): `/internal/message/*` + `ClientFrame` variants + `message_ops.rs`.
 - **Import guard**: `config.LEGACY_WS_ENABLED` (`config/app_settings.py`,
   default **true**); `main.py` mounts the FastAPI `/ws` only when set. Caddy
-  already serves it at `/ws-legacy`. Flip to `false` to unmount at cutover.
+  serves it at `/ws-legacy`.
 
-Still to do (needs the live canary from Step 7 first):
+Every WS action the client sends is now handled by the gateway. Still to do:
 - Off-host image build + server rollout + canary (Step 7 tail).
-- Once the gateway is proven under canary: flip PoC clients fully to `/ws`, set
-  `LEGACY_WS_ENABLED=false`, watch a release.
-- Follow-up ADR/PR deletes `realtime/ws_router.py` +
-  `realtime/connection_manager.py` + `ws_connection_registry.py` +
-  `presence_service.py` (gateway owns all of it) once stable.
-- Final docs pass: `.claude_docs/security_and_rate_limiting.md` (limiter now
-  also called from Rust), `realtime_and_redis.md` + `deployment.md` (drop the
-  "in progress" framing).
+- Flip PoC clients fully to `/ws`, `LEGACY_WS_ENABLED=false`, watch a release.
+- ADR 0038 deletes the Python WS layer (`ws_router` / `connection_manager` /
+  `ws_connection_registry` + tests). `presence_service` / `realtime_service` /
+  `internal_router` / `presence_authz` stay (see ADR 0038).
+- Final docs pass: `.claude_docs/security_and_rate_limiting.md` +
+  `realtime_and_redis.md` + `deployment.md`.
+
+### Step 9 — Delete the Python WS layer
+
+Blocked on the Step 8 canary only. `docs/adr/0038` written (status Proposed).
+The deletion was staged once 2026-09-10 and rolled back after finding risk 8
+(now fixed). `tests/realtime/test_internal_router.py` added and kept — covers
+the ws-bootstrap / presence-authorized / typing-allowed / message-`*` rules
+that `test_ws_router.py` held.
 
 ---
 
@@ -410,3 +417,4 @@ Still to do (needs the live canary from Step 7 first):
 | 4 | Redis reconnection: `redis-rs` bare reconnect vs switching to `fred` | Step 5, escalate only if flaky |
 | 5 | Does `ws_gateway` also need to consume `message_fanout_stream` directly, or is `instance_inbox` sufficient? (It is sufficient — fan-out is Python's job.) | Confirmed: inbox only |
 | 6 | Graceful drain on deploy: SIGTERM → stop accepting, `unregister_instance`, close all with 1001, clients reconnect to the new container | Step 7 |
+| 8 | `edit_message` / `delete_message` / `restore_message` / `purge_message` were WS-only and the gateway didn't handle them (found during Step 9) | **RESOLVED (2026-09-10, ADR 0038 option 1).** `POST /internal/message/{edit,delete,restore,purge}` on the Python app wrap `message_service.*` (which fan out `message_edited`/`_deleted`/`_restored`/`_purged` themselves); new `ClientFrame::{EditMessage,DeleteMessage,RestoreMessage,PurgeMessage}` + `crates/ws_gateway/src/message_ops.rs` relay them (`ws_edit` bucket, ack / 403→forbidden / 400→bad_request / else→internal_error). 467 tests pass |

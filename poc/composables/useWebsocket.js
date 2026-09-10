@@ -39,7 +39,16 @@ function useWebsocket(ctx) {
       log('WS connected');
       heartbeatTimer = setInterval(() => {
         if (!wsIsOpen()) return;
-        ws.send(JSON.stringify({ type: 'heartbeat' }));
+        // The `heartbeat` frame's only server-side effect is refreshing our
+        // own presence TTL (routing TTLs are refreshed by a server-side task,
+        // not this frame). Only ping it while the tab is actually foreground,
+        // so a backgrounded / switched-away tab stops being "online" for peers
+        // once the 60s presence TTL lapses - even if the explicit
+        // `presence_active:false` was missed (frozen tab, dropped frame,
+        // reconnect race re-marking us online). ADR 0025.
+        if (!ctx.windowIsActive || ctx.windowIsActive()) {
+          ws.send(JSON.stringify({ type: 'heartbeat' }));
+        }
         // Re-assert the presence subscription for the open private chat so
         // the server re-checks the other user's privacy.online setting -
         // a change on their side takes effect within one heartbeat, with

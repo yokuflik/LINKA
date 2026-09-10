@@ -9,6 +9,7 @@
 mod bootstrap;
 mod fanin;
 mod handlers;
+mod message_ops;
 mod presence;
 mod receipts;
 mod routing;

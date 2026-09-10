@@ -47,6 +47,8 @@ pub struct Limits {
     pub typing_window_secs: f64,
     pub sub_presence_max: u64,
     pub sub_presence_window_secs: f64,
+    pub edit_max: u64,
+    pub edit_window_secs: f64,
 }
 
 impl Limits {
@@ -69,6 +71,8 @@ impl Limits {
             typing_window_secs: parse("WS_TYPING_RATE_WINDOW_SECONDS", 10.0),
             sub_presence_max: parse("WS_SUBSCRIBE_PRESENCE_RATE_MAX", 20),
             sub_presence_window_secs: parse("WS_SUBSCRIBE_PRESENCE_RATE_WINDOW_SECONDS", 10.0),
+            edit_max: parse("WS_EDIT_RATE_MAX", 20),
+            edit_window_secs: parse("WS_EDIT_RATE_WINDOW_SECONDS", 60.0),
         }
     }
 }

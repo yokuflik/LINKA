@@ -357,6 +357,11 @@ fn send(state: &AppState, conn_id: ConnId, frame: String) {
     }
 }
 
+/// `send` for other modules (`handlers`, `message_ops`).
+pub(crate) fn send_frame(state: &AppState, conn_id: ConnId, frame: String) {
+    send(state, conn_id, frame);
+}
+
 async fn send_close(socket: &mut WebSocket, code: u16) -> Result<(), axum::Error> {
     socket
         .send(Message::Close(Some(axum::extract::ws::CloseFrame {
@@ -474,6 +479,18 @@ async fn dispatch(
                 state.config.presence_ttl_secs,
             )
             .await;
+        }
+        ClientFrame::EditMessage(f) => {
+            crate::message_ops::edit(state, conn_id, conn_uuid, user_id, f).await;
+        }
+        ClientFrame::DeleteMessage(f) => {
+            crate::message_ops::delete(state, conn_id, conn_uuid, user_id, f).await;
+        }
+        ClientFrame::RestoreMessage(f) => {
+            crate::message_ops::restore(state, conn_id, conn_uuid, user_id, f).await;
+        }
+        ClientFrame::PurgeMessage(f) => {
+            crate::message_ops::purge(state, conn_id, conn_uuid, user_id, f).await;
         }
         ClientFrame::UnsubscribePresence(p) => {
             // Unmetered, like the Python side.

@@ -74,6 +74,11 @@ function useWebsocket(ctx) {
       // the socket was down went to an offline push only and never hit the
       // live list - pull it in and re-fire delivered/read for the newest id.
       if (ctx.revalidateActiveChatOnReconnect) ctx.revalidateActiveChatOnReconnect();
+
+      // A scheduled message may have fired while the socket was down - its
+      // scheduled_message_sent event was missed, so the "N scheduled" chip
+      // still shows it. Re-pull the pending list for the open chat.
+      if (ctx.loadScheduledMessages && ctx.activeChatId.value) ctx.loadScheduledMessages(ctx.activeChatId.value);
     };
 
     ws.onmessage = (evt) => {

@@ -200,7 +200,10 @@ const MessageList = {
     // legacy two-shape guess when the row has no hash). Width is capped so a
     // very wide/tall image still fits the pane.
     function mediaBoxStyle(m) {
-      const ratio = hasBlur(m) ? props.thumbHashToAspect(m.media_blur_hash) : null;
+      // Prefer a locally-measured aspect ratio on the sender's own optimistic
+      // bubble (set before upload) so the reserved box is right from the first
+      // paint and never resizes mid-load; else fall back to the thumbhash.
+      const ratio = m._localAspect || (hasBlur(m) ? props.thumbHashToAspect(m.media_blur_hash) : null);
       if (!ratio) return null;
       const w = ratio >= 1 ? 256 : 192;
       return { width: w + 'px', aspectRatio: String(ratio) };

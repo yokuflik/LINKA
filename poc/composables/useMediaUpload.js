@@ -135,6 +135,46 @@ function useMediaUpload(ctx) {
     }
   }
 
+  // Decode just the intrinsic dimensions of a picked image/video file and
+  // return width/height as an aspect ratio, so the optimistic bubble can
+  // reserve the correctly-shaped box before any upload / thumbhash work and
+  // never resize mid-load. Returns null on any failure (bubble keeps the
+  // legacy two-shape guess).
+  async function localMediaAspect(file, kind) {
+    try {
+      const url = URL.createObjectURL(file);
+      try {
+        if (kind === 'image') {
+          const img = new Image();
+          img.decoding = 'async';
+          await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = () => reject(new Error('decode failed'));
+            img.src = url;
+          });
+          if (img.naturalWidth && img.naturalHeight) return img.naturalWidth / img.naturalHeight;
+        } else if (kind === 'video') {
+          const video = document.createElement('video');
+          video.muted = true;
+          video.preload = 'metadata';
+          video.playsInline = true;
+          await new Promise((resolve, reject) => {
+            video.onloadedmetadata = resolve;
+            video.onerror = () => reject(new Error('load failed'));
+            video.src = url;
+          });
+          if (video.videoWidth && video.videoHeight) return video.videoWidth / video.videoHeight;
+        }
+        return null;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      ctx.logError('local media aspect failed', err);
+      return null;
+    }
+  }
+
   // Image file -> ThumbHash base64 via a decoded <img>.
   async function computeImageBlurHash(file) {
     try {
@@ -301,6 +341,12 @@ function useMediaUpload(ctx) {
     // sent/delivered/read tick logic takes over. `_localMediaUrl` marks the row
     // so the reconcile keeps this URL (see useWsRouter) and the message cache
     // swaps in the presigned URL only when persisting (blob: URLs die on reload).
+    // Measure the picked file's real dimensions first so the reserved box is
+    // the right shape from the first paint (no resize mid-load).
+    const localAspect = (kind === 'image' || kind === 'video')
+      ? await localMediaAspect(file, kind)
+      : null;
+
     const localUrl = URL.createObjectURL(file);
     let optimistic = null;
     if (ctx.activeChatId.value) {
@@ -310,7 +356,7 @@ function useMediaUpload(ctx) {
         content: caption || null, created_at: new Date().toISOString(),
         is_edited: false, edited_at: null, status: 'SENT',
         reply_to_message_id: replyToId,
-        media_url: localUrl, _localMediaUrl: localUrl,
+        media_url: localUrl, _localMediaUrl: localUrl, _localAspect: localAspect,
         media_mime: mimeType, media_size: file.size, media_name: file.name,
         media_duration_seconds: null, media_blur_hash: null,
         pending: true, send_failed: false,

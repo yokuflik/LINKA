@@ -51,7 +51,7 @@ function useMessageCache(ctx) {
       const messages = list.slice(-MAX_CACHED).map((m) => {
         if (!m) return m;
         if (!m._localMediaUrl) return m;
-        const { _localMediaUrl, media_url_remote, ...rest } = m;
+        const { _localMediaUrl, _localAspect, media_url_remote, ...rest } = m;
         return { ...rest, media_url: media_url_remote || null };
       });
       localStorage.setItem(keyFor(chatId), JSON.stringify({ v: SCHEMA, messages }));

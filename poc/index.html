@@ -82,7 +82,7 @@
 <script src="components/ChatContextMenu.js?v=2026.09.08-1"></script>
 <script src="components/ChatHeader.js?v=2026.09.08-1"></script>
 <script src="components/VoiceMessage.js?v=2026.09.08-1"></script>
-<script src="components/MessageList.js?v=2026.09.10-1"></script>
+<script src="components/MessageList.js?v=2026.09.10-2"></script>
 <script src="components/MessageInput.js?v=2026.09.08-1"></script>
 <script src="components/MessageContextMenu.js?v=2026.09.08-1"></script>
 <script src="components/ForwardModal.js?v=2026.09.08-1"></script>
@@ -122,7 +122,7 @@
 <script src="composables/useForward.js?v=2026.09.08-1"></script>
 <script src="composables/useMessageEdit.js?v=2026.09.08-1"></script>
 <script src="composables/useAudioWaveform.js?v=2026.09.09-1"></script>
-<script src="composables/useMediaUpload.js?v=2026.09.09-1"></script>
+<script src="composables/useMediaUpload.js?v=2026.09.10-1"></script>
 <script src="composables/useScheduleMessage.js?v=2026.09.09-1"></script>
 <script src="composables/useMediaPlaceholder.js?v=2026.09.08-1"></script>
 <script src="composables/useSettings.js?v=2026.09.08-1"></script>
@@ -424,6 +424,7 @@ const app = createApp({
               :thumbHashToDataUrl="thumbHashToDataUrl" :thumbHashToAspect="thumbHashToAspect"
               :connectionError="messagesConnectionError" :loading="messagesLoading"
               :loadingOlder="loadingOlderMessages" :loadingOlderRetrying="olderMessagesRetrying"
+              :uploadProgress="uploadProgress"
               @message-contextmenu="openMessageContextMenu" @load-older="onMessagesScroll"
               @voice-played="onVoicePlayed" @retry-message="retryFailedMessage" />
 

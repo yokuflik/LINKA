@@ -18,6 +18,40 @@ function useMediaUpload(ctx) {
   const MEDIA_MESSAGE_TYPE = { image: 2, video: 3, audio: 4, file: 5 };
   const mediaUploadBusy = ref(false);
 
+  // Per-outgoing-media upload progress, keyed by client_message_id:
+  //   number 0..1 -> fraction of bytes uploaded (determinate ring)
+  //   null        -> in flight but no measurable progress yet / offline
+  //                  (indeterminate spinning ring)
+  //   (absent)    -> not uploading (done, failed, or never started)
+  // Read by <MessageList> to draw a progress ring over the sender's own
+  // still-pending photo/video bubble instead of a blank box.
+  const uploadProgress = Vue.reactive({});
+
+  // PUT `body` to `url` via XHR so we get upload progress events (fetch has
+  // none). Mirrors the old `fetch` PUT contract: resolves on 2xx, throws
+  // otherwise. `onProgress(fraction|null)` fires as bytes go out; null means
+  // "started but length not computable" so the caller can show a spinner.
+  function xhrPut(url, body, headers, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', url);
+      Object.entries(headers || {}).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+      if (onProgress) {
+        onProgress(navigator.onLine === false ? null : 0);
+        xhr.upload.onprogress = (e) => {
+          onProgress(e.lengthComputable && e.total > 0 ? e.loaded / e.total : null);
+        };
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
+        else reject(new Error('upload failed (' + xhr.status + ')'));
+      };
+      xhr.onerror = () => reject(new Error('upload failed (network)'));
+      xhr.onabort = () => reject(new Error('upload aborted'));
+      xhr.send(body);
+    });
+  }
+
   // sha256 of a Blob/File as lowercase hex - the content-addressed dedup key
   // the upload-ticket endpoint expects (ADR 0010). Lets the server skip the
   // upload entirely for a file someone already sent.
@@ -127,7 +161,7 @@ function useMediaUpload(ctx) {
   // preview from it. `onProgress(blurHash)` is an optional early callback fired
   // once the blur hash is known (before the upload) so an already-rendered
   // optimistic bubble can adopt it.
-  async function prepareMediaBlock(file, kind, { chatId, durationSeconds = null, onBlurHash } = {}) {
+  async function prepareMediaBlock(file, kind, { chatId, durationSeconds = null, onBlurHash, progressKey } = {}) {
     const targetChatId = chatId || ctx.activeChatId.value;
     const mimeType = file.type || 'application/octet-stream';
     // Downscale/recompress an oversize photo in-browser (not documents/video/audio).
@@ -153,12 +187,16 @@ function useMediaUpload(ctx) {
     // already_uploaded => the bytes are on the server from a prior send;
     // skip the PUT entirely (the whole point of ADR 0010).
     if (!ticket.already_uploaded) {
-      const putResp = await fetch(ticket.upload_url, {
-        method: 'PUT',
-        headers: ticket.required_headers || { 'Content-Type': mimeType },
-        body: file,
-      });
-      if (!putResp.ok) throw new Error('upload failed (' + putResp.status + ')');
+      try {
+        await xhrPut(
+          ticket.upload_url,
+          file,
+          ticket.required_headers || { 'Content-Type': mimeType },
+          progressKey ? (frac) => { uploadProgress[progressKey] = frac; } : null,
+        );
+      } finally {
+        if (progressKey) delete uploadProgress[progressKey];
+      }
     }
     return {
       key: ticket.storage_key,
@@ -239,6 +277,7 @@ function useMediaUpload(ctx) {
       const chatId = ctx.activeChatId.value;
       const block = await prepareMediaBlock(file, kind, {
         chatId,
+        progressKey: clientMessageId,
         onBlurHash: (h) => { if (optimistic) optimistic.media_blur_hash = h; },
       });
       const blurHash = block.blur_hash;
@@ -409,12 +448,16 @@ function useMediaUpload(ctx) {
         body: JSON.stringify({ kind: 'audio', mime_type: type, size_bytes: blob.size, sha256 }),
       });
       if (!ticket.already_uploaded) {
-        const putResp = await fetch(ticket.upload_url, {
-          method: 'PUT',
-          headers: ticket.required_headers || { 'Content-Type': type },
-          body: blob,
-        });
-        if (!putResp.ok) throw new Error('upload failed (' + putResp.status + ')');
+        try {
+          await xhrPut(
+            ticket.upload_url,
+            blob,
+            ticket.required_headers || { 'Content-Type': type },
+            (frac) => { uploadProgress[clientMessageId] = frac; },
+          );
+        } finally {
+          delete uploadProgress[clientMessageId];
+        }
       }
       const payload = {
         type: 'send_message',
@@ -437,6 +480,7 @@ function useMediaUpload(ctx) {
 
   return {
     sendMediaMessage, mediaUploadBusy, prepareMediaBlock, mediaKindForMime,
+    uploadProgress,
     isRecording, recordingSeconds, liveWaveform, startRecording, stopRecording,
   };
 }

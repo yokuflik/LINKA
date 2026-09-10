@@ -40,6 +40,10 @@ const MessageList = {
     loadingOlder: { type: Boolean, default: false },
     // True when that "load older" fetch is stuck retrying offline.
     loadingOlderRetrying: { type: Boolean, default: false },
+    // Per-outgoing-media upload progress keyed by client_message_id
+    // (useMediaUpload.uploadProgress): number 0..1, null = indeterminate
+    // (spin, don't fill), absent = not uploading.
+    uploadProgress: { type: Object, default: () => ({}) },
   },
   emits: ['message-contextmenu', 'load-older', 'voice-played', 'retry-message'],
   // Exposes the scrollable element so the root's scrollMessagesToBottom()
@@ -274,8 +278,32 @@ const MessageList = {
       pressStart = null;
     }
 
+    // Upload-progress ring for the sender's own still-uploading photo/video.
+    // Shown only while the row is optimistic (_localMediaUrl + pending) and an
+    // entry exists in uploadProgress. `uploadFraction` is null for an
+    // indeterminate (offline / not-computable) ring - the SVG then just spins.
+    const RING_CIRCUMFERENCE = 2 * Math.PI * 20; // r=20
+    function isUploading(m) {
+      const key = m.client_message_id;
+      return !!(m._localMediaUrl && m.pending && key && key in props.uploadProgress);
+    }
+    function uploadFraction(m) {
+      const v = props.uploadProgress[m.client_message_id];
+      return typeof v === 'number' ? Math.max(0, Math.min(1, v)) : null;
+    }
+    function ringDashOffset(m) {
+      const f = uploadFraction(m);
+      return RING_CIRCUMFERENCE * (1 - (f == null ? 0.25 : f));
+    }
+    function uploadPercentLabel(m) {
+      const f = uploadFraction(m);
+      return f == null ? '' : Math.round(f * 100) + '%';
+    }
+
     return {
       messages,
+      RING_CIRCUMFERENCE,
+      isUploading, uploadFraction, ringDashOffset, uploadPercentLabel,
       messagesEl, onScroll, isBareMedia, rows,
       onTouchStart, onTouchMove, onTouchEnd,
       imageLoaded, markImageLoaded,
@@ -391,6 +419,18 @@ const MessageList = {
                  :class="mediaBoxStyle(m) ? '' : (imageOrientation(m.media_url) === 'portrait' ? 'w-48 aspect-[3/4]' : 'w-64 aspect-[4/3]')">
               <img :src="m.media_url" :alt="m.media_name || 'image'"
                    class="w-full h-full object-cover" />
+              <div v-if="isUploading(m)" class="absolute inset-0 flex items-center justify-center bg-black/30">
+                <div class="relative w-14 h-14">
+                  <svg viewBox="0 0 48 48" class="w-full h-full -rotate-90"
+                       :class="uploadFraction(m) == null ? 'animate-spin' : ''">
+                    <circle cx="24" cy="24" r="20" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="4" />
+                    <circle cx="24" cy="24" r="20" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"
+                            :stroke-dasharray="RING_CIRCUMFERENCE" :stroke-dashoffset="ringDashOffset(m)"
+                            style="transition: stroke-dashoffset 0.2s linear" />
+                  </svg>
+                  <span class="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-white">{{ uploadPercentLabel(m) }}</span>
+                </div>
+              </div>
             </div>
             <div v-else class="relative rounded-lg overflow-hidden bg-white border border-black"
                  :style="mediaBoxStyle(m)"
@@ -427,6 +467,18 @@ const MessageList = {
                  :class="mediaBoxStyle(m) ? '' : (imageOrientation(m.media_url) === 'portrait' ? 'w-48 aspect-[3/4]' : 'w-64 aspect-[4/3]')">
               <video :src="m.media_url" controls preload="metadata"
                      class="w-full h-full object-contain"></video>
+              <div v-if="isUploading(m)" class="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none">
+                <div class="relative w-14 h-14">
+                  <svg viewBox="0 0 48 48" class="w-full h-full -rotate-90"
+                       :class="uploadFraction(m) == null ? 'animate-spin' : ''">
+                    <circle cx="24" cy="24" r="20" fill="none" stroke="rgba(255,255,255,0.3)" stroke-width="4" />
+                    <circle cx="24" cy="24" r="20" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round"
+                            :stroke-dasharray="RING_CIRCUMFERENCE" :stroke-dashoffset="ringDashOffset(m)"
+                            style="transition: stroke-dashoffset 0.2s linear" />
+                  </svg>
+                  <span class="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-white">{{ uploadPercentLabel(m) }}</span>
+                </div>
+              </div>
             </div>
             <div v-else class="relative rounded-lg overflow-hidden bg-black/80 border border-black"
                  :style="mediaBoxStyle(m)"
@@ -452,6 +504,7 @@ const MessageList = {
                + progress track + elapsed/total time. -->
           <VoiceMessage v-else-if="m.media_url && m.type === 4"
                         :src="m.media_url"
+                        :decodeSrc="m.media_url_remote || m.media_url"
                         :durationSeconds="m.media_duration_seconds || 0"
                         :mine="m.sender_id === currentUser.id" class="mb-1"
                         @played="$emit('voice-played', m)" />

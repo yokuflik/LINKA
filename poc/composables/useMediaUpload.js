@@ -44,12 +44,61 @@ function useMediaUpload(ctx) {
       }
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) resolve();
-        else reject(new Error('upload failed (' + xhr.status + ')'));
+        else {
+          const err = new Error('upload failed (' + xhr.status + ')');
+          // A 5xx from storage is worth another try; a 4xx (bad signature,
+          // expired ticket) is not - surface it so the send fails cleanly.
+          err.isRetryable = xhr.status >= 500 || xhr.status === 0;
+          reject(err);
+        }
       };
-      xhr.onerror = () => reject(new Error('upload failed (network)'));
+      xhr.onerror = () => {
+        const err = new Error('upload failed (network)');
+        err.isNetworkError = true;
+        err.isRetryable = true;
+        reject(err);
+      };
       xhr.onabort = () => reject(new Error('upload aborted'));
       xhr.send(body);
     });
+  }
+
+  const UPLOAD_RETRY_MS = 3000;
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+  // Resolve once the WS socket is open again, or when `cancelled()` is true.
+  // The upload can finish (post-reconnect) a beat before the WS handshake
+  // completes; firing sendRaw then would silently drop the frame and strand
+  // the bubble on 🕓.
+  async function waitForSocket(cancelled) {
+    while (!ctx.wsIsOpen()) {
+      if (cancelled && cancelled()) return;
+      await sleep(500);
+    }
+  }
+
+  // Like xhrPut, but retries indefinitely on a network / transient failure -
+  // mirrors apiFetch's forever-retry contract so that killing the connection
+  // mid-upload doesn't strand the message on a ⚠️. Stops (throwing the last
+  // error) when `retryCancelled()` returns true (user switched chats / logged
+  // out). A real 4xx from storage throws on the first attempt.
+  async function xhrPutWithRetry(url, body, headers, onProgress, retryCancelled) {
+    const cancelled = typeof retryCancelled === 'function' ? retryCancelled : () => false;
+    let attempt = 0;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      attempt += 1;
+      try {
+        await xhrPut(url, body, headers, onProgress);
+        return;
+      } catch (err) {
+        if (!err.isRetryable || cancelled()) throw err;
+        ctx.log(`retrying media upload in ${UPLOAD_RETRY_MS}ms (attempt ${attempt})`);
+        if (onProgress) onProgress(null); // back to the indeterminate ring
+        await sleep(UPLOAD_RETRY_MS);
+        if (cancelled()) throw err;
+      }
+    }
   }
 
   // sha256 of a Blob/File as lowercase hex - the content-addressed dedup key
@@ -188,11 +237,12 @@ function useMediaUpload(ctx) {
     // skip the PUT entirely (the whole point of ADR 0010).
     if (!ticket.already_uploaded) {
       try {
-        await xhrPut(
+        await xhrPutWithRetry(
           ticket.upload_url,
           file,
           ticket.required_headers || { 'Content-Type': mimeType },
           progressKey ? (frac) => { uploadProgress[progressKey] = frac; } : null,
+          () => targetChatId !== ctx.activeChatId.value,
         );
       } finally {
         if (progressKey) delete uploadProgress[progressKey];
@@ -292,6 +342,7 @@ function useMediaUpload(ctx) {
       if (blurHash) payload.media.blur_hash = blurHash;
       if (caption) payload.content = caption;
       if (replyToId) payload.reply_to_message_id = replyToId;
+      await waitForSocket(() => chatId !== ctx.activeChatId.value);
       ctx.log('WS →', payload);
       ctx.sendRaw(payload);
     } catch (err) {
@@ -449,11 +500,12 @@ function useMediaUpload(ctx) {
       });
       if (!ticket.already_uploaded) {
         try {
-          await xhrPut(
+          await xhrPutWithRetry(
             ticket.upload_url,
             blob,
             ticket.required_headers || { 'Content-Type': type },
             (frac) => { uploadProgress[clientMessageId] = frac; },
+            () => chatId !== ctx.activeChatId.value,
           );
         } finally {
           delete uploadProgress[clientMessageId];
@@ -467,6 +519,7 @@ function useMediaUpload(ctx) {
         media: { key: ticket.storage_key, name, duration_seconds: duration },
       };
       if (replyToId) payload.reply_to_message_id = replyToId;
+      await waitForSocket(() => chatId !== ctx.activeChatId.value);
       ctx.log('WS →', payload);
       ctx.sendRaw(payload);
     } catch (err) {

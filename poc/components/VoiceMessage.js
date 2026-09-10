@@ -7,6 +7,11 @@
 const VoiceMessage = {
   props: {
     src: { type: String, required: true },
+    // URL to decode the waveform from - defaults to `src`, but for an own
+    // just-sent voice message `src` is a local blob: URL that iOS Safari often
+    // can't decode right after recording; once the send reconciles this becomes
+    // the presigned remote URL, which decodes reliably.
+    decodeSrc: { type: String, default: '' },
     // recorded length in seconds (from media_duration_seconds); used as the
     // total until the browser reports its own duration on metadata load
     durationSeconds: { type: Number, default: 0 },
@@ -50,10 +55,10 @@ const VoiceMessage = {
     async decodeWaveform(attempt = 0) {
       const helper = window.__linkaWaveform;
       if (!helper || !helper.peaksForUrl) return;
-      const wantSrc = this.src;
+      const wantSrc = this.decodeSrc || this.src;
       try {
         const peaks = await helper.peaksForUrl(wantSrc);
-        if (wantSrc !== this.src) return; // src changed mid-decode
+        if (wantSrc !== (this.decodeSrc || this.src)) return; // src changed mid-decode
         this.peaks = peaks;
         // A flat result means the decode failed (not cached). On iOS a
         // just-recorded blob often needs a beat - retry a couple of times
@@ -107,6 +112,11 @@ const VoiceMessage = {
     src() {
       this.peaks = new Array(48).fill(0.3);
       this.decodeWaveform();
+    },
+    // When the send reconciles, `decodeSrc` flips from the local blob to the
+    // presigned remote URL - re-run the decode, which iOS Safari handles.
+    decodeSrc(next, prev) {
+      if (next && next !== prev) this.decodeWaveform();
     },
   },
   mounted() {

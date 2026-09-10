@@ -96,30 +96,46 @@ service is pinned to `cpus: 1.0`. New env in `deploy/env.production.example`:
 now also gates the WS handshake. Full detail:
 `.claude_docs/security_and_rate_limiting.md`.
 
-## Rust WS gateway build/deploy (ADR 0033 — Step 7 files landed, rollout pending)
+## Rust WS gateway build/deploy (ADR 0033 — LIVE in production since 2026-09-10)
 
-`crates/ws_gateway` (repo-root Cargo workspace, alongside `id_service`) replaces
-the FastAPI `/ws` endpoint. **Never `cargo build` on the t3.micro** — `lto=fat` +
-`codegen-units=1` needs >1 GB and OOMs. `deploy/ws_gateway.Dockerfile` builds a
-static `x86_64-unknown-linux-musl` binary → `distroless/static:nonroot`
-(**verified ~2.2 MB image**); build off-host with
-`docker buildx build --platform linux/amd64 -f deploy/ws_gateway.Dockerfile
--t <registry>/linka-ws-gateway:<tag> --push .`, server sets `WS_GATEWAY_IMAGE`
-in `.env` and `docker compose pull ws_gateway && up -d ws_gateway caddy`.
+`crates/ws_gateway` (repo-root Cargo workspace, alongside `id_service`) serves
+`/ws`. **Never `cargo build` on the t3.micro** — `lto=fat` + `codegen-units=1`
+needs >1 GB and OOMs. `deploy/ws_gateway.Dockerfile` builds a static
+`x86_64-unknown-linux-musl` binary → `distroless/static:nonroot` (~2.2 MB image).
+
+**Deploy (dev machine):**
+```
+docker buildx build --platform linux/amd64 -f deploy/ws_gateway.Dockerfile -t linka-ws-gateway:latest --load .
+docker save linka-ws-gateway:latest | gzip | ssh <host> 'gunzip | docker load'
+```
+**Deploy (server):**
+```
+cd /opt/linka/LINKA && git pull
+docker compose -f docker-compose.prod.yml build app          # app ONLY — never --build (compiles the gateway on the box → OOM)
+docker compose -f docker-compose.prod.yml run --rm app python -m scripts.init_db   # picks up new tables/columns
+docker compose -f docker-compose.prod.yml up -d              # NOT --build; uses the loaded gateway image
+docker compose -f docker-compose.prod.yml restart caddy      # re-reads the bind-mounted Caddyfile
+```
 Healthcheck = the binary's own `ws_gateway healthcheck` subcommand (no shell in
-distroless). `docker-compose.prod.yml` `ws_gateway` service: `mem_limit: 64m`,
-`cpus: 0.5`, env `REDIS_URL`/`JWT_SECRET=${JWT_SECRET_KEY}`/`CORS_ALLOW_ORIGINS`
-/`APP_INTERNAL_URL=http://app:8000`, `SERVER_ID` unset (self-gen UUID).
-Caddy: `/ws` → `ws_gateway:8081`, `/ws-legacy` → `app:8000` (rewrite `* /ws`)
-for rollback, `/internal*` → `404`. `.dockerignore` now excludes `target/`.
-Full plan + runbook: `RUST_WS_GATEWAY_PLAN.md`, `deploy/README.md`.
-**Canary caveat:** the gateway does not process `mark_*` receipts yet
-(async-receipt worker pending) — keep the `/ws` fraction small until Step 8.
+distroless). Service: `mem_limit: 64m`, `cpus: 0.5`, env
+`REDIS_URL`/`JWT_SECRET=${JWT_SECRET_KEY}`/`CORS_ALLOW_ORIGINS`/`APP_INTERNAL_URL=http://app:8000`,
+`SERVER_ID` unset (self-gen UUID). `WS_GATEWAY_IMAGE` in `.env` overrides the
+image tag (unset ⇒ `linka-ws-gateway:latest`, which `docker load` provides).
 
-**`/internal*` 404s at the edge** (`deploy/Caddyfile`, `handle /internal*
-{ respond 404 }`). The gateway reaches the Python `/internal/*` router
-(ws-bootstrap, presence-authorized, typing-allowed — ADR 0036) only over the
-compose network at `APP_INTERNAL_URL` (default `http://app:8000`).
+Caddy (`deploy/Caddyfile`): `/ws` → `ws_gateway:8081`; `/ws-legacy` →
+`app:8000` (rewrite `* /ws`) for rollback; `/internal*` → `404`; `@api` matcher
+includes `/scheduled-messages*` (the top-level `scheduled_router`).
+`.dockerignore` excludes `target/`.
+
+**`ALLOWED_HOSTS`:** the gateway calls `http://app:8000/internal/*` with
+`Host: app`. `main.py` always appends `app` / `localhost` / `127.0.0.1` to
+`ALLOWED_HOSTS` (never edge-routable), so `.env` needs only the public
+hostname(s). Before this fix every `/internal/*` call 400'd (`Invalid host
+header`) → `ws-bootstrap` failed → `chats=0` → no live delivery.
+
+**Rollback:** edit `deploy/Caddyfile` `handle /ws` → `reverse_proxy app:8000` +
+`rewrite * /ws`, `docker compose restart caddy`. The Python `/ws` stays fully
+wired (`LEGACY_WS_ENABLED` default true) until ADR 0038.
 
 ## Known demo compromises
 

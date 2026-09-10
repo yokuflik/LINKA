@@ -60,7 +60,7 @@
 	}
 
 	# Backend API. Everything else is the static PoC.
-	@api path /auth* /users* /chats* /healthz /docs* /redoc* /openapi.json
+	@api path /auth* /users* /chats* /scheduled-messages* /healthz /docs* /redoc* /openapi.json
 	handle @api {
 		# Uploads go straight to S3 via a presigned PUT, so the API itself
 		# never legitimately receives a large body.

@@ -108,8 +108,14 @@ app = FastAPI(lifespan=lifespan)
 
 # Reject requests whose Host header isn't in ALLOWED_HOSTS (DNS-rebinding /
 # Host-header injection). "*" disables the check for local dev.
+# `app` / `localhost` are always allowed: the Rust ws_gateway (ADR 0033) calls
+# `http://app:8000/internal/*` on the compose network with `Host: app`, and
+# those hosts are never routable from the edge (Caddy only proxies the public
+# names), so accepting them adds no attack surface.
 if settings.ALLOWED_HOSTS != ["*"]:
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS)
+    _internal_hosts = ["app", "localhost", "127.0.0.1"]
+    _allowed = list(settings.ALLOWED_HOSTS) + [h for h in _internal_hosts if h not in settings.ALLOWED_HOSTS]
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_allowed)
 
 # CORS. Prod is same-origin (Caddy serves the PoC + API together) so this is
 # normally the single site origin. "*" is dev-only: the "*" + credentials

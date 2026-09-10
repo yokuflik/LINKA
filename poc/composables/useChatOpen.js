@@ -164,6 +164,40 @@ function useChatOpen(ctx) {
     ctx.closeMessageContextMenu();
   }
 
+  // Background freshness check after a cache-hit render. Fetches the newest
+  // page and appends any message ids the cached snapshot is missing (i.e.
+  // messages received while this client had no live socket). Preserves the
+  // user's scroll position unless they're pinned to the bottom.
+  async function revalidateFromCache(chatId) {
+    let history;
+    try {
+      history = await ctx.apiFetch(`/chats/${chatId}/messages?limit=${ctx.MESSAGE_PAGE_SIZE}`, {
+        retryCancelled: () => ctx.activeChatId.value !== chatId,
+      });
+    } catch (err) {
+      ctx.logError('cache revalidation failed for', chatId, err.message);
+      return;
+    }
+    if (ctx.activeChatId.value !== chatId || !Array.isArray(history)) return;
+    const seen = new Set(ctx.messages.value.map((m) => m.id).filter((id) => id != null));
+    const missing = history.slice().reverse().filter((m) => m.id != null && !seen.has(m.id));
+    if (!missing.length) return;
+    const pinned = isPinnedToBottom();
+    ctx.messages.value = ctx.messages.value.concat(missing).sort((a, b) => {
+      if (a.id == null) return 1;
+      if (b.id == null) return -1;
+      return String(a.id).localeCompare(String(b.id));
+    });
+    ctx.saveChatMessages(chatId, ctx.messages.value);
+    await nextTick();
+    if (pinned) scrollMessagesToBottom();
+    const newestId = ctx.messages.value[ctx.messages.value.length - 1].id;
+    if (newestId != null) {
+      ctx.sendReceipt('mark_delivered', chatId, newestId);
+      markActiveChatReadIfVisible(chatId, newestId);
+    }
+  }
+
   async function selectChat(chatId) {
     discardDraftChat();
     initialScrollSettled = false;
@@ -233,6 +267,13 @@ function useChatOpen(ctx) {
       markInitialScrollSettled();
       ctx.sendReceipt('mark_delivered', chatId, newestId);
       markActiveChatReadIfVisible(chatId, newestId);
+      // Revalidate in the background: messages that arrived while this client
+      // was disconnected (tab closed, only a push received) never reached the
+      // write-through cache, so the snapshot above can be stale. Pull the
+      // newest page, merge anything we don't already have, and re-fire the
+      // receipts for the true newest id. Silent on failure - the cache render
+      // already succeeded.
+      revalidateFromCache(chatId);
       return;
     }
 

@@ -108,7 +108,7 @@ MAX_MEDIA_BLUR_HASH_LENGTH = int(os.environ.get("MAX_MEDIA_BLUR_HASH_LENGTH", "6
 
 # Cap on the client-supplied inline avatar thumbnail (a ~64px JPEG data: URI) -
 # ADR 0016. Typically 1-3 KB; 8192 is headroom. Untrusted input.
-MAX_AVATAR_PREVIEW_LENGTH = int(os.environ.get("MAX_AVATAR_PREVIEW_LENGTH", "8192"))
+MAX_AVATAR_PREVIEW_LENGTH = int(os.environ.get("MAX_AVATAR_PREVIEW_LENGTH", "65536"))
 
 # Which bucket each kind lands in.
 UPLOAD_BUCKET_BY_KIND = {

@@ -47,11 +47,11 @@ function useMediaPlaceholder(ctx) {
     return ratio;
   }
 
-  // Compute a tiny inline avatar thumbnail (ADR 0016) from an image File the
-  // user just picked. Decodes it, draws into a <=64px canvas, re-encodes as a
-  // JPEG data: URI (~1-3 KB) that gets stored and rendered directly as the
-  // avatar - a real, if small, picture (no blur). Any failure returns null,
-  // and the avatar then loads eagerly like a legacy row.
+  // Compute an inline avatar thumbnail (ADR 0016) from an image File the user
+  // just picked. Decodes it, draws into a <=256px canvas, re-encodes as a JPEG
+  // data: URI (~10-30 KB) that gets stored and rendered directly as the avatar
+  // - sharp at the size the circle is actually shown (no blur). Any failure
+  // returns null, and the avatar then loads eagerly like a legacy row.
   async function encodeAvatarPreview(file) {
     if (!file) return null;
     const url = URL.createObjectURL(file);
@@ -65,16 +65,16 @@ function useMediaPlaceholder(ctx) {
       });
       const srcW = img.naturalWidth, srcH = img.naturalHeight;
       if (!srcW || !srcH) return null;
-      const scale = Math.min(1, 64 / Math.max(srcW, srcH));
+      const scale = Math.min(1, 256 / Math.max(srcW, srcH));
       const w = Math.max(1, Math.round(srcW * scale));
       const h = Math.max(1, Math.round(srcH * scale));
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-      // Guard against a too-big result (backend cap is 8192) or a failed encode.
-      if (!dataUrl.startsWith('data:image/') || dataUrl.length > 8000) return null;
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+      // Guard against a too-big result (backend cap is 65536) or a failed encode.
+      if (!dataUrl.startsWith('data:image/') || dataUrl.length > 64000) return null;
       return dataUrl;
     } catch (err) {
       ctx.logError('avatar preview encode failed', err);

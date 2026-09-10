@@ -21,7 +21,6 @@ The generic stream-consuming machinery lives in base_worker.BaseStreamConsumer;
 this module only holds the send-specific business logic.
 """
 import asyncio
-import json
 import logging
 from typing import Optional
 
@@ -81,19 +80,6 @@ def _rebuild_media(fields: dict) -> Optional[dict]:
     return media
 
 
-def _rebuild_enc_header(fields: dict) -> Optional[dict]:
-    """Parse the E2E header (ADR 0026) back off the stream. Opaque to the
-    server; a malformed value is dropped (message falls back to plaintext)."""
-    raw = fields.get("enc_header", "")
-    if not raw:
-        return None
-    try:
-        header = json.loads(raw)
-    except ValueError:
-        return None
-    return header if isinstance(header, dict) else None
-
-
 class SendWorker(BaseStreamConsumer):
     name = "send worker"
     consumer_name = _CONSUMER_NAME
@@ -138,7 +124,6 @@ class SendWorker(BaseStreamConsumer):
                 type=int(fields.get("type") or 1),
                 reply_to_message_id=_int_or_none(fields.get("reply_to_message_id", "")),
                 media=_rebuild_media(fields),
-                enc_header=_rebuild_enc_header(fields),
             )
         except message_service.MessageAlreadySentError as exc:
             # The message was persisted by an earlier stream entry. If that entry

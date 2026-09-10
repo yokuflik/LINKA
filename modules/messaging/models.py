@@ -1,7 +1,6 @@
 import enum
 
 from sqlalchemy import Column, BigInteger, SMALLINT, Text, Boolean, DateTime, ForeignKey, Index, PrimaryKeyConstraint
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -65,15 +64,8 @@ class Message(Base):
     # memory-efficiency reason as Participant.role.
     type = Column(SMALLINT, nullable=False, default=1)
 
+    # Plain-text message body (ADR 0039: server-side cloud model, no E2EE).
     content = Column(Text, nullable=True)
-
-    # --- Client-side E2E encryption (ADR 0026) ---
-    # is_encrypted true => `content` is opaque base64 AES-256-GCM ciphertext the
-    # server never decrypts, and enc_header carries the per-message header:
-    # {v, alg, iv, eph_pub (ephemeral ECDH public JWK), wraps: {user_id: {ek,iv}}}.
-    # Both default to the plaintext path so pre-feature messages are untouched.
-    is_encrypted = Column(Boolean, nullable=False, default=False)
-    enc_header = Column(JSONB, nullable=True)
 
     # --- Media attachment (image/video/audio/file messages) ---
     # The app server never touches file bytes: the client uploads directly to

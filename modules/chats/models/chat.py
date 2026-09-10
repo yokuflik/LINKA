@@ -1,5 +1,4 @@
 from sqlalchemy import Column, BigInteger, String, Boolean, Text, DateTime
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -57,13 +56,6 @@ class Chat(Base):
     # NULL means "nothing to preview" - a chat with no messages, or one
     # whose last message was deleted or has no text.
     last_message_preview = Column(String(LAST_MESSAGE_PREVIEW_LENGTH), nullable=True)
-
-    # E2E (ADR 0034): when the last message is encrypted, the opaque payload the
-    # client needs to decrypt the preview line: {"ct": <base64 ciphertext>,
-    # "header": <enc_header>}. Kept in lockstep with last_message_preview by
-    # crud_message. NULL whenever the last previewable message is plaintext,
-    # deleted, purged, or absent. Never read server-side - pure client passthrough.
-    last_message_enc = Column(JSONB, nullable=True)
 
     # Chat-wide receipt watermarks: the highest message id that literally
     # every *current* participant has delivered/read, i.e.

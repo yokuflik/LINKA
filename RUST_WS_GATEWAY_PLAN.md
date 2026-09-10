@@ -96,8 +96,8 @@ LINKA/
 Captured so far (from code):
 - `message_send_stream` XADD fields (`send_queue.enqueue_outgoing_message`):
   `chat_id, sender_id, client_message_id, content, type, reply_to_message_id,
-  media_key, media_name, media_duration_seconds, media_blur_hash, enc_header`
-  — all stringified, `None`→`""`, `enc_header` = `json.dumps(enc)` or `""`.
+  media_key, media_name, media_duration_seconds, media_blur_hash`
+  — all stringified, `None`→`""`. (ADR 0039 removed `enc_header` / E2EE.)
   Key `message_send_stream`, shard `chat_id % SEND_STREAM_SHARDS` (default 4),
   shard 0 = bare key, maxlen ~1_000_000 approximate. → `events::SendStreamEntry`.
 - `receipt_log_stream` XADD fields (`enqueue_receipt_event`): `chat_id, user_id,
@@ -111,7 +111,6 @@ Done since: `ratelimit.rs` (both Lua scripts verbatim + `RateLimiter`),
 `events::{SendStreamEntry, ReceiptStreamEntry, ClientFrame}`.
 
 Still to do:
-- `enc_header` re-parse parity check with `SendWorker._rebuild_enc_header`.
 - Full `ServerEvent` enum coverage + the golden-JSON cross-language test
   (`pytest` fixture dump ↔ Rust round-trip).
 

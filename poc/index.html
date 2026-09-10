@@ -98,7 +98,7 @@
 <script src="components/ToastList.js?v=2026.09.08-1"></script>
 
 <!-- Composables: global use*(ctx) factories the root setup() stitches into ctx -->
-<script src="composables/core.js?v=2026.09.08-1"></script>
+<script src="composables/core.js?v=2026.09.10-1"></script>
 <script src="composables/usePhoneInput.js?v=2026.09.08-1"></script>
 <script src="composables/useAuth.js?v=2026.09.08-1"></script>
 <script src="composables/useWebsocket.js?v=2026.09.08-1"></script>
@@ -118,7 +118,6 @@
 <script src="composables/useChatProfile.js?v=2026.09.08-1"></script>
 <script src="composables/useNewChat.js?v=2026.09.08-1"></script>
 <script src="composables/useMessageMenu.js?v=2026.09.08-1"></script>
-<script src="composables/useE2E.js?v=2026.09.09-1"></script>
 <script src="composables/useMessageSend.js?v=2026.09.08-1"></script>
 <script src="composables/useForward.js?v=2026.09.08-1"></script>
 <script src="composables/useMessageEdit.js?v=2026.09.08-1"></script>
@@ -289,7 +288,6 @@ const app = createApp({
     Object.assign(ctx, useChatProfile(ctx));
     Object.assign(ctx, useNewChat(ctx));
     Object.assign(ctx, useMessageMenu(ctx));
-    Object.assign(ctx, useE2E(ctx));
     Object.assign(ctx, useMessageSend(ctx));
     Object.assign(ctx, useForward(ctx));
     Object.assign(ctx, useMessageEdit(ctx));
@@ -337,8 +335,6 @@ const app = createApp({
           currentUser.value = await apiFetch('/users/me');
           log('resumed session as', currentUser.value);
           ctx.scheduleTokenRefresh();
-          ctx.initE2E(); // generate/recover E2E keypair + (re)publish public key
-
           connectWebSocket();
           await loadChats();
         } catch (err) {

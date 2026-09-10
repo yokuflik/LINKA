@@ -42,7 +42,7 @@ pub async fn edit(state: &AppState, conn_id: ConnId, conn_uuid: &str, user_id: i
     }
     let body = serde_json::json!({
         "user_id": user_id, "chat_id": f.chat_id, "message_id": f.message_id,
-        "content": f.content, "enc": f.enc,
+        "content": f.content,
     });
     let out = post_json(&state.http, &state.config.app_internal_url, "/internal/message/edit", &body).await;
     relay(state, conn_id, "edit_message", out);

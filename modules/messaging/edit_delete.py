@@ -16,7 +16,6 @@ from modules.messaging.crud import undelete_message
 from realtime import realtime_service
 from modules.messaging.common import _check_content_length
 from modules.messaging.limits import DEFAULT_MESSAGING_LIMITS, MessagingLimits
-from modules.messaging.errors import EncryptionRequiredError
 from modules.messaging.errors import NotAParticipantError
 from modules.media import media_service
 from modules.users.crud import add_storage_usage
@@ -28,7 +27,6 @@ async def edit_message(
     chat_id: int,
     message_id: int,
     new_content: str,
-    enc_header: dict | None = None,
     *,
     limits: MessagingLimits = DEFAULT_MESSAGING_LIMITS,
 ) -> "object":
@@ -38,19 +36,11 @@ async def edit_message(
     if existing is None or existing.sender_id != user_id:
         raise NotAParticipantError(f"User {user_id} may not edit message {message_id}")
 
-    # ADR 0027: an encrypted message can only be edited with a fresh enc header;
-    # a plaintext edit would silently downgrade it and leak the text to the server.
-    if enc_header is None and getattr(existing, "is_encrypted", False):
-        raise EncryptionRequiredError(
-            f"message {message_id} is encrypted - an edit must carry an enc header"
-        )
-
     message = await edit_message_content(
         session,
         chat_id=chat_id,
         message_id=message_id,
         new_content=new_content,
-        enc_header=enc_header,
     )
     await realtime_service.publish_event(
         chat_id,
@@ -59,8 +49,6 @@ async def edit_message(
             "chat_id": str(chat_id),
             "message_id": str(message_id),
             "content": new_content,
-            "is_encrypted": bool(enc_header is not None),
-            "enc_header": enc_header,
             "edited_at": message.edited_at.isoformat() if message and message.edited_at else None,
         },
     )

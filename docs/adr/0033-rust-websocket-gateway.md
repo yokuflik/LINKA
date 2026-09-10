@@ -123,7 +123,7 @@ Outbound (Rust → Python):
 
 | action | operation |
 |---|---|
-| `send_message` | `XADD message_send_stream` sharded `chat_id % SEND_STREAM_SHARDS` (shard 0 = bare key); fields incl. `client_message_id`, media columns, `enc_header` (JSON string) passed through opaquely |
+| `send_message` | `XADD message_send_stream` sharded `chat_id % SEND_STREAM_SHARDS` (shard 0 = bare key); fields incl. `client_message_id`, media columns (ADR 0039 removed the `enc_header` field) |
 | receipts | `XADD receipt_log_stream` (`enqueue_receipt_event` shape) |
 | typing | replicate `realtime_service.publish_event`: `SMEMBERS chat_instances:{chat_id}` → `PUBLISH instance_inbox:{sid}` with `chat_id` injected |
 | presence | `SADD presence:{uid} {sid}:{conn}` + `EXPIRE`; stamp `presence_last_seen:{uid}`; `PUBLISH presence_events:{uid}` only on the 0↔1 edge |

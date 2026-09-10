@@ -102,7 +102,6 @@ function useChatOpen(ctx) {
       ctx.hasMoreMessages.value = page.length === ctx.MESSAGE_PAGE_SIZE;
       if (page.length) {
         const older = page.slice().reverse();
-        if (ctx.decryptListInPlace) await ctx.decryptListInPlace(older); // E2E (ADR 0026)
         ctx.messages.value = older.concat(ctx.messages.value);
         await nextTick();
         // Keep the user looking at the same message: the newly-prepended block
@@ -214,21 +213,11 @@ function useChatOpen(ctx) {
     if (cached && cached.length) {
       if (ctx.activeChatId.value !== chatId) return;
       ctx.messagesLoading.value = false;
-      // E2E (ADR 0026): a row can be cached mid-decrypt (write-through fires on
-      // the array assignment, before decryptInPlace resolves) - it still has
-      // is_encrypted:true and ciphertext in `content`. Blank it now so the
-      // base64 blob never renders, then decrypt in place like the history path.
-      const cachedRows = cached.map((m) =>
-        (m && m.is_encrypted && !m._e2eDecrypted)
-          ? { ...m, content: '', enc_ct: m.enc_ct || m.content }
-          : m,
-      );
-      ctx.messages.value = cachedRows;
+      ctx.messages.value = cached.slice();
       // A cached bubble still marked pending is a message that was queued in
       // the outbox when the tab closed and never sent - show it as failed
       // (⚠️, retryable) rather than a clock that never resolves.
       if (ctx.markStalePendingAsFailed) ctx.markStalePendingAsFailed();
-      if (ctx.decryptListInPlace) await ctx.decryptListInPlace(ctx.messages.value);
       if (ctx.activeChatId.value !== chatId) return;
       mergeBuffered();
       ctx.hasMoreMessages.value = cached.length >= ctx.MESSAGE_PAGE_SIZE;
@@ -274,9 +263,6 @@ function useChatOpen(ctx) {
         if (!seenIds.has(m.id)) { ctx.messages.value.push(m); seenIds.add(m.id); }
       }
       mergeBuffered();
-      // E2E (ADR 0026): decrypt every encrypted row in place before render and
-      // before persisting to the message cache.
-      if (ctx.decryptListInPlace) await ctx.decryptListInPlace(ctx.messages.value);
       ctx.saveChatMessages(chatId, ctx.messages.value);
       // GET /chats can't tell us the last message was soft-deleted (its
       // last_message_preview column keeps the old text). The history page

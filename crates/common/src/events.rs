@@ -40,9 +40,6 @@ pub struct EditFrame {
     #[serde(deserialize_with = "de_id")]
     pub message_id: i64,
     pub content: String,
-    /// E2E header (ADR 0027), opaque; carried verbatim.
-    #[serde(default)]
-    pub enc: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,9 +61,6 @@ pub struct SendMessageFrame {
     pub media_duration_seconds: Option<i64>,
     #[serde(default)]
     pub media_blur_hash: Option<String>,
-    /// E2E header (ADR 0026): opaque JSON object, carried verbatim.
-    #[serde(default)]
-    pub enc: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -105,8 +99,6 @@ pub struct SendStreamEntry {
     pub media_name: String,
     pub media_duration_seconds: String,
     pub media_blur_hash: String,
-    /// `json.dumps(enc)` or "".
-    pub enc_header: String,
 }
 
 impl SendStreamEntry {
@@ -129,10 +121,6 @@ impl SendStreamEntry {
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
             media_blur_hash: clean_opt(&f.media_blur_hash),
-            enc_header: match &f.enc {
-                Some(v) => serde_json::to_string(v).unwrap_or_default(),
-                None => String::new(),
-            },
         }
     }
 
@@ -152,7 +140,6 @@ impl SendStreamEntry {
                 self.media_duration_seconds.clone(),
             ),
             ("media_blur_hash", self.media_blur_hash.clone()),
-            ("enc_header", self.enc_header.clone()),
         ]
     }
 }

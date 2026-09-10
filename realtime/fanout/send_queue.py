@@ -7,7 +7,6 @@ receipt event only loses detailed history (the coarse watermark is still
 written); a dropped send event loses the message itself while the sender
 believes it sent. The caller must surface a synchronous error instead.
 """
-import json
 import logging
 from typing import Optional
 
@@ -65,7 +64,6 @@ async def enqueue_outgoing_message(
     media_name: Optional[str] = None,
     media_duration_seconds: Optional[int] = None,
     media_blur_hash: Optional[str] = None,
-    enc_header: Optional[dict] = None,
 ) -> str:
     """
     Append one outgoing message onto the send stream. Returns the stream
@@ -89,8 +87,6 @@ async def enqueue_outgoing_message(
             "media_name": _clean(media_name),
             "media_duration_seconds": _clean(media_duration_seconds),
             "media_blur_hash": _clean(media_blur_hash),
-            # E2E header (ADR 0026) - opaque JSON, carried verbatim to the worker.
-            "enc_header": json.dumps(enc_header) if enc_header is not None else "",
         },
         maxlen=MESSAGE_SEND_STREAM_MAXLEN,
         approximate=True,

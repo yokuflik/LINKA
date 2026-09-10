@@ -1,10 +1,8 @@
-import hashlib
-import json
 import random
 import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Sequence
+from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -228,70 +226,6 @@ async def update_profile(
         display_name=sanitize_display_name(display_name) if write_display_name else None,
         write_display_name=write_display_name,
     )
-
-
-# --- Client-side E2E encryption: public-key distribution (ADR 0026) ---
-
-class PublicKeyError(Exception):
-    """An E2E public-key upload was rejected. ``reason`` is a machine code:
-    not_jwk / wrong_kind / wrong_curve / missing_coords / private_key / too_big."""
-
-    def __init__(self, reason: str):
-        super().__init__(reason)
-        self.reason = reason
-
-
-# A P-256 public JWK is tiny (~120 bytes serialised). Anything larger is junk.
-_MAX_PUBLIC_KEY_JSON_LEN = 1024
-
-
-def _canonical_public_key(jwk: dict) -> str:
-    """Deterministic JSON for fingerprinting: sorted keys, no whitespace."""
-    return json.dumps(jwk, sort_keys=True, separators=(",", ":"))
-
-
-def fingerprint_public_key(jwk: dict) -> str:
-    """SHA-256 hex of the canonical JWK - the basis for a future safety number."""
-    return hashlib.sha256(_canonical_public_key(jwk).encode("utf-8")).hexdigest()
-
-
-def validate_public_key(jwk: object) -> dict:
-    """Sanity-check an untrusted E2E public key. The server stays crypto-blind -
-    this only guarantees it is a *public* EC P-256 JWK, never that it is the
-    right key for the user (that is the client's TOFU problem, ADR 0026)."""
-    if not isinstance(jwk, dict):
-        raise PublicKeyError("not_jwk")
-    if len(_canonical_public_key(jwk)) > _MAX_PUBLIC_KEY_JSON_LEN:
-        raise PublicKeyError("too_big")
-    if jwk.get("kty") != "EC":
-        raise PublicKeyError("wrong_kind")
-    if jwk.get("crv") != "P-256":
-        raise PublicKeyError("wrong_curve")
-    if not jwk.get("x") or not jwk.get("y"):
-        raise PublicKeyError("missing_coords")
-    # A private key carries `d`. Reject it outright - the server must never
-    # receive private key material.
-    if "d" in jwk:
-        raise PublicKeyError("private_key")
-    return {"kty": "EC", "crv": "P-256", "x": jwk["x"], "y": jwk["y"]}
-
-
-async def set_public_key(
-    session: AsyncSession, user_id: int, public_key: object, algo: str = "ECDH-P256"
-):
-    """Upsert the caller's current E2E public key. Raises ``PublicKeyError``."""
-    clean = validate_public_key(public_key)
-    return await crud_user.upsert_public_key(
-        session, user_id, clean, algo, fingerprint_public_key(clean)
-    )
-
-
-async def get_public_key(session: AsyncSession, user_id: int):
-    return await crud_user.get_public_key(session, user_id)
-
-
-async def get_public_keys(session: AsyncSession, user_ids: Sequence[int]):
-    return await crud_user.get_public_keys(session, user_ids)
 
 
 async def broadcast_profile_update(session: AsyncSession, user_id: int) -> None:

@@ -161,10 +161,7 @@ function useOutbox(ctx) {
   }
 
   // Retry a failed bubble: rebuild its frame and requeue.
-  // Async: a bubble that was originally sent encrypted (or any text send while
-  // E2E is available) must be re-sealed here - `m.content` holds the plaintext,
-  // so a naive resend would leak it in cleartext (ADR 0026).
-  async function retryFailedMessage(m) {
+  function retryFailedMessage(m) {
     if (!m || !m.send_failed || !m.client_message_id) return;
     // Media bubbles can't be retried from here - the upload ticket / bytes are
     // gone. The user re-picks the file. (Only text goes through the outbox.)
@@ -177,21 +174,6 @@ function useOutbox(ctx) {
       message_type: 1,
     };
     if (m.reply_to_message_id) payload.reply_to_message_id = m.reply_to_message_id;
-
-    const wasEncrypted = !!m._e2eDecrypted || !!m._e2eCiphertext;
-    if (ctx.encryptFor && m.content && (wasEncrypted || (ctx.e2eAvailable && ctx.e2eAvailable.value))) {
-      const sealed = await ctx.encryptFor(m.chat_id, m.content);
-      if (sealed) {
-        payload.content = sealed.ciphertext;
-        payload.enc = sealed.enc;
-        m._e2eDecrypted = true;
-      } else if (wasEncrypted) {
-        // Can't re-encrypt (a participant lost their key) - refuse rather than
-        // downgrade a previously-encrypted message to plaintext.
-        if (ctx.showErrorToast) ctx.showErrorToast("Couldn't resend that message securely. Please try again in a moment.");
-        return;
-      }
-    }
 
     m.send_failed = false;
     m.pending = true;

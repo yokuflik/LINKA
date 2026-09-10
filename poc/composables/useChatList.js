@@ -43,13 +43,6 @@ function useChatList(ctx) {
       }
       ctx.unreadCountByChatId.value = nextUnread;
 
-      // E2E (ADR 0034): GET /chats sends the server's literal
-      // "🔒 Encrypted message" placeholder for an encrypted last message, plus
-      // the opaque payload to decrypt it in `chat.last_message_enc`. Turn it
-      // into a real preview line here (falling back to a cached copy, then to
-      // the placeholder).
-      if (ctx.decryptMessage) await decryptEncryptedPreviews();
-
       // Covers the race with connectWebSocket()'s onopen handler, which also
       // calls this - whichever finishes last has both ready.
       ctx.markAllChatsDelivered();
@@ -58,44 +51,6 @@ function useChatList(ctx) {
       if (ctx.showErrorToast) ctx.showErrorToast(ctx.chatsError.value);
     }
   }
-
-  // The server-stored placeholder for an encrypted last message (mirrors
-  // modules/messaging/crud.ENCRYPTED_MESSAGE_PREVIEW).
-  const ENCRYPTED_PREVIEW = '\u{1F512} Encrypted message';
-
-  async function decryptEncryptedPreviews() {
-    await Promise.all(ctx.chats.value.map(async (item) => {
-      const chat = item.chat;
-      if (chat.last_message_preview !== ENCRYPTED_PREVIEW || chat.last_message_id == null) return;
-
-      // Preferred: the ciphertext + header the server denormalised (ADR 0034).
-      const enc = chat.last_message_enc;
-      if (enc && enc.ct && enc.header) {
-        const text = await ctx.decryptMessage({
-          is_encrypted: true, content: enc.ct, enc_header: enc.header,
-        });
-        if (text && text !== ENC_UNAVAILABLE) { chat.last_message_preview = ctx.previewText(text, 1); return; }
-      }
-
-      // Fallback: a copy of that message already in the local cache.
-      const cached = ctx.loadChatMessages ? ctx.loadChatMessages(chat.id) : null;
-      const row = cached && cached.find((m) => m.id === chat.last_message_id);
-      if (row && (row._e2eDecrypted || !row.is_encrypted) && row.content) {
-        chat.last_message_preview = ctx.previewText(row.content, row.type);
-        return;
-      }
-      if (row && row.is_encrypted && (row.enc_ct || row.content) && row.enc_header) {
-        const text = await ctx.decryptMessage({
-          is_encrypted: true, content: row.enc_ct || row.content, enc_header: row.enc_header,
-        });
-        if (text && text !== ENC_UNAVAILABLE) { chat.last_message_preview = ctx.previewText(text, row.type); return; }
-      }
-      // Can't decrypt on this device - leave the server's placeholder as-is.
-    }));
-  }
-  // Mirrors useE2E's DECRYPT_PLACEHOLDER - don't overwrite the tidy server
-  // placeholder with the "can't be shown on this device" string.
-  const ENC_UNAVAILABLE = "🔒 This message can't be shown on this device.";
 
   // Mute a chat for the current user until an absolute ISO timestamp.
   // Optimistic: set muted_until locally, roll back on failure. Multi-device

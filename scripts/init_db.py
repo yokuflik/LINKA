@@ -75,20 +75,14 @@ async def main(drop: bool) -> None:
                 # Per-user hard storage quota (ADR 0028) - running total of
                 # sent-media sizes; existing users start at 0 (no backfill).
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS storage_bytes_used BIGINT NOT NULL DEFAULT 0",
-                # Client-side E2E encryption (ADR 0026): opaque ciphertext in
-                # `content` + per-message header; public-key distribution table.
-                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_encrypted BOOLEAN NOT NULL DEFAULT FALSE",
-                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS enc_header JSONB",
-                # ADR 0034: decryptable last-message preview for the chat list.
-                "ALTER TABLE chats ADD COLUMN IF NOT EXISTS last_message_enc JSONB",
-                "CREATE TABLE IF NOT EXISTS user_public_keys ("
-                "  user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,"
-                "  public_key JSONB NOT NULL,"
-                "  algo VARCHAR(32) NOT NULL DEFAULT 'ECDH-P256',"
-                "  fingerprint TEXT NOT NULL,"
-                "  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
-                "  updated_at TIMESTAMPTZ"
-                ")",
+                # ADR 0039: client-side E2EE dropped in favour of the server-side
+                # cloud model (plaintext in `content`, indexable). Reverses the
+                # ADR 0026/0034 schema - drop the encryption columns and the
+                # public-key distribution table.
+                "ALTER TABLE messages DROP COLUMN IF EXISTS is_encrypted",
+                "ALTER TABLE messages DROP COLUMN IF EXISTS enc_header",
+                "ALTER TABLE chats DROP COLUMN IF EXISTS last_message_enc",
+                "DROP TABLE IF EXISTS user_public_keys",
                 # Inline avatar thumbnail (~64px JPEG data: URI) - ADR 0016.
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_pic_preview TEXT",
                 "ALTER TABLE chats ADD COLUMN IF NOT EXISTS profile_pic_preview TEXT",

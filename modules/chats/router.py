@@ -18,7 +18,6 @@ from modules.chats.schemas import CreateGroupChatIn
 from modules.chats.schemas import CreatePrivateChatIn
 from modules.chats.schemas import MuteChatIn
 from modules.chats.schemas import ParticipantOut
-from modules.users.schemas import PublicKeyOut
 from modules.chats.schemas import UpdateGroupDetailsIn
 from config import settings
 from modules.chats.limits import DEFAULT_CHAT_LIMITS, ChatLimits
@@ -228,20 +227,6 @@ async def get_chat_members(
 ):
     participants = await chat_service.get_chat_members(session, requester_id=user_id, chat_id=chat_id)
     return [ChatMemberOut(user=p.user, role=p.role) for p in participants]
-
-
-@router.get("/{chat_id}/key-bundle", response_model=list[PublicKeyOut])
-async def get_chat_key_bundle(
-    chat_id: int,
-    user_id: int = Depends(get_current_user_id),
-    session: AsyncSession = Depends(get_db),
-):
-    """Every participant's E2E public key (ADR 0026), for the encrypted send
-    path. Requester must be a member (PermissionDeniedError -> 403 globally)."""
-    await rate_limit_service.enforce_sliding_window(
-        user_id, "list_read", settings.LIST_READ_RATE_MAX, settings.LIST_READ_RATE_WINDOW_SECONDS
-    )
-    return await chat_service.get_chat_key_bundle(session, requester_id=user_id, chat_id=chat_id)
 
 
 @router.post("/{chat_id}/members", response_model=ParticipantOut)

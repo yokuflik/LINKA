@@ -99,31 +99,13 @@ function useMessageSend(ctx) {
           message_id: target.id,
           content,
         };
-        // E2E (ADR 0027): a message that was sent encrypted must be re-sealed
-        // on edit - the plaintext never goes over the wire. `wasEncrypted` is
-        // true for our own encrypted bubbles (marked _e2eDecrypted on send /
-        // decryptInPlace on receive).
-        const wasEncrypted = !!target._e2eDecrypted || !!target._e2eCiphertext;
-        if (ctx.encryptFor && (wasEncrypted || ctx.e2eAvailable && ctx.e2eAvailable.value)) {
-          const sealed = await ctx.encryptFor(ctx.activeChatId.value, content);
-          if (sealed) {
-            editPayload.content = sealed.ciphertext;
-            editPayload.enc = sealed.enc;
-          } else if (wasEncrypted) {
-            // Can't re-encrypt (a participant lost their key) - refuse rather
-            // than downgrade this message to plaintext.
-            ctx.showErrorToast("Couldn't save the edit securely. Please try again in a moment.");
-            return;
-          }
-        }
-        ctx.log('WS →', { ...editPayload, content: editPayload.enc ? '<ciphertext>' : editPayload.content });
+        ctx.log('WS →', editPayload);
         ctx.sendRaw(editPayload);
-        // Reflect the plaintext on this device right away; the message_edited
-        // echo (ciphertext) is guarded in useWsRouter so it won't clobber it.
+        // Reflect the edit on this device right away; the message_edited echo
+        // lands a moment later.
         target.content = content;
         target.is_edited = true;
         target.edited_at = new Date().toISOString();
-        if (editPayload.enc) target._e2eDecrypted = true;
         ctx.updateChatPreviewIfLast(ctx.activeChatId.value, target.id, content);
       }
       ctx.editingMessage.value = null;
@@ -134,24 +116,13 @@ function useMessageSend(ctx) {
     const clientMessageId = crypto.randomUUID();
     const chatId = ctx.activeChatId.value;
 
-    // Client-side E2E (ADR 0026): encrypt the plaintext for every participant.
-    // If it can't run (Web Crypto missing, a participant has no published key),
-    // encryptFor returns null and we fall back to a plaintext send.
-    let wireContent = content;
-    let encHeader = null;
-    if (ctx.encryptFor) {
-      const sealed = await ctx.encryptFor(chatId, content);
-      if (sealed) { wireContent = sealed.ciphertext; encHeader = sealed.enc; }
-    }
-
     const payload = {
       type: 'send_message',
       chat_id: chatId,
       client_message_id: clientMessageId,
-      content: wireContent,
+      content,
       message_type: 1,
     };
-    if (encHeader) payload.enc = encHeader;
     if (replyingToMessage.value) payload.reply_to_message_id = replyingToMessage.value.id;
 
     // The send path is async server-side now (queued, then persisted + fanned
@@ -165,9 +136,6 @@ function useMessageSend(ctx) {
         created_at: new Date().toISOString(), is_edited: false, edited_at: null,
         status: 'SENT', reply_to_message_id: payload.reply_to_message_id || null,
         pending: true, send_failed: false,
-        // Our own bubble already holds the plaintext; the new_message echo will
-        // carry ciphertext + is_encrypted, so mark it decrypted to skip that.
-        is_encrypted: false, _e2eDecrypted: !!encHeader,
       });
     }
 

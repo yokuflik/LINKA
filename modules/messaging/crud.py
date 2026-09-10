@@ -36,23 +36,14 @@ _MEDIA_PREVIEW_BY_TYPE = {2: "\U0001F4F7 Photo", 3: "\U0001F3A5 Video", 4: "\U00
 DELETED_MESSAGE_PREVIEW = "\U0001F6AB Message deleted"
 
 
-# Chat-list line for an E2E-encrypted message (ADR 0026). The server has only
-# ciphertext, so it stores this constant; a client may decrypt and show a real
-# preview locally.
-ENCRYPTED_MESSAGE_PREVIEW = "\U0001F512 Encrypted message"
-
-
 def build_last_message_preview(
-    content: Optional[str], type: int = 1, is_encrypted: bool = False
+    content: Optional[str], type: int = 1
 ) -> Optional[str]:
     """
     The Chat.last_message_preview value a given message maps to. A media
     message with no caption shows a generic label ("Photo", "Video", ...)
-    instead of an empty preview line. An encrypted message (ADR 0026) shows a
-    fixed lock label - the server never derives a plaintext preview.
+    instead of an empty preview line.
     """
-    if is_encrypted:
-        return ENCRYPTED_MESSAGE_PREVIEW
     if content:
         return content[:LAST_MESSAGE_PREVIEW_LENGTH]
     if type in _MEDIA_PREVIEW_BY_TYPE:
@@ -96,7 +87,6 @@ async def create_message(
     media_name: Optional[str] = None,
     media_duration_seconds: Optional[int] = None,
     media_blur_hash: Optional[str] = None,
-    enc_header: Optional[dict] = None,
 ) -> Optional[Message]:
     """
     Insert a new message into the chat and bump the chat's recency
@@ -125,8 +115,6 @@ async def create_message(
         media_name=media_name,
         media_duration_seconds=media_duration_seconds,
         media_blur_hash=media_blur_hash,
-        enc_header=enc_header,
-        is_encrypted=enc_header is not None,
     )
 
     session.add(new_message)
@@ -148,14 +136,7 @@ async def create_message(
         # on the last real user message.
         if sender_id is not None:
             chat_update_values["last_message_preview"] = build_last_message_preview(
-                new_message.content, new_message.type, new_message.is_encrypted
-            )
-            # ADR 0034: carry the opaque payload the client needs to decrypt the
-            # preview line, or clear it when the new last message is plaintext.
-            chat_update_values["last_message_enc"] = (
-                {"ct": new_message.content, "header": new_message.enc_header}
-                if new_message.is_encrypted
-                else None
+                new_message.content, new_message.type
             )
 
         await session.execute(update(Chat).where(Chat.id == chat_id).values(**chat_update_values))
@@ -293,21 +274,15 @@ async def edit_message_content(
     chat_id: int,
     message_id: int,
     new_content: str,
-    enc_header: Optional[dict] = None,
 ) -> Optional[Message]:
     """
-    Update a message's content and mark it as edited. When ``enc_header`` is
-    given (ADR 0027) ``new_content`` is base64 ciphertext and the row is marked
-    encrypted; otherwise the message stays plaintext.
+    Update a message's content and mark it as edited.
 
     Time Complexity: O(log N) + O(1)
     Explanation: B-Tree lookup via (chat_id, id) takes O(log N); the update
     itself is an O(1) heap operation. RETURNING avoids a secondary SELECT.
     """
     values = {"content": new_content, "is_edited": True, "edited_at": func.now()}
-    if enc_header is not None:
-        values["enc_header"] = enc_header
-        values["is_encrypted"] = True
     stmt = (
         update(Message)
         .where(Message.chat_id == chat_id, Message.id == message_id)
@@ -327,13 +302,7 @@ async def edit_message_content(
             .where(Chat.id == chat_id, Chat.last_message_id == message_id)
             .values(
                 last_message_preview=build_last_message_preview(
-                    new_content, message.type, message.is_encrypted
-                ),
-                # ADR 0034: keep the decryptable payload in step with the edit.
-                last_message_enc=(
-                    {"ct": new_content, "header": message.enc_header}
-                    if message.is_encrypted
-                    else None
+                    new_content, message.type
                 ),
             )
         )
@@ -370,7 +339,7 @@ async def soft_delete_message(session: AsyncSession, chat_id: int, message_id: i
         await session.execute(
             update(Chat)
             .where(Chat.id == chat_id, Chat.last_message_id == message_id)
-            .values(last_message_preview=DELETED_MESSAGE_PREVIEW, last_message_enc=None)
+            .values(last_message_preview=DELETED_MESSAGE_PREVIEW)
         )
 
     await session.commit()
@@ -455,13 +424,7 @@ async def undelete_message(session: AsyncSession, chat_id: int, message_id: int)
             .where(Chat.id == chat_id, Chat.last_message_id == message_id)
             .values(
                 last_message_preview=build_last_message_preview(
-                    message.content, message.type, message.is_encrypted
-                ),
-                # ADR 0034: an encrypted row comes back decryptable; else clear.
-                last_message_enc=(
-                    {"ct": message.content, "header": message.enc_header}
-                    if message.is_encrypted
-                    else None
+                    message.content, message.type
                 ),
             )
         )

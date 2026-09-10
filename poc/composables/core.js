@@ -16,7 +16,13 @@ function useCore(ctx) {
     ? location.origin
     : 'http://localhost:8000';
   const apiBase = ref(localStorage.getItem('linka_api_base') || _servedOrigin);
-  const wsBase = computed(() => apiBase.value.replace(/^http/, 'ws'));
+  // `/ws` is the standalone Rust ws_gateway (ADR 0033/0038), not the Python app.
+  // In prod Caddy reverse-proxies /ws to it on the same origin, so deriving the
+  // WS base from apiBase is correct there. For local dev the gateway runs on its
+  // own port (default :8081) - point the PoC at it with
+  //   localStorage.setItem('linka_ws_base', 'ws://localhost:8081')
+  const wsBase = computed(() =>
+    localStorage.getItem('linka_ws_base') || apiBase.value.replace(/^http/, 'ws'));
 
   function log(...args) { console.log('%c[Linka]', 'color:#0e7c90', ...args); }
   function logError(...args) { console.error('[Linka]', ...args); }

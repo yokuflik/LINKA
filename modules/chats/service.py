@@ -31,7 +31,6 @@ from modules.chats.listing import get_chat_list
 from modules.chats.listing import get_chat_members  # noqa: F401
 from modules.chats.preferences import set_chat_muted
 from modules.chats.preferences import set_chat_pinned  # noqa: F401
-from modules.chats.key_bundle import get_chat_key_bundle
 from modules.chats.group_details import clear_group_avatar
 from modules.chats.group_details import ensure_can_manage_details
 from modules.chats.group_details import set_group_avatar
@@ -53,7 +52,6 @@ __all__ = [
     "clear_group_avatar",
     "create_group_chat",
     "ensure_can_manage_details",
-    "get_chat_key_bundle",
     "get_chat_list",
     "get_chat_members",
     "get_or_create_private_chat",

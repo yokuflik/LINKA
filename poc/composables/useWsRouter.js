@@ -16,7 +16,6 @@
 // bumpChatPreview, previewText, updateChatPreviewIfLast, resolveChatMemberPhones,
 // detailsModalMessage, loadMessageReceipts, refreshMessageStatuses, showToast,
 // loadChats, showMembersModal, markActiveChatReadIfVisible, noteAvatarUrl,
-// decryptInPlace/decryptMessage, invalidatePeer/invalidateChatBundle,
 // removeFromOutbox, onSendError, onScheduledMessageSent/Failed, onPresenceRevoked.
 // From other composables: presenceByUserId, clearUserTyping, noteUserTyping,
 // sendReceipt, currentUser, log, logError.
@@ -94,9 +93,7 @@ function useWsRouter(ctx) {
         optimistic.created_at = msg.created_at;
         optimistic.status = msg.status;
         optimistic.type = msg.type;
-        // For our own E2E message the optimistic bubble already holds the
-        // plaintext (_e2eDecrypted); don't clobber it with the echoed ciphertext.
-        if (!optimistic._e2eDecrypted) optimistic.content = msg.content;
+        optimistic.content = msg.content;
         optimistic.reply_to_message_id = msg.reply_to_message_id;
         // Keep displaying our own just-sent media from the local blob URL - the
         // sender already has the bytes, no need to fetch the presigned GET.
@@ -116,24 +113,13 @@ function useWsRouter(ctx) {
         const wasPinned = ctx.isPinnedToBottom();
         const row = {
           id: msg.message_id, chat_id: msg.chat_id, sender_id: msg.sender_id,
-          // Blank an encrypted body until decryptInPlace fills it in (a tick
-          // later) so a base64 blob never flashes on screen.
-          type: msg.type, content: msg.is_encrypted ? '' : msg.content, created_at: msg.created_at, is_edited: false, edited_at: null,
+          type: msg.type, content: msg.content, created_at: msg.created_at, is_edited: false, edited_at: null,
           status: msg.status, reply_to_message_id: msg.reply_to_message_id,
-          is_encrypted: !!msg.is_encrypted, enc_header: msg.enc_header || null,
-          enc_ct: msg.is_encrypted ? msg.content : null,
           media_url: msg.media_url, media_mime: msg.media_mime, media_size: msg.media_size,
           media_name: msg.media_name, media_duration_seconds: msg.media_duration_seconds,
           media_blur_hash: msg.media_blur_hash,
         };
         store.messages.value.push(row);
-        // E2E (ADR 0026): decrypt in place before it's read on screen. Must
-        // target the reactive array element (the proxy), not the raw `row`
-        // reference - mutating the latter never triggers a re-render, which is
-        // why an encrypted bubble showed up blank while the sidebar preview
-        // (decrypted via a returned value) was fine.
-        const reactiveRow = store.messages.value[store.messages.value.length - 1];
-        if (reactiveRow.is_encrypted && ctx.decryptInPlace) ctx.decryptInPlace(reactiveRow);
         if (msg.type === 2 && msg.media_url) ctx.probeMediaOrientation(msg.media_url, 'image', msg.media_blur_hash);
         else if (msg.type === 3 && msg.media_url) ctx.probeMediaOrientation(msg.media_url, 'video', msg.media_blur_hash);
         // Always follow your own message down; for someone else's, only if
@@ -149,15 +135,11 @@ function useWsRouter(ctx) {
         // them yet either).
         const bufRow = {
           id: msg.message_id, chat_id: msg.chat_id, sender_id: msg.sender_id,
-          type: msg.type, content: msg.is_encrypted ? '' : msg.content, created_at: msg.created_at, is_edited: false, edited_at: null,
+          type: msg.type, content: msg.content, created_at: msg.created_at, is_edited: false, edited_at: null,
           status: msg.status, reply_to_message_id: msg.reply_to_message_id,
-          is_encrypted: !!msg.is_encrypted, enc_header: msg.enc_header || null,
-          enc_ct: msg.is_encrypted ? msg.content : null,
           media_url: msg.media_url, media_mime: msg.media_mime, media_size: msg.media_size,
           media_name: msg.media_name, media_duration_seconds: msg.media_duration_seconds,
         };
-        // Decrypt now so it's ready when selectChat merges the buffer in.
-        if (bufRow.is_encrypted && ctx.decryptInPlace) ctx.decryptInPlace(bufRow);
         store.bufferMessage(msg.chat_id, bufRow);
       }
       // System messages ("X joined the group", or a private "role_changed"
@@ -166,14 +148,7 @@ function useWsRouter(ctx) {
       // filtering, so a "role_changed" preview would leak to every
       // participant, not just the actor/target it's meant for.
       if (msg.sender_id != null) {
-        if (msg.is_encrypted && ctx.decryptMessage) {
-          // Decrypt locally for the sidebar line (the server only ever stored
-          // "🔒 Encrypted message" - ADR 0026).
-          ctx.decryptMessage({ is_encrypted: true, content: msg.content, enc_header: msg.enc_header })
-            .then((text) => ctx.bumpChatPreview(msg.chat_id, msg.message_id, msg.created_at, ctx.previewText(text, msg.type), msg.status));
-        } else {
-          ctx.bumpChatPreview(msg.chat_id, msg.message_id, msg.created_at, ctx.previewText(msg.content, msg.type), msg.status);
-        }
+        ctx.bumpChatPreview(msg.chat_id, msg.message_id, msg.created_at, ctx.previewText(msg.content, msg.type), msg.status);
       }
 
       if (msg.sender_id == null) {
@@ -183,8 +158,6 @@ function useWsRouter(ctx) {
         // everyone with this chat loaded, not just whoever triggered it.
         // Only bother for chats whose members were already fetched once.
         if (store.groupChatMembers.value[msg.chat_id]) ctx.resolveChatMemberPhones(msg.chat_id);
-        // Membership may have changed - re-seed the E2E key bundle on next send.
-        if (ctx.invalidateChatBundle) ctx.invalidateChatBundle(msg.chat_id);
       }
 
       if (msg.sender_id !== currentUser.value.id) {
@@ -251,9 +224,6 @@ function useWsRouter(ctx) {
       // Learned of a (possibly new) avatar - drop the previous full-res image
       // from the device cache so the lightbox re-downloads the new one.
       if (ctx.noteAvatarUrl) ctx.noteAvatarUrl('user:' + msg.user_id, msg.profile_pic_url || null);
-      // A peer profile change may coincide with a rotated E2E key - drop the
-      // cached public key so the next encrypted send re-fetches it (ADR 0026).
-      if (ctx.invalidatePeer) ctx.invalidatePeer(msg.user_id);
       const existing = store.userById.value[msg.user_id] || { id: msg.user_id };
       store.userById.value[msg.user_id] = {
         ...existing,
@@ -295,16 +265,6 @@ function useWsRouter(ctx) {
 
     if (msg.event === 'message_edited') {
       const m = store.messages.value.find((x) => x.id === msg.message_id);
-      // E2E (ADR 0027): an encrypted edit carries ciphertext + enc_header.
-      if (msg.is_encrypted && ctx.decryptMessage) {
-        // Our own tab already reflected the plaintext (_e2eDecrypted) - skip.
-        if (m && m._e2eDecrypted) { m.is_edited = true; m.edited_at = msg.edited_at || new Date().toISOString(); return; }
-        ctx.decryptMessage({ is_encrypted: true, content: msg.content, enc_header: msg.enc_header }).then((text) => {
-          if (m) { m.content = text; m.is_edited = true; m.edited_at = msg.edited_at || new Date().toISOString(); m._e2eDecrypted = true; }
-          ctx.updateChatPreviewIfLast(msg.chat_id, msg.message_id, text);
-        });
-        return;
-      }
       if (m) { m.content = msg.content; m.is_edited = true; m.edited_at = msg.edited_at || new Date().toISOString(); }
       ctx.updateChatPreviewIfLast(msg.chat_id, msg.message_id, msg.content);
       return;
@@ -429,7 +389,6 @@ function useWsRouter(ctx) {
       // server has already brought this connection's live subscription up to
       // date; refreshing here is just what makes the new chat show up.
       log('added to chat', msg.chat_id);
-      if (ctx.invalidateChatBundle) ctx.invalidateChatBundle(msg.chat_id);
       ctx.showToast('New chat');
       ctx.loadChats();
       return;

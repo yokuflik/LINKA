@@ -15,7 +15,7 @@ function useMessageCache(ctx) {
   // Bump when the stored shape changes so stale entries are ignored.
   // Bump when the cached message shape changes so stale snapshots refetch once.
   // v2: ADR 0014 media_blur_hash (rides along in the stored message object).
-  const SCHEMA = 3; // 3: E2E (ADR 0026) - rows may carry decrypted content + markers
+  const SCHEMA = 4; // 4: ADR 0039 - E2EE removed, `content` is always plaintext
   // Cap what we keep per chat so localStorage can't grow unbounded.
   const MAX_CACHED = 60;
 
@@ -48,13 +48,6 @@ function useMessageCache(ctx) {
       // strip the local-only markers.
       const messages = list.slice(-MAX_CACHED).map((m) => {
         if (!m) return m;
-        // E2E (ADR 0026): never persist ciphertext in `content` - a row can be
-        // saved by write-through before decryptInPlace resolves. Keep the
-        // ciphertext in enc_ct so the next load can still decrypt it.
-        if (m.is_encrypted && !m._e2eDecrypted) {
-          const { _localMediaUrl, media_url_remote, ...rest } = m;
-          return { ...rest, content: '', enc_ct: m.enc_ct || m.content, media_url: media_url_remote || m.media_url || null };
-        }
         if (!m._localMediaUrl) return m;
         const { _localMediaUrl, media_url_remote, ...rest } = m;
         return { ...rest, media_url: media_url_remote || null };

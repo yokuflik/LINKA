@@ -21,7 +21,7 @@ Redis 7 is used for: presence, pub/sub fan-out routing, rate limiting, idempoten
 - **Read-after-write caveat:** `GET /chats` won't see a message until the send worker commits (sub-second). PoC is optimistic so it's invisible there.
 - **Step 4 sharding:** `message_send_stream` and `message_fanout_stream` are sharded by `chat_id` (`SEND_STREAM_SHARDS`/`FANOUT_STREAM_SHARDS`, default 4). `send_queue.shard_for_chat`/`stream_key` (shard 0 = bare key, upgrade-safe). Each worker's `run_forever` runs one consumer task per shard; `drain_once(shard=None)` drains all shards, `drain_once(shard=n)` one. One consumer group per shard.
 
-- **E2E (ADR 0026):** `send_message` may carry `enc` (opaque header dict); when present `content` is base64 ciphertext. Carried as a JSON string field `enc_header` on `message_send_stream`, parsed back by `SendWorker._rebuild_enc_header`, stored in `messages.enc_header` and echoed on `new_message` (`is_encrypted` + `enc_header`). Server never decrypts.
+- **No E2EE (ADR 0039):** `send_message` / `edit_message` carry `content` as plain text — no `enc` / `enc_header` field on the frame, the stream, or the `new_message` / `message_edited` events. `messages.content` is stored and indexed as plaintext.
 
 ## Routing layer (FANOUT_REWRITE_PLAN.md step 3, landed)
 - No per-chat Redis channel. Each process registers the chats it serves: `chat_instances:{chat_id}` SET of `server_id` (TTL `CHAT_INSTANCE_TTL_SECONDS`=90, refreshed by `_routing_heartbeat` every `ROUTING_HEARTBEAT_INTERVAL_SECONDS`=30; reverse map `instance_chats:{server_id}`).

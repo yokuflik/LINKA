@@ -17,7 +17,6 @@ from modules.auth import service as auth_service
 from modules.chats.crud.crud_participant import get_all_chat_ids_for_user
 from modules.chats.crud.crud_participant import get_chat_participants
 from modules.messaging import service as message_service
-from modules.messaging.errors import EncryptionRequiredError
 from modules.messaging.errors import MessageTooLongError
 from modules.messaging.errors import NotAParticipantError
 from realtime.presence_authz import presence_authorized
@@ -88,13 +87,12 @@ class _MessageOp(BaseModel):
 
 class _EditOp(_MessageOp):
     content: str
-    enc: dict | None = None
 
 
 def _op_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, NotAParticipantError):
         return HTTPException(status_code=403, detail=str(exc))
-    if isinstance(exc, (EncryptionRequiredError, MessageTooLongError)):
+    if isinstance(exc, MessageTooLongError):
         return HTTPException(status_code=400, detail=str(exc))
     raise exc  # unexpected -> 500 via the app's generic handler
 
@@ -109,7 +107,6 @@ async def message_edit(body: _EditOp) -> dict:
                 chat_id=body.chat_id,
                 message_id=body.message_id,
                 new_content=body.content,
-                enc_header=body.enc,
             )
     except Exception as exc:
         raise _op_http_error(exc)

@@ -18,13 +18,6 @@ class MessageOut(BaseModel):
     content: Optional[str]
     reply_to_message_id: Optional[IdStr]
 
-    # Client-side E2E encryption (ADR 0026). When is_encrypted is true, `content`
-    # is opaque base64 ciphertext and `enc_header` carries the per-message
-    # encryption header (iv / ephemeral pub key / per-recipient wrapped keys).
-    # Both absent/false for a plaintext or pre-feature message.
-    is_encrypted: bool = False
-    enc_header: Optional[dict] = None
-
     # Media attachment (all None for a text / system message). media_url is a
     # short-lived presigned GET attached by message_service (get_message_history
     # / the live new_message event) - it is not a stored column.

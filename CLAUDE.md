@@ -86,8 +86,8 @@ Rows are one-liners; the ADR file holds the full rationale (this index is loaded
 | `0023-username-change-quota.md` | Username-change quota: 3 per rolling 14 days via a capped `users.username_change_log` JSONB ring; supersedes the ADR 0017 single-timestamp cooldown | Accepted |
 | `0024-optional-display-name.md` | Reintroduce an optional, free-form, any-language `display_name` over the unique username; sanitised, never searchable. Partially reverses ADR 0018 | Accepted |
 | `0025-foreground-presence-gate.md` | Foreground-only presence: WS `presence_active {active}`; `presence:{uid}` means foreground connections; typing/recording gated on window active | Accepted |
-| `0026-client-side-e2e-encryption.md` | Client-side E2E for **text**: browser AES-256-GCM + ECDH P-256. Server stores opaque ciphertext. `messages.is_encrypted`/`enc_header`, `user_public_keys` table, key-bundle endpoints | Accepted |
-| `0027-e2e-encrypted-message-edits.md` | Extends ADR 0026 to `edit_message`: optional `enc`; plaintext edit of an encrypted row is rejected (`EncryptionRequiredError`). No schema change | Accepted |
+| `0026-client-side-e2e-encryption.md` | Client-side E2E for **text**: browser AES-256-GCM + ECDH P-256. Server stores opaque ciphertext. `messages.is_encrypted`/`enc_header`, `user_public_keys` table, key-bundle endpoints. **Superseded by ADR 0037** | Superseded |
+| `0027-e2e-encrypted-message-edits.md` | Extends ADR 0026 to `edit_message`: optional `enc`; plaintext edit of an encrypted row is rejected (`EncryptionRequiredError`). No schema change. **Superseded by ADR 0037** | Superseded |
 | `0028-per-user-storage-quota.md` | Per-user hard storage quota `STORAGE_QUOTA_BYTES` enforced at `upload-ticket` → HTTP 413. `users.storage_bytes_used`, counted per-ref. Refunded only on purge | Accepted |
 | `0029-centralized-settings-accessor.md` | Additive flat `config.settings` accessor over the ADR 0019 sub-modules; read-only, live resolution. Old `from config import X` kept for `realtime/` + `scripts/` + the test-monkeypatched modules | Accepted |
 | `0030-feature-local-api-schemas.md` | Move the 34 Pydantic models out of `api/schemas.py` into `modules/<feature>/schemas.py`; `api/schemas.py` keeps only `IdStr`. No re-export shim | Accepted |
@@ -95,11 +95,12 @@ Rows are one-liners; the ADR file holds the full rationale (this index is loaded
 | `0032-ephemeral-test-database.md` | Test suite creates/drops a throwaway `test_db_<uuid>` per session; seeded dev DB never touched. `conftest.py` rewrites `DATABASE_URL` before import | Accepted |
 | `0033-rust-websocket-gateway.md` | Replace only the FastAPI `/ws` endpoint with a standalone Rust `ws_gateway` speaking the existing Redis contract unchanged; Cargo workspace shares one `target/` with `id_service`; built off-host. Plan: `RUST_WS_GATEWAY_PLAN.md` | Accepted |
 | `0033-inject-limits-into-services-and-routers.md` | Per-feature frozen `AuthPolicy` / `MessagingLimits` / `ScheduledLimits` / `ChatLimits`; services take keyword-only `policy=`/`limits=`, routers expose FastAPI deps; tests use `dependency_overrides` not `monkeypatch` | Accepted |
-| `0034-encrypted-chat-list-preview.md` | Denormalise the encrypted last message's `{ct, header}` onto `chats.last_message_enc` (JSONB, kept in lockstep with `last_message_preview` in `crud_message`); `ChatOut` exposes it; client decrypts it for the sidebar preview on load | Accepted |
+| `0034-encrypted-chat-list-preview.md` | Denormalise the encrypted last message's `{ct, header}` onto `chats.last_message_enc` (JSONB, kept in lockstep with `last_message_preview` in `crud_message`); `ChatOut` exposes it; client decrypts it for the sidebar preview on load. **Superseded by ADR 0037** | Superseded |
 | `0035-poc-chat-store-singleton.md` | PoC frontend: `useChatStore` promoted to a module-level singleton `LinkaChatStore` (single source of truth for chats/messages/unread/buffered-messages + pure helpers); `useChatStore(ctx)` kept as a back-compat shim so `useChats` still merges the same refs onto `ctx` for the ~31 un-migrated composables. `useWsRouter` → pure `wsEvent → LinkaChatStore` mapper (state via `store.*`, sibling behaviour still off `ctx`), owns zero refs. `MessageList` drops its `messages` prop → `inject('chatStore')`. Frontend-only, no behaviour change | Accepted |
 | `0036-internal-ws-bootstrap-endpoint.md` | `/internal/*` router on the Python app for the Rust `ws_gateway`: `ws-bootstrap` (`{user_id, chat_ids}` on connect, JWT-verified, plan step 5a) + `presence-authorized` / `typing-allowed` (Step 6) + `message/{edit,delete,restore,purge}` (ADR 0038). Edge-blocked (`/internal*` 404s at Caddy), `reqwest` no-TLS. Shared `privacy.online` rule → `realtime/presence_authz.py` | Accepted |
 | `0037-async-receipt-processing.md` | `mark_delivered`/`read`/`played` become fire-and-forget `XADD receipt_log_stream` on the WS path (Python + Rust gateway); the existing `receipt_log` worker (`+ modules/receipts/apply.py`) does the coarse watermark + ADR 0003 privacy gate + live receipt event. No `/internal/mark-receipt` (would bottleneck the 1 Python proc). Receipts now eventually-consistent; non-voice `mark_played` silently dropped by the worker | Accepted |
 | `0038-remove-legacy-python-websocket-layer.md` | **Deleted** `realtime/{ws_router,connection_manager,ws_connection_registry}.py` + tests + `LEGACY_WS_ENABLED` — the Rust `ws_gateway` is the only `/ws` (live since 2026-09-10). `presence_service.py` kept (read side live; write side = spec for `presence.rs`), plus `realtime_service.py` / `internal_router.py` / `presence_authz.py`. Edit/delete/restore/purge WS actions relayed via `POST /internal/message/*` + `message_ops.rs` | Accepted |
+| `0039-drop-e2ee-server-side-cloud-model.md` | Permanently drop client-side E2EE (reverses ADR 0026/0027/0034) for a Telegram-style cloud model: plaintext `messages.content`, TLS/WSS only, server has full read access (enables future server-side FTS/vector search). Drops `messages.is_encrypted`/`enc_header`, `chats.last_message_enc`, `user_public_keys`, the public-key/key-bundle endpoints, `EncryptionRequiredError`, `poc/composables/useE2E.js`; `enc` stripped from Rust `ws_gateway` frames | Accepted |
 
 ---
 
@@ -110,9 +111,16 @@ docker compose up -d                                    # test_db (5433), test_r
 DATABASE_URL="postgresql+asyncpg://test_user:test_password@localhost:5433/test_db" python3 -m scripts.init_db
 python3 -m scripts.init_storage
 DATABASE_URL="..." REDIS_URL="redis://localhost:6380/0" uvicorn main:app --reload
+
+# /ws is the standalone Rust ws_gateway (ADR 0033/0038) - the Python app no
+# longer serves /ws. Run it alongside uvicorn for the PoC to connect:
+JWT_SECRET="dev-secret-change-me" REDIS_URL="redis://localhost:6380/0" \
+  APP_INTERNAL_URL="http://localhost:8000" WS_GATEWAY_BIND="127.0.0.1:8081" \
+  CORS_ALLOW_ORIGINS="*" cargo run -p ws_gateway
 ```
 
 Open `poc/index.html` directly. OTP codes print to the server console — no real SMS/FCM.
+In the browser console once: `localStorage.setItem('linka_ws_base','ws://localhost:8081')` so the PoC's WebSocket points at the gateway instead of `<apiBase>/ws` (prod uses Caddy to proxy `/ws` same-origin). `JWT_SECRET` must equal the app's `JWT_SECRET_KEY`.
 
 **Testing:** the suite runs against an ephemeral per-run database (ADR 0032, `tests/README.md`) — the seeded dev DB and MinIO are left untouched. `DATABASE_URL` need not be set for tests.
 

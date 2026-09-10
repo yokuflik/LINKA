@@ -376,33 +376,37 @@ Original checklist:
 - **Verify:** staging canary — a fraction of PoC clients pointed at `/ws`
   (Rust), the rest at `/ws-legacy`; watch RSS, reconnect rate, message loss.
 
-### Step 8 — Cutover + cleanup — blockers cleared; live canary owed
+### Step 8 — Cutover — DONE (2026-09-10)
 
-Landed:
-- **Receipt async redesign — ADR 0037**: `mark_*` fire-and-forget on both
-  fleets, the `receipt_log` worker does watermark + privacy + live event.
-- **`edit`/`delete`/`restore`/`purge` on the gateway — ADR 0038 option 1**
-  (risk 8): `/internal/message/*` + `ClientFrame` variants + `message_ops.rs`.
-- **Import guard**: `config.LEGACY_WS_ENABLED` (`config/app_settings.py`,
-  default **true**); `main.py` mounts the FastAPI `/ws` only when set. Caddy
-  serves it at `/ws-legacy`.
+- **Receipt async redesign — ADR 0037**: `mark_*` fire-and-forget, the
+  `receipt_log` worker does watermark + privacy + live event.
+- **`edit`/`delete`/`restore`/`purge` — ADR 0038 option 1** (risk 8):
+  `/internal/message/*` + `ClientFrame` variants + `message_ops.rs`.
+- **LIVE**: Caddy `/ws` → `ws_gateway:8081`. Image built off-host
+  (`buildx --load` + `docker save | ssh | docker load`), shipped as
+  `linka-ws-gateway:latest`. No canary (no real users; `git revert` rollback).
+- **Cutover bugs found + fixed** (all committed): (1) `ALLOWED_HOSTS` blocked
+  `Host: app` on `/internal/*` → every call 400'd → `ws-bootstrap` failed →
+  `chats=0` → no delivery. `main.py` now always appends `app`/`localhost`/
+  `127.0.0.1`. (2) Caddy `@api` matcher missing `/scheduled-messages*`. (3)
+  `scheduled_messages` table missing on the server (never had `init_db` run).
 
-Every WS action the client sends is now handled by the gateway. Still to do:
-- Off-host image build + server rollout + canary (Step 7 tail).
-- Flip PoC clients fully to `/ws`, `LEGACY_WS_ENABLED=false`, watch a release.
-- ADR 0038 deletes the Python WS layer (`ws_router` / `connection_manager` /
-  `ws_connection_registry` + tests). `presence_service` / `realtime_service` /
-  `internal_router` / `presence_authz` stay (see ADR 0038).
-- Final docs pass: `.claude_docs/security_and_rate_limiting.md` +
-  `realtime_and_redis.md` + `deployment.md`.
+### Step 9 — Delete the Python WS layer — DONE (2026-09-10, ADR 0038 Accepted)
 
-### Step 9 — Delete the Python WS layer
+Deleted `realtime/{ws_router,connection_manager,ws_connection_registry}.py` +
+their test modules + `config.LEGACY_WS_ENABLED` + the `main.py` conditional
+mount. Kept `presence_service.py` (read side live; write side = spec for
+`presence.rs`), `realtime_service.py`, `internal_router.py`, `presence_authz.py`.
+Caddy `/ws-legacy` → `ws_gateway:8081` (alias, drop a release later).
+`tests/realtime/test_internal_router.py` (12 tests) carries the
+ws-bootstrap / presence-authorized / typing-allowed / message-`*` rules that
+`test_ws_router.py` held. 467 → 407 tests (the ~60 removed were
+connection-lifecycle tests now owned by the Rust side).
 
-Blocked on the Step 8 canary only. `docs/adr/0038` written (status Proposed).
-The deletion was staged once 2026-09-10 and rolled back after finding risk 8
-(now fixed). `tests/realtime/test_internal_router.py` added and kept — covers
-the ws-bootstrap / presence-authorized / typing-allowed / message-`*` rules
-that `test_ws_router.py` held.
+Final docs pass done: `.claude_docs/{realtime_and_redis,security_and_rate_limiting,
+backend_services_and_api,deployment}.md`.
+
+**Project complete** — the Rust `ws_gateway` is the only `/ws`.
 
 ---
 

@@ -1,6 +1,6 @@
 # ADR 0038 — Remove the legacy Python WebSocket layer
 
-Status: **Proposed** (blocked only on the Step 8 canary; the edit/delete gap below is fixed)
+Status: Accepted (executed 2026-09-10, one day after the gateway went live and proved stable — no real users, fast git-revert rollback available)
 Date: 2026-09-10
 
 ## Context
@@ -14,7 +14,7 @@ Step 9 of the plan is to delete the dead Python layer once the gateway is
 proven: `realtime/ws_router.py`, `realtime/connection_manager.py`,
 `realtime/ws_connection_registry.py` and their tests, plus `LEGACY_WS_ENABLED`.
 
-## The edit/delete gap (found during Step 9, now fixed — option 1)
+## The edit/delete gap (found while preparing this ADR, fixed first — option 1)
 
 `edit_message` / `delete_message` / `restore_message` / `purge_message` are
 WS-only (`_HANDLERS` in `realtime/ws_router.py`, no REST) and the PoC uses all
@@ -37,30 +37,33 @@ Volume is low (edits/deletes are rare), so the per-frame HTTP hop that ruled out
   PoC): cleaner long-term but a frontend change + new public API surface, for no
   gain over option 1 now.
 
-## Decision (pending the canary)
+## Decision — done
 
-Once the gateway has been canaried in production and is stable:
-
-- Delete `realtime/{ws_router,connection_manager,ws_connection_registry}.py` +
-  their test modules + `config.LEGACY_WS_ENABLED` + the `main.py` conditional
-  mount.
-- **Keep** `realtime/presence_service.py` (read side live for the fan-out
-  worker's push-vs-live choice; write side stays as the executable spec for
+- **Deleted**: `realtime/{ws_router,connection_manager,ws_connection_registry}.py`
+  + their test modules + `config.LEGACY_WS_ENABLED` + the `main.py` conditional
+  mount (`main.py` now unconditionally mounts only `internal_router`).
+- **Kept**: `realtime/presence_service.py` (read side live for the fan-out
+  worker's push-vs-live choice; write side = executable spec for
   `crates/ws_gateway/src/presence.rs`, exercised by
   `tests/realtime/test_presence_service.py`), `realtime/realtime_service.py`
   (pub/sub used by every worker), `realtime/internal_router.py` +
-  `realtime/presence_authz.py` (the `/internal/*` seam, now covered by
+  `realtime/presence_authz.py` (the `/internal/*` seam, covered by
   `tests/realtime/test_internal_router.py`).
-- Caddy: point `/ws` **and** `/ws-legacy` at `ws_gateway:8081`, drop
-  `/ws-legacy` a release later.
+- **Caddy**: `/ws` and `/ws-legacy` both → `ws_gateway:8081`; drop `/ws-legacy`
+  a release later.
+- Tests: 467 → 407 (the ~60 removed were connection-lifecycle tests now owned by
+  the Rust side + its integration tests; the receipt/presence/typing/message
+  *rules* were ported to `test_internal_router.py`).
 
-## Consequences (when unblocked)
+## Consequences
 
-- The single Python process stops holding live sockets — memory + GIL freed.
+- The single Python process no longer holds live sockets — memory + GIL freed
+  for REST + the send/fan-out/receipt/scheduled workers.
 - One implementation of the wire contract. `crates/common` golden-JSON +
   `test_presence_service.py` + `test_internal_router.py` pin Python↔Rust
   compatibility.
-- Rollback to Python WS is no longer possible without a revert.
+- Rollback to the Python WS layer now requires `git revert` of this commit +
+  a redeploy.
 
 ## Already landed on the way here
 

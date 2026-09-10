@@ -48,15 +48,15 @@
 		respond 404
 	}
 
-	# WebSocket. During the Rust-gateway canary (ADR 0033): /ws -> the Rust
-	# ws_gateway, /ws-legacy -> the Python app (rewritten back to /ws) for
-	# instant rollback. Flip both to the same target at cutover (Step 8).
+	# WebSocket — the standalone Rust ws_gateway (ADR 0033/0038). /ws-legacy is
+	# kept one release as an alias for any client still using it (the Python
+	# /ws was removed in ADR 0038); drop it after that.
 	handle /ws {
 		reverse_proxy ws_gateway:8081
 	}
 	handle /ws-legacy {
 		rewrite * /ws
-		reverse_proxy app:8000
+		reverse_proxy ws_gateway:8081
 	}
 
 	# Backend API. Everything else is the static PoC.

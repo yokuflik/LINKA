@@ -1,7 +1,7 @@
 """
-The presence-visibility rule, shared by the Python WS handler
-(`realtime/ws_router.py`) and the internal endpoint the Rust `ws_gateway`
-calls (`realtime/internal_router.py`, ADR 0036).
+The presence-visibility rule, used by the internal endpoints the Rust
+`ws_gateway` calls on `subscribe_presence` and every typing frame
+(`realtime/internal_router.py`, ADR 0036).
 
 Whether `watcher_id` may see `target_user_id`'s presence — both the live online
 indicator AND "last seen", gated together by the target's `privacy.online`:

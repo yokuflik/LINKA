@@ -133,9 +133,9 @@ includes `/scheduled-messages*` (the top-level `scheduled_router`).
 hostname(s). Before this fix every `/internal/*` call 400'd (`Invalid host
 header`) → `ws-bootstrap` failed → `chats=0` → no live delivery.
 
-**Rollback:** edit `deploy/Caddyfile` `handle /ws` → `reverse_proxy app:8000` +
-`rewrite * /ws`, `docker compose restart caddy`. The Python `/ws` stays fully
-wired (`LEGACY_WS_ENABLED` default true) until ADR 0038.
+**Rollback:** the Python WS layer was deleted (ADR 0038, 2026-09-10) — there is
+no `/ws-legacy` fallback any more. Rollback = `git revert` the gateway commits +
+redeploy `app`.
 
 ## Known demo compromises
 

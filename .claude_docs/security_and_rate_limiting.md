@@ -4,6 +4,16 @@ Read this before touching any rate limiter, the Caddyfile, CORS / TrustedHost /
 `Origin` checks, or the WS connection cap.
 
 Decision record: `docs/adr/0012-transport-hardening-and-rate-limiting.md`.
+
+> **WS limits moved to the Rust gateway (ADR 0038):** every `ws_*` / `send_message`
+> / connection-cap limit below is now enforced in `crates/ws_gateway`
+> (`ws.rs` / `handlers.rs` / `message_ops.rs`), calling the **verbatim** Lua from
+> `linka-common::ratelimit` — same Redis keys, windows and close codes. Mentions
+> of `realtime/ws_router.py` / `ws_connection_registry.py` / `connection_manager.py`
+> below are **historical** (those modules were deleted). `force_disconnect` is now
+> handled by the gateway's `fanin` (fires the conn's cancel-notify → 4409). `main.py`
+> also always appends `app`/`localhost`/`127.0.0.1` to `ALLOWED_HOSTS` so the
+> gateway's `http://app:8000/internal/*` calls pass `TrustedHostMiddleware`.
 Delivery plan: `COMMS_SECURITY_PLAN.md` (root) — Phase 1, 8 steps.
 Status: **All 8 steps done** (docs, limiter engine, transport hardening,
 auth/OTP limits, WS connection cap + handshake churn, WS per-frame + per-action
@@ -44,13 +54,13 @@ App container **locked to 1 CPU** (`cpus: 1.0`) — multi-worker-safe, bump late
 
 | Limit | Bucket key | Window | Enforced | Status |
 |---|---|---|---|---|
-| `send_message` | `rlsw:send_message:{user_id}` + `rlsw:send_message_burst:{user_id}` | 3 / 1 s **and** 40 / 60 s (both must pass) | `_handle_send_message` (its own two-tier check) | **DONE (step 6)** |
+| `send_message` | `rlsw:send_message:{user_id}` + `rlsw:send_message_burst:{user_id}` | 3 / 1 s **and** 40 / 60 s (both must pass) | gateway `send_message` handler (two-tier) | **DONE (step 6)** |
 | WS inbound frame rate | `rlsw:ws_frame:{connection_id}` | 30 / 10 s | receive loop, **before dispatch**; over → `rate_limited` + drop frame (no close); `WS_FRAME_FLOOD_STRIKES`=60 consecutive over-limit frames → close `4429` | **DONE (step 6)** |
-| `mark_delivered`/`read`/`played` (combined) | `rlsw:ws_receipts:{user_id}` | 60 / 10 s | `_dispatch` via `_ACTION_LIMITS`, pre-handler | **DONE (step 6)** |
-| `subscribe_presence` | `rlsw:ws_sub_presence:{user_id}` | 20 / 10 s | `_dispatch` / `_ACTION_LIMITS` | **DONE (step 6)** |
-| `typing` / `recording` (combined) | `rlsw:ws_typing:{user_id}` | 10 / 10 s | `_dispatch` / `_ACTION_LIMITS` | **DONE (step 6)** |
-| `edit`/`delete`/`restore_message` (combined) | `rlsw:ws_edit:{user_id}` | 20 / 60 s | `_dispatch` / `_ACTION_LIMITS` | **DONE (step 6)** |
-| Concurrent WS conns / user | `ws:conns:{user_id}` (zset) | cap 5, evict oldest | `/ws` after `accept()`, `ws_connection_registry.register` Lua | **DONE (step 5)** |
+| `mark_delivered`/`read`/`played` (combined) | `rlsw:ws_receipts:{user_id}` | 60 / 10 s | gateway dispatch, pre-handler | **DONE (step 6)** |
+| `subscribe_presence` | `rlsw:ws_sub_presence:{user_id}` | 20 / 10 s | gateway dispatch | **DONE (step 6)** |
+| `typing` / `recording` (combined) | `rlsw:ws_typing:{user_id}` | 10 / 10 s | gateway dispatch | **DONE (step 6)** |
+| `edit`/`delete`/`restore_message` (combined) | `rlsw:ws_edit:{user_id}` | 20 / 60 s | gateway dispatch | **DONE (step 6)** |
+| Concurrent WS conns / user | `ws:conns:{user_id}` (zset) | cap 5, evict oldest | gateway, on connect, the connection-cap Lua | **DONE (step 5)** |
 | WS handshake churn | `rlsw:ws_upgrade_ip:{ip}` / `rlsw:ws_upgrade_user:{user_id}` | 20 / 10 s IP, 10 / 10 s user (sliding) | `/ws` after auth, before `accept()` + DB query; over → close `4429` | **DONE (step 5)** |
 | `POST /auth/otp/request` | `ratelimit:otp_request:{phone}` (service) / `ratelimit:otp_request_ip:{ip}` (router) | 5 / 30 min phone, 15 / h IP | router (IP, pre-service) + `auth_service.request_otp` (phone) | **DONE (step 4)** |
 | `POST /auth/otp/verify` & `/auth/firebase/verify` | `ratelimit:otp_verify:{phone}` / `firebase_verify:{phone}` (service, per OTP TTL) + `ratelimit:otp_verify_ip:{ip}` (router) | 5 / TTL phone, 30 / h IP | router (IP) + service (phone) | **DONE (step 4)** |
@@ -205,7 +215,7 @@ monkeypatches `routers.<module>.<NAME>`.
 
 ## Tests + rollout (step 8 — DONE)
 
-Coverage: `test_ws_connection_registry.py` (6th evicts oldest, N parallel opens
+Coverage: `crates/common` ratelimit tests + `test_internal_router.py`; historically `test_ws_connection_registry.py` (6th evicts oldest, N parallel opens
 converge to the cap, stale sweep), `test_rest_api.py` (OTP spray per IP,
 returning login not blocked by the account-creation cap, history `limit`
 clamped, history 429, upload-ticket per-IP 429), `test_websocket.py`

@@ -1,3 +1,13 @@
+"""
+Presence Redis contract (ADR 0025). Since ADR 0033/0038 the **write** side
+(`mark_online` / `mark_offline` / `set_active` / `heartbeat`) is done by the
+Rust `ws_gateway` (`crates/ws_gateway/src/presence.rs`), which stays
+byte-compatible with the keys/edges defined here; the Python implementations
+below remain as the executable spec, exercised by
+`tests/realtime/test_presence_service.py`. The **read** side (`is_online` /
+`get_online_participants` / `get_status`) is live — the fan-out worker calls it
+to choose a live push vs a notification.
+"""
 from datetime import datetime, timezone
 
 from realtime import realtime_service

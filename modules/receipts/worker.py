@@ -9,6 +9,7 @@ import logging
 from config import settings
 from infra.db.connection import session_scope
 from modules.receipts import receipt_log
+from realtime.fanout.base_worker import touch_app_liveness
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,10 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
         try:
             async with session_scope() as session:
                 written = await receipt_log.drain_once(session, block_ms=settings.RECEIPT_WORKER_BLOCK_MS)
+            # ADR 0041: same liveness signal the send/fan-out workers touch -
+            # one key per app process, refreshed by whichever worker loop
+            # happens to run.
+            await touch_app_liveness()
             # A full-looking batch means there may be more waiting - loop
             # straight back without the block delay. An empty read already
             # blocked for settings.RECEIPT_WORKER_BLOCK_MS inside drain_once.

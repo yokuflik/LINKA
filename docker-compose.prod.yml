@@ -106,6 +106,10 @@ services:
       WS_GATEWAY_BIND: 0.0.0.0:8081
       # SERVER_ID is deliberately unset: the gateway self-generates a per-process
       # UUID, so a restart's stale routing registrations simply TTL out.
+      # APP_SERVER_ID (ADR 0041) is the *app*'s SERVER_ID (from .env), not the
+      # gateway's own - it keys app_worker_alive:{id}, the liveness signal
+      # checked before acking send_message / mark_*.
+      APP_SERVER_ID: ${SERVER_ID:?set SERVER_ID in .env}
     depends_on:
       redis:
         condition: service_healthy

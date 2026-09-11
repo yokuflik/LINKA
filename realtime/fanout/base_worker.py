@@ -19,10 +19,23 @@ from typing import Optional
 from redis.exceptions import ResponseError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import APP_LIVENESS_TTL_SECONDS, SERVER_ID
 from infra.db.connection import session_scope
 from infra.redis.client import redis_client
 
 logger = logging.getLogger(__name__)
+
+# ADR 0041: refreshed by every stream-consumer loop iteration so the Rust
+# ws_gateway can tell "app process running but its workers are stalled/dead"
+# apart from "app process fully up" before it acks send_message / receipts.
+_LIVENESS_KEY = f"app_worker_alive:{SERVER_ID}"
+
+
+async def touch_app_liveness() -> None:
+    try:
+        await redis_client.set(_LIVENESS_KEY, "1", ex=APP_LIVENESS_TTL_SECONDS)
+    except Exception:
+        logger.warning("liveness key refresh failed", exc_info=True)
 
 
 class BaseStreamConsumer:
@@ -167,6 +180,7 @@ class BaseStreamConsumer:
             try:
                 async with session_scope() as session:
                     acked = await self.drain_once(session, block_ms=self.block_ms, shard=shard)
+                await touch_app_liveness()
                 if acked == 0:
                     await asyncio.sleep(0)
             except asyncio.CancelledError:

@@ -338,6 +338,14 @@ async fn mark(
         send(state, conn_id, frame.to_string());
         return;
     }
+    // ADR 0041: same liveness gate as send_message - nothing draining
+    // receipt_log_stream means the watermark will never actually apply.
+    if !crate::send_path::app_workers_alive(state).await {
+        let mut frame = serde_json::json!({"type": "error", "code": "internal_error"});
+        frame["for"] = ack_for.into();
+        send(state, conn_id, frame.to_string());
+        return;
+    }
     if let Err(e) = crate::receipts::enqueue(state, m.chat_id, user_id, kind, m.message_id).await {
         tracing::warn!(error = %e, "receipt enqueue failed");
         return; // fire-and-forget: no error frame, client re-sends on next scroll
@@ -414,6 +422,21 @@ async fn dispatch(
                     serde_json::json!({
                         "type": "error",
                         "code": "rate_limited",
+                        "client_message_id": m.client_message_id,
+                    })
+                    .to_string(),
+                );
+                return;
+            }
+            // ADR 0041: nothing draining message_send_stream right now ->
+            // an honest error beats a `queued` ack that never resolves.
+            if !crate::send_path::app_workers_alive(state).await {
+                send(
+                    state,
+                    conn_id,
+                    serde_json::json!({
+                        "type": "error",
+                        "code": "internal_error",
                         "client_message_id": m.client_message_id,
                     })
                     .to_string(),

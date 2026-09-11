@@ -37,6 +37,7 @@ from ._accessor import settings  # noqa: F401
 # Trimmed from `from .<sub> import *` to this explicit allow-list. Regenerate by
 # scanning those three trees for `from config import` / `config.<NAME>` usage.
 from .app_settings import (  # noqa: F401
+    APP_LIVENESS_TTL_SECONDS,
     ID_SERVICE_ADDR,
     ID_SERVICE_TIMEOUT_SECONDS,
     SERVER_ID,
@@ -115,6 +116,7 @@ from .partition_settings import (  # noqa: F401
 
 __all__ = [
     "settings",
+    "APP_LIVENESS_TTL_SECONDS",
     "CHAT_INSTANCE_TTL_SECONDS",
     "CORS_ALLOW_ORIGINS",
     "FANOUT_STREAM_CLAIM_IDLE_MS",

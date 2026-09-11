@@ -18,8 +18,11 @@ const ChatSidebar = {
     typingLabelForChat: { type: Function, required: true },
     unreadCountByChatId: { type: Object, required: true },
     isChatMuted: { type: Function, required: true },
+    chatFilters: { type: Array, required: true },
+    chatFilter: { type: String, required: true },
+    filteredChats: { type: Array, required: true },
   },
-  emits: ['open-new-chat', 'select-chat', 'chat-contextmenu'],
+  emits: ['open-new-chat', 'select-chat', 'chat-contextmenu', 'set-chat-filter'],
   template: `
     <aside class="w-full md:w-72 shrink-0 flex flex-col border-r border-slate-200 bg-white">
       <div class="p-3 border-b border-slate-200">
@@ -37,8 +40,16 @@ const ChatSidebar = {
       <InlineAlert :message="chatFormError" class="mx-3 my-1" />
       <InlineAlert :message="chatsError" class="mx-3 my-1" />
 
+      <div class="flex items-center gap-2 px-3 py-2 border-b border-slate-200 overflow-x-auto">
+        <button v-for="f in chatFilters" :key="f.key" @click="$emit('set-chat-filter', f.key)"
+                class="shrink-0 px-3 py-1 rounded-full text-xs font-semibold transition-colors"
+                :class="chatFilter === f.key ? 'bg-teal-700 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
+          {{ f.label }}
+        </button>
+      </div>
+
       <div class="flex-1 overflow-y-auto">
-        <div v-for="item in chats" :key="item.chat.id" @click="$emit('select-chat', item.chat.id)"
+        <div v-for="item in filteredChats" :key="item.chat.id" @click="$emit('select-chat', item.chat.id)"
                 @contextmenu.prevent="$emit('chat-contextmenu', { chatId: item.chat.id, event: $event })"
                 class="w-full text-left px-3 py-2.5 border-b border-slate-100 hover:bg-slate-50 flex items-center gap-3 cursor-pointer"
                 :class="{ 'bg-teal-50': item.chat.id === activeChatId }">
@@ -77,6 +88,7 @@ const ChatSidebar = {
           </div>
         </div>
         <p v-if="!chats.length" class="p-3 text-sm text-slate-400">No chats yet — tap "New chat" above.</p>
+        <p v-else-if="!filteredChats.length" class="p-3 text-sm text-slate-400">No chats in this filter.</p>
       </div>
     </aside>
   `,

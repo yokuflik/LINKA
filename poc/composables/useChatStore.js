@@ -14,7 +14,7 @@
 // New path: `useWsRouter` and `MessageList` read/write state through
 // `LinkaChatStore.*` directly (imported / injected), never through `ctx`.
 const LinkaChatStore = (function buildChatStore() {
-  const { ref } = Vue;
+  const { ref, computed } = Vue;
 
   // ---------------------------------------------------------------
   // Chats + message pane
@@ -124,6 +124,36 @@ const LinkaChatStore = (function buildChatStore() {
   }
 
   // ---------------------------------------------------------------
+  // Sidebar chat-list filter (All / Unread / Private / Groups) — client-side
+  // only, no API/backend involvement. Kept in the store (not a component
+  // ref) so it survives ChatSidebar re-renders and stays reachable from ctx.
+  // ---------------------------------------------------------------
+  const CHAT_FILTERS = [
+    { key: 'all', label: 'All' },
+    { key: 'unread', label: 'Unread' },
+    { key: 'private', label: 'Private' },
+    { key: 'groups', label: 'Groups' },
+  ];
+  const chatFilter = ref('all');
+
+  function setChatFilter(key) {
+    if (CHAT_FILTERS.some((f) => f.key === key)) chatFilter.value = key;
+  }
+
+  const filteredChats = computed(() => {
+    switch (chatFilter.value) {
+      case 'unread':
+        return chats.value.filter((item) => !!unreadCountByChatId.value[item.chat.id]);
+      case 'private':
+        return chats.value.filter((item) => !item.chat.is_group);
+      case 'groups':
+        return chats.value.filter((item) => item.chat.is_group);
+      default:
+        return chats.value;
+    }
+  });
+
+  // ---------------------------------------------------------------
   // Chat-list ordering
   // ---------------------------------------------------------------
   // Same ordering the server applies (crud_participant.get_user_chats): pinned
@@ -196,6 +226,7 @@ const LinkaChatStore = (function buildChatStore() {
     MESSAGE_PAGE_SIZE, LOAD_OLDER_THRESHOLD, MAX_VISIBLE_MEMBERS,
     privateChatTitles, privateChatOtherUserId, userById, groupChatMembers,
     ROLE_LABELS, roleLabel, statusTickSymbol, statusTickClass,
+    CHAT_FILTERS, chatFilter, setChatFilter, filteredChats,
     sortChats,
     unreadCountByChatId, bumpUnreadCount, clearUnreadCount,
     bufferMessage, takeBufferedMessages,

@@ -29,6 +29,13 @@ ID_SERVICE_TIMEOUT_SECONDS = float(os.environ.get("ID_SERVICE_TIMEOUT_SECONDS", 
 # orchestrator/pod name in production).
 SERVER_ID = os.environ.get("SERVER_ID", str(uuid.uuid4()))
 
+# --- App liveness signal (ADR 0041) ---
+# TTL on `app_worker_alive:{SERVER_ID}`, refreshed by every BaseStreamConsumer
+# loop iteration. The Rust ws_gateway checks this before acking send_message /
+# receipts, so a stopped app process yields an honest error instead of a
+# message silently stuck in message_send_stream forever.
+APP_LIVENESS_TTL_SECONDS = int(os.environ.get("APP_LIVENESS_TTL_SECONDS", "10"))
+
 # --- Message content size cap ---
 # Applies to both new messages and edits. Without this, a single message is
 # bounded only by Postgres's TEXT column (~1GB) and whatever the ASGI
@@ -50,6 +57,7 @@ __all__ = [
     "ID_SERVICE_ADDR",
     "ID_SERVICE_TIMEOUT_SECONDS",
     "SERVER_ID",
+    "APP_LIVENESS_TTL_SECONDS",
     "MAX_MESSAGE_CONTENT_LENGTH",
     "MAX_INITIAL_GROUP_MEMBERS",
 ]

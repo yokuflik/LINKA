@@ -103,6 +103,7 @@ Rows are one-liners; the ADR file holds the full rationale (this index is loaded
 | `0038-remove-legacy-python-websocket-layer.md` | **Deleted** `realtime/{ws_router,connection_manager,ws_connection_registry}.py` + tests + `LEGACY_WS_ENABLED` — the Rust `ws_gateway` is the only `/ws` (live since 2026-09-10). `presence_service.py` kept (read side live; write side = spec for `presence.rs`), plus `realtime_service.py` / `internal_router.py` / `presence_authz.py`. Edit/delete/restore/purge WS actions relayed via `POST /internal/message/*` + `message_ops.rs` | Accepted |
 | `0039-drop-e2ee-server-side-cloud-model.md` | Permanently drop client-side E2EE (reverses ADR 0026/0027/0034) for a Telegram-style cloud model: plaintext `messages.content`, TLS/WSS only, server has full read access (enables future server-side FTS/vector search). Drops `messages.is_encrypted`/`enc_header`, `chats.last_message_enc`, `user_public_keys`, the public-key/key-bundle endpoints, `EncryptionRequiredError`, `poc/composables/useE2E.js`; `enc` stripped from Rust `ws_gateway` frames | Accepted |
 | `0040-server-side-message-search.md` | Keyword search over `messages.content` via Postgres native FTS (`content_tsv` trigger + one `btree_gin` `gin(chat_id, content_tsv)` partial index, `'simple'` config) — no external search service, `pg_trgm` deferred. In-chat + global (membership enforced by a `participants` JOIN in-query). `modules/search/`: cursor endpoints + SSE stream (server-side cursor, 500-row/20s cap) + `/messages/around/{id}` for jump-to-context. Redis rate limits (`search_query` two-tier, `search_stream` + 1/user concurrency, `search_ip`); 422 min-length gate. Plan: `MESSAGE_SEARCH_PLAN.md` | Accepted |
+| `0041-app-liveness-gate-for-send-message.md` | `app_worker_alive:{SERVER_ID}` Redis key (TTL 10s), refreshed by every stream-consumer worker loop; Rust `ws_gateway` checks it before acking `send_message`/`mark_*` so a stopped Python app (workers not draining `message_send_stream`/`receipt_log_stream`) yields an honest `internal_error` instead of a message silently stuck forever | Accepted |
 
 ---
 
@@ -112,17 +113,18 @@ Rows are one-liners; the ADR file holds the full rationale (this index is loaded
 docker compose up -d                                    # test_db (5433), test_redis (6380), test_minio (9100 API / 9101 console)
 DATABASE_URL="postgresql+asyncpg://test_user:test_password@localhost:5433/test_db" python3 -m scripts.init_db
 python3 -m scripts.init_storage
-DATABASE_URL="..." REDIS_URL="redis://localhost:6380/0" uvicorn main:app --reload
+DATABASE_URL="..." REDIS_URL="redis://localhost:6380/0" SERVER_ID="linka-dev" uvicorn main:app --reload
 
 # /ws is the standalone Rust ws_gateway (ADR 0033/0038) - the Python app no
 # longer serves /ws. Run it alongside uvicorn for the PoC to connect:
 JWT_SECRET="dev-secret-change-me" REDIS_URL="redis://localhost:6380/0" \
   APP_INTERNAL_URL="http://localhost:8000" WS_GATEWAY_BIND="127.0.0.1:8081" \
-  CORS_ALLOW_ORIGINS="*" cargo run -p ws_gateway
+  APP_SERVER_ID="linka-dev" CORS_ALLOW_ORIGINS="*" cargo run -p ws_gateway
 ```
 
 Open `poc/index.html` directly. OTP codes print to the server console — no real SMS/FCM.
 In the browser console once: `localStorage.setItem('linka_ws_base','ws://localhost:8081')` so the PoC's WebSocket points at the gateway instead of `<apiBase>/ws` (prod uses Caddy to proxy `/ws` same-origin). `JWT_SECRET` must equal the app's `JWT_SECRET_KEY`.
+`SERVER_ID` (app) and `APP_SERVER_ID` (gateway) must match — they key `app_worker_alive:{id}` (ADR 0041), the liveness signal the gateway checks before acking `send_message` / `mark_*`, so a mismatch makes every send/receipt look like the app is down.
 
 **Testing:** the suite runs against an ephemeral per-run database (ADR 0032, `tests/README.md`) — the seeded dev DB and MinIO are left untouched. `DATABASE_URL` need not be set for tests.
 

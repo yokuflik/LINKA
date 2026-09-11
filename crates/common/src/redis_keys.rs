@@ -37,6 +37,16 @@ pub fn presence_events(user_id: i64) -> String {
     format!("presence_events:{user_id}")
 }
 
+// --- App liveness (ADR 0041) -----------------------------------------------
+
+/// Refreshed by every BaseStreamConsumer loop iteration
+/// (`realtime/fanout/base_worker.py::touch_app_liveness`) and by the receipt
+/// worker. Missing/expired ⇒ nothing is draining `message_send_stream` /
+/// `receipt_log_stream` right now.
+pub fn app_worker_alive(app_server_id: &str) -> String {
+    format!("app_worker_alive:{app_server_id}")
+}
+
 // --- Presence state ------------------------------------------------------
 
 /// SET of foreground connection members (`{server_id}:{connection_id}`), TTL'd.

@@ -8,6 +8,22 @@ use linka_common::redis_keys;
 
 use crate::state::AppState;
 
+/// ADR 0041: `EXISTS app_worker_alive:{app_server_id}` before enqueueing —
+/// missing/expired means nothing is draining `message_send_stream` /
+/// `receipt_log_stream` right now, so a `queued` ack here would be a lie.
+/// Fails closed: a Redis error is treated the same as "not alive" (the
+/// enqueue would fail the same way anyway).
+pub async fn app_workers_alive(state: &AppState) -> bool {
+    let key = redis_keys::app_worker_alive(&state.config.app_server_id);
+    let mut conn = state.redis.clone();
+    redis::cmd("EXISTS")
+        .arg(&key)
+        .query_async::<i64>(&mut conn)
+        .await
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
 pub async fn enqueue(
     state: &AppState,
     frame: &SendMessageFrame,

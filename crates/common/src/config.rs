@@ -11,6 +11,10 @@ pub struct Config {
     pub bind_addr: String,
     /// Base URL of the Python app for internal calls (`/internal/ws-bootstrap`).
     pub app_internal_url: String,
+    /// Python app's `SERVER_ID` (ADR 0041) — keys `app_worker_alive:{id}`,
+    /// checked before acking `send_message` / `mark_*`. Single-process
+    /// deploy (ADR 0007) so this is static config, not looked up.
+    pub app_server_id: String,
     pub send_stream_shards: u64,
     pub send_stream_maxlen: usize,
     /// `receipt_log_stream` approximate MAXLEN (Python `RECEIPT_STREAM_MAXLEN`).
@@ -102,6 +106,7 @@ impl Config {
                 .collect(),
             bind_addr: var("WS_GATEWAY_BIND", "0.0.0.0:8081"),
             app_internal_url: var("APP_INTERNAL_URL", "http://app:8000"),
+            app_server_id: var("APP_SERVER_ID", "app"),
             send_stream_shards: parse("SEND_STREAM_SHARDS", 4),
             send_stream_maxlen: parse("MESSAGE_SEND_STREAM_MAXLEN", 1_000_000),
             receipt_stream_maxlen: parse("RECEIPT_STREAM_MAXLEN", 1_000_000),

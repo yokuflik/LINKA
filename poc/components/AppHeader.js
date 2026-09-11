@@ -6,7 +6,7 @@ const AppHeader = {
     avatarUrl: { default: null },
     avatarPreview: { default: null },
   },
-  emits: ['logout', 'edit-profile', 'open-settings'],
+  emits: ['logout', 'edit-profile', 'open-settings', 'open-search'],
   computed: {
     // User-friendly label for the connection dot - never the raw
     // 'disconnected' / 'error' state names.
@@ -38,6 +38,15 @@ const AppHeader = {
           <Avatar :url="avatarUrl" :preview="avatarPreview" :enlargeable="false"
                   :name="currentUser.display_name || currentUser.username || currentUser.phone_number" :colorKey="currentUser.id" sizeClass="w-7 h-7 text-xs" />
           <span class="text-slate-500">You are <span class="font-medium text-slate-800">{{ currentUser.display_name || currentUser.username || currentUser.phone_number }}</span></span>
+        </button>
+        <button type="button" @click="$emit('open-search')"
+                class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-700"
+                title="Search messages">
+          <svg viewBox="0 0 24 24" class="w-5 h-5" fill="none"
+               stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.2-3.2" />
+          </svg>
         </button>
         <button type="button" @click="$emit('open-settings')"
                 class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-700"

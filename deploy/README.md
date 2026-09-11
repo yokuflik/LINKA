@@ -98,6 +98,10 @@ All are commented out in `env.production.example`; uncomment to override.
 | REST message history | `MSG_HISTORY_RATE_*`, `MSG_HISTORY_MAX_LIMIT` | 30 / 60 s, 100 rows |
 | REST upload ticket | `UPLOAD_TICKET_RATE_*`, `UPLOAD_TICKET_IP_RATE_LIMIT_*` | 5 / 60 s user, 20 / 60 s IP |
 | REST detail / list reads | `DETAIL_READ_RATE_*`, `LIST_READ_RATE_*` | 60 / 60 s, 120 / 60 s |
+| Message search — cursor routes | `SEARCH_QUERY_RATE_*`, `SEARCH_QUERY_BURST_*` | 10 / 10 s, 30 / 60 s |
+| Message search — SSE stream | `SEARCH_STREAM_RATE_*`, 1 in-flight / user | 3 / 60 s |
+| Message search — per IP | `SEARCH_IP_RATE_*` | 60 / 60 s |
+| Message search — misc | `SEARCH_MIN_QUERY_LEN`, `SEARCH_STATEMENT_TIMEOUT_MS`, `SEARCH_STREAM_MAX_RESULTS` / `_MAX_SECONDS` | 2, 3000 ms, 500 / 20 s |
 
 WS close codes: `4401` auth · `4403` bad Origin · `4409` connection-limit
 eviction (silent) · `4429` handshake churn or sustained frame flood.
@@ -116,6 +120,8 @@ docker compose -f docker-compose.prod.yml ps
 # schema + partitions (create_all, no migrations) and storage buckets:
 docker compose -f docker-compose.prod.yml run --rm app python -m scripts.init_db
 docker compose -f docker-compose.prod.yml run --rm app python -m scripts.init_storage
+# search vectors for any pre-existing messages (ADR 0040; no-op on a fresh DB):
+docker compose -f docker-compose.prod.yml run --rm app python -m scripts.backfill_search_tsv
 
 docker compose -f docker-compose.prod.yml up -d
 ```
@@ -157,6 +163,8 @@ The non-caching `sw.js` also purges any stale Cache Storage on activate.
 cd /opt/linka && git pull
 docker compose -f docker-compose.prod.yml build app id_service   # id_service only when its Dockerfile/src changed
 docker compose -f docker-compose.prod.yml run --rm app python -m scripts.init_db  # picks up new tables/columns/partitions
+# one-off after the ADR 0040 deploy: backfill content_tsv for old messages
+docker compose -f docker-compose.prod.yml run --rm app python -m scripts.backfill_search_tsv
 docker compose -f docker-compose.prod.yml up -d
 ```
 

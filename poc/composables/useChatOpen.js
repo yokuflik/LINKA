@@ -433,12 +433,47 @@ function useChatOpen(ctx) {
     }
   }, { deep: true });
 
+  // Open a search result: switches to its chat, then (unless the message is
+  // already in the loaded page) fetches a context window around it via
+  // GET /messages/around/{id} and replaces the loaded page with that window.
+  // "Load older" from there re-arms normally (hasMoreMessages stays keyed off
+  // the fetched page size); scrolling to the very bottom of a jumped-to window
+  // won't auto-load newer messages - reopening the chat from the sidebar
+  // always still shows the true newest page.
+  async function jumpToMessage(chatId, messageId) {
+    if (ctx.activeChatId.value !== chatId) {
+      await selectChat(chatId);
+    }
+    if (ctx.activeChatId.value !== chatId) return; // chat switched again mid-await
+    const alreadyLoaded = ctx.messages.value.some((m) => m.id === messageId);
+    if (alreadyLoaded) {
+      await nextTick();
+      ctx.pendingHighlightId.value = messageId;
+      return;
+    }
+    try {
+      const window_ = await ctx.apiFetch(`/chats/${chatId}/messages/around/${messageId}`, {
+        retryCancelled: () => ctx.activeChatId.value !== chatId,
+      });
+      if (ctx.activeChatId.value !== chatId || !Array.isArray(window_)) return;
+      ctx.messages.value = window_.slice().reverse();
+      ctx.hasMoreMessages.value = true;
+      ctx.messagesLoading.value = false;
+      ctx.probeLoadedImageOrientations();
+      await nextTick();
+      ctx.pendingHighlightId.value = messageId;
+    } catch (err) {
+      ctx.logError('jump to message failed for', chatId, messageId, err.message);
+      ctx.showErrorToast(ctx.friendlyError(err, "Couldn't open that message."));
+    }
+  }
+
   return {
     messagesScrollEl, isPinnedToBottom, scrollMessagesToBottom,
     loadOlderMessages, onMessagesScroll,
     openDraftChat, discardDraftChat, closeActiveChat,
     selectChat, reloadActiveChatIfUnloaded, revalidateActiveChatOnReconnect,
-    refreshActiveChatUsers,
+    refreshActiveChatUsers, jumpToMessage,
     markActiveChatReadIfVisible, windowIsActive,
   };
 }

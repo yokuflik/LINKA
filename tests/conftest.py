@@ -96,6 +96,12 @@ async def session_factory():
             "PARTITION OF message_receipt_log DEFAULT"
         ))
 
+        # Message search (ADR 0040): content_tsv trigger + btree_gin index.
+        # create_all makes the column (it is on the Message model); this adds
+        # the trigger + index + extension the same way scripts/init_db.py does.
+        from modules.search.ddl import apply_search_ddl
+        await apply_search_ddl(conn)
+
     async_session = sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False
     )

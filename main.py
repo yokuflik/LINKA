@@ -15,6 +15,10 @@ from modules.messaging.router import router as messages_router
 from modules.messaging.router import scheduled_create_router
 from modules.messaging.router import scheduled_router
 from modules.users.router import router as users_router
+from modules.search.router import chat_search_router
+from modules.search.router import search_router as message_search_router
+from modules.search.errors import SearchQueryTooShortError
+from modules.search.errors import SearchStreamBusyError
 from realtime.internal_router import router as internal_router
 from config import settings
 from modules.auth import service as auth_service
@@ -138,7 +142,9 @@ app.add_middleware(
 @app.middleware("http")
 async def _per_ip_backstop(request: Request, call_next):
     path = request.url.path
-    if path != "/healthz" and not path.startswith("/ws"):
+    # /search/messages/stream is a long-lived SSE response - keep it out of the
+    # BaseHTTPMiddleware wrapper (it has its own per-user + per-IP limits).
+    if path != "/healthz" and not path.startswith("/ws") and not path.startswith("/search/messages/stream"):
         ip = rate_limit_service.client_ip(request)
         allowed = await rate_limit_service.check_and_increment(
             ip,
@@ -160,6 +166,9 @@ app.include_router(chats_router)
 app.include_router(messages_router)
 app.include_router(scheduled_create_router)
 app.include_router(scheduled_router)
+# Message search (ADR 0040): in-chat + around under /chats/*, global + SSE under /search/*.
+app.include_router(chat_search_router)
+app.include_router(message_search_router)
 # /ws is served by the standalone Rust ws_gateway (ADR 0033/0038). The Python
 # app only exposes the /internal/* helpers the gateway calls (ADR 0036).
 app.include_router(internal_router)
@@ -262,6 +271,16 @@ async def _handle_scheduled_not_found(request: Request, exc: Exception):
 @app.exception_handler(user_service.UsernameError)
 async def _username_error_handler(_, exc: user_service.UsernameError):
     return JSONResponse(status_code=exc.http_status, content={"detail": str(exc), "reason": exc.reason})
+
+
+@app.exception_handler(SearchQueryTooShortError)
+async def _handle_search_query_too_short(request: Request, exc: Exception):
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.exception_handler(SearchStreamBusyError)
+async def _handle_search_stream_busy(request: Request, exc: Exception):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 @app.exception_handler(SettingsValidationError)

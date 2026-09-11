@@ -47,6 +47,10 @@ const LinkaChatStore = (function buildChatStore() {
   // keeps the top spinner up and tells the user we're actively retrying.
   const olderMessagesRetrying = ref(false);
   const MESSAGE_PAGE_SIZE = 50;
+  // Set by useChatOpen.jumpToMessage (search "jump to result") right after the
+  // target message's context window has been rendered; MessageList watches
+  // this to scroll to + briefly highlight the row, then clears it.
+  const pendingHighlightId = ref(null);
   // How close to the top (in messages still above the viewport) we get before
   // pulling the next older page.
   const LOAD_OLDER_THRESHOLD = 20;
@@ -188,7 +192,7 @@ const LinkaChatStore = (function buildChatStore() {
   return {
     chats, activeChatId, draftChat, messages, messageInput,
     chatsError, messagesError, messagesConnectionError, messagesLoading, messagesEl,
-    hasMoreMessages, loadingOlderMessages, olderMessagesRetrying,
+    hasMoreMessages, loadingOlderMessages, olderMessagesRetrying, pendingHighlightId,
     MESSAGE_PAGE_SIZE, LOAD_OLDER_THRESHOLD, MAX_VISIBLE_MEMBERS,
     privateChatTitles, privateChatOtherUserId, userById, groupChatMembers,
     ROLE_LABELS, roleLabel, statusTickSymbol, statusTickClass,

@@ -23,6 +23,8 @@ from infra.db.connection import DATABASE_URL
 # Time-partition manager (ADR 0005). The DEFAULT partitions below stay as a
 # safety net; this additionally pre-creates the real dated partitions.
 from scripts.manage_partitions import ensure_partitions
+# Message search schema: content_tsv column + trigger + btree_gin index (ADR 0040).
+from modules.search.ddl import apply_search_ddl
 # Registers every model on Base.metadata - importing database.connection alone
 # doesn't import the model modules themselves.
 from modules.chats.models import chat
@@ -176,6 +178,13 @@ async def main(drop: bool) -> None:
                 ")",
             ):
                 await conn.execute(text(ddl))
+            # Message search (ADR 0040): content_tsv column + the trigger that
+            # maintains it + the composite btree_gin index. Runs after the
+            # column DDL above and before ensure_partitions() so the trigger /
+            # index are on the parent when new partitions inherit them. A
+            # deployed DB also needs `scripts/backfill_search_tsv.py` for
+            # pre-existing rows.
+            await apply_search_ddl(conn)
             # Real dated partitions on top of the DEFAULT safety net (ADR 0005).
             await ensure_partitions(conn)
             print(

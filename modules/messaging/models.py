@@ -1,6 +1,7 @@
 import enum
 
 from sqlalchemy import Column, BigInteger, SMALLINT, Text, Boolean, DateTime, ForeignKey, Index, PrimaryKeyConstraint
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
@@ -92,6 +93,14 @@ class Message(Base):
     # the partition key (created_at) of the replied-to row, which is awkward
     # across partitions at this scale. Validated at the application layer instead.
     reply_to_message_id = Column(BigInteger, nullable=True)
+
+    # Full-text search vector (ADR 0040). Kept in lockstep with `content` +
+    # `media_name` by the `trg_messages_content_tsv` BEFORE INSERT/UPDATE
+    # trigger (see modules/search/ddl.py) - never written by the ORM. The
+    # composite partial `gin (chat_id, content_tsv)` index (btree_gin) serves
+    # both in-chat and global keyword search. NULL only until the trigger /
+    # backfill runs on a pre-feature row.
+    content_tsv = Column(TSVECTOR, nullable=True)
 
     is_edited = Column(Boolean, nullable=False, default=False)
     edited_at = Column(DateTime(timezone=True), nullable=True)

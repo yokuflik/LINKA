@@ -59,8 +59,18 @@
 		reverse_proxy ws_gateway:8081
 	}
 
+	# Message search SSE stream (ADR 0040): a long-lived text/event-stream
+	# response - disable proxy response buffering so `event:` frames reach the
+	# browser as they are produced. Must come before @api (which would also
+	# match /search*).
+	handle /search/messages/stream {
+		reverse_proxy app:8000 {
+			flush_interval -1
+		}
+	}
+
 	# Backend API. Everything else is the static PoC.
-	@api path /auth* /users* /chats* /scheduled-messages* /healthz /docs* /redoc* /openapi.json
+	@api path /auth* /users* /chats* /scheduled-messages* /search* /healthz /docs* /redoc* /openapi.json
 	handle @api {
 		# Uploads go straight to S3 via a presigned PUT, so the API itself
 		# never legitimately receives a large body.

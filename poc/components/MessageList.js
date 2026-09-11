@@ -219,17 +219,31 @@ const MessageList = {
     // in the loaded list) and briefly highlights it.
     const highlightedId = Vue.ref(null);
     let highlightTimer = null;
-    function jumpToQuoted(m) {
-      if (m.reply_to_message_id == null) return;
-      const targetId = m.reply_to_message_id;
+    function scrollToAndHighlight(targetId) {
       const root = messagesEl.value;
       if (!root) return;
       const el = root.querySelector('[data-mid="' + targetId + '"]');
-      if (!el) return; // scrolled out of the loaded page - nothing to jump to
+      if (!el) return; // not in the loaded page - nothing to jump to
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       highlightedId.value = targetId;
       if (highlightTimer) clearTimeout(highlightTimer);
       highlightTimer = setTimeout(() => { highlightedId.value = null; }, 1600);
+    }
+    function jumpToQuoted(m) {
+      if (m.reply_to_message_id == null) return;
+      scrollToAndHighlight(m.reply_to_message_id);
+    }
+    // Search "jump to result" (useChatOpen.jumpToMessage): once the target
+    // message's context window has rendered, it stamps this on the shared
+    // store; scroll + highlight it, then clear so a later re-render doesn't
+    // re-trigger.
+    if (store) {
+      Vue.watch(() => store.pendingHighlightId.value, async (id) => {
+        if (id == null) return;
+        await Vue.nextTick();
+        scrollToAndHighlight(id);
+        store.pendingHighlightId.value = null;
+      });
     }
 
     function quotedReplyThumb(m) {

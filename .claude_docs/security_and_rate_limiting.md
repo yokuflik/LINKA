@@ -70,7 +70,11 @@ App container **locked to 1 CPU** (`cpus: 1.0`) — multi-worker-safe, bump late
 | Media upload ticket | `rlsw:upload_ticket:{user_id}` + `ratelimit:upload_ticket_ip:{ip}` | 5 / 60 s user (sliding), 20 / 60 s IP (fixed) | `modules/messaging/router.py` `create_media_upload_ticket`, before the participant check | **DONE (step 7)** |
 | `GET .../{message_id}/receipts` (detail reads) | `rlsw:detail_read:{user_id}` | 60 / 60 s | `modules/messaging/router.py` | **DONE (step 7)** |
 | `GET /chats`, `GET /users/me`, `GET /users/by-phone` | `rlsw:list_read:{user_id}` (shared bucket) | 120 / 60 s | `modules/chats/router.py` + `modules/users/router.py` | **DONE (step 7)** |
-| Global REST backstop | `ratelimit:api_ip_backstop:{ip}` | 1000 / 180 s | `main.py` `_per_ip_backstop` HTTP middleware (skips `/healthz`, `/ws*`); stock Caddy has no `rate_limit` plugin | **DONE (step 3)** |
+| Global REST backstop | `ratelimit:api_ip_backstop:{ip}` | 1000 / 180 s | `main.py` `_per_ip_backstop` HTTP middleware (skips `/healthz`, `/ws*`, `/search/messages/stream`); stock Caddy has no `rate_limit` plugin | **DONE (step 3)** |
+| Message search — cursor routes (two-tier) | `rlsw:search_query:{uid}` + `rlsw:search_query_burst:{uid}` | 10 / 10 s **and** 30 / 60 s | `modules/search/router.py::_enforce_query_limits` (in-chat + global + around) | **DONE (ADR 0040)** |
+| Message search — SSE stream | `rlsw:search_stream:{uid}` | 3 / 60 s | `modules/search/router.py` stream route, before the lock | **DONE (ADR 0040)** |
+| Message search — stream concurrency | `search:stream:active:{uid}` (SET NX EX 30) | 1 in-flight / user → HTTP 409 | stream route; released in the generator `finally` | **DONE (ADR 0040)** |
+| Message search — per-IP ceiling | `ratelimit:search_ip:{ip}` (fixed) | 60 / 60 s | every search route | **DONE (ADR 0040)** |
 
 Legacy: `SEND_MESSAGE_RATE_LIMIT_MAX` / `_WINDOW_SECONDS` — the old 20/10 s
 fixed-window send limit, **no longer read by any code** after step 6 (kept in
@@ -229,6 +233,17 @@ defaults are generous, retune-knob table + WS close codes in `deploy/README.md`.
 - `scheduled_write` sliding bucket — `SCHEDULED_WRITE_RATE_MAX` (20) / `SCHEDULED_WRITE_RATE_WINDOW_SECONDS` (60), per user, enforced in `modules/messaging/router.py` on `POST`/`PATCH`/`DELETE` of scheduled messages → HTTP 429 via the existing handler.
 - Non-rate abuse ceilings live in `scheduled_service`: `SCHEDULED_MAX_PENDING_PER_USER` (100 pending rows/user → `ScheduledLimitExceededError` 409), `SCHEDULED_MIN_LEAD_SECONDS` (10) / `SCHEDULED_MAX_LEAD_DAYS` (365) time bounds → `ScheduledTimeInvalidError` 400.
 - Scheduled sends bypass the WS per-user `send_message` limiter (server-originated at fire time) but still traverse the send stream + `send_message_burst` window downstream.
+
+## Message search (ADR 0040, `.claude_docs/search.md`)
+- Knobs in `config/search_settings.py`, all `SEARCH_*`, injected via
+  `modules/search/limits.py::SearchLimits` (ADR 0033). Buckets in the table above.
+- Cheapest-point guards before the buckets even matter: `SEARCH_MIN_QUERY_LEN`
+  (2) → HTTP 422 with **no DB hit**; a per-query `SET LOCAL statement_timeout =
+  SEARCH_STATEMENT_TIMEOUT_MS` (3000) so one scan can't peg the 1-CPU box; the
+  SSE stream is capped at `SEARCH_STREAM_MAX_RESULTS` (500) **and**
+  `SEARCH_STREAM_MAX_SECONDS` (20). Client debounces the box ≥ 400 ms.
+- The stream route is kept out of the `_per_ip_backstop` BaseHTTPMiddleware
+  (long-lived `text/event-stream`); it still has its own per-user + per-IP gates.
 
 ## Deferred (own ADRs, not Phase 1)
 

@@ -91,7 +91,7 @@
 <script src="components/ChatProfileModal.js?v=2026.09.11-2"></script>
 <script src="components/ProfileEditModal.js?v=2026.09.11-2"></script>
 <script src="components/SettingsModal.js?v=2026.09.11-2"></script>
-<script src="components/SearchModal.js?v=2026.09.11-2"></script>
+<script src="components/SearchModal.js?v=2026.09.13-1"></script>
 <script src="components/NewChatModal.js?v=2026.09.11-2"></script>
 <script src="components/NewGroupModal.js?v=2026.09.11-2"></script>
 <script src="components/ScheduleMessageModal.js?v=2026.09.11-2"></script>
@@ -130,9 +130,16 @@
 <script src="composables/useProfileEdit.js?v=2026.09.11-2"></script>
 <script src="composables/useAvatarCache.js?v=2026.09.11-2"></script>
 <script src="composables/useAvatarLightbox.js?v=2026.09.11-2"></script>
-<script src="composables/useSearch.js?v=2026.09.11-2"></script>
+<script src="composables/useSearch.js?v=2026.09.13-1"></script>
+<script src="composables/useDesktopNotifications.js?v=2026.09.13-1"></script>
 <script src="composables/useWsRouter.js?v=2026.09.11-2"></script>
 <style>
+  .chat-background {
+    background-image: url('assets/chat_background.png');
+    background-repeat: repeat;
+    background-position: top left;
+  }
+
   /* Chat-bubble speech tail - a smooth curved shape (WhatsApp/Telegram/
      iMessage-style), not a hard-cornered triangle. Drawn as a solid-color
      box clipped through an inline SVG mask instead of a CSS border-triangle
@@ -302,6 +309,7 @@ const app = createApp({
     Object.assign(ctx, useAvatarCache(ctx));
     Object.assign(ctx, useAvatarLightbox(ctx));
     Object.assign(ctx, useSearch(ctx));
+    Object.assign(ctx, useDesktopNotifications(ctx));
     Object.assign(ctx, useWsRouter(ctx));
 
     // Shared chat state singleton (ADR 0035) - <MessageList> injects it for `messages`.
@@ -338,6 +346,7 @@ const app = createApp({
           currentUser.value = await apiFetch('/users/me');
           log('resumed session as', currentUser.value);
           ctx.scheduleTokenRefresh();
+          ctx.requestNotificationPermission();
           connectWebSocket();
           await loadChats();
         } catch (err) {
@@ -561,14 +570,17 @@ const app = createApp({
 
     <SearchModal v-if="showSearchModal"
       v-model:query="searchQuery"
-      :busy="searchBusy" :moreBusy="searchMoreBusy" :error="searchError"
-      :results="searchResults" :hasMore="searchHasMore"
+      :tab="searchTab"
+      :busy="activeBusy" :moreBusy="searchMoreBusy" :error="activeError"
+      :results="activeResults" :hasMore="activeHasMore"
+      :showExpandButton="showSemanticExpandButton" :expandBusy="semanticMoreBusy"
       :scopedChatName="searchChatId ? activeChatLabel : ''"
       :chats="chats"
       :chatDisplayName="chatDisplayName" :chatAvatarUrl="chatAvatarUrl"
       :chatAvatarPreview="chatAvatarPreview" :chatAvatarColorKey="chatAvatarColorKey"
       :formatChatTime="formatChatTime"
-      @input-query="onSearchInput" @search="runSearch" @load-more="loadMoreSearchResults"
+      @input-query="onSearchInput" @search="runActiveSearch" @switch-tab="switchSearchTab"
+      @load-more="loadMoreSearchResults" @expand-results="loadMoreSemanticResults"
       @pick="openSearchResult" @close="closeSearchModal" />
 
     <ScheduleMessageModal v-if="showScheduleModal"

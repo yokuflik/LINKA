@@ -80,6 +80,10 @@ async def session_factory():
 
     # Create all tables in the test PostgreSQL database
     async with engine.begin() as conn:
+        # Semantic vector search (ADR 0042): the `vector` extension must exist
+        # before create_all emits `embedding vector(768)` on messages.
+        from modules.vector_search.ddl import ensure_vector_extension
+        await ensure_vector_extension(conn)
         await conn.run_sync(Base.metadata.create_all)
 
         # "messages" is RANGE partitioned by created_at with no partitions

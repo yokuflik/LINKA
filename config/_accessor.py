@@ -20,6 +20,7 @@ from . import (
     messaging_settings,
     partition_settings,
     search_settings,
+    vector_settings,
 )
 
 _MODULES = (
@@ -32,6 +33,7 @@ _MODULES = (
     messaging_settings,
     partition_settings,
     search_settings,
+    vector_settings,
 )
 
 # name -> owning sub-module, built once from each sub-module's explicit __all__.

@@ -125,7 +125,11 @@ services:
       retries: 3
 
   db:
-    image: postgres:15-alpine
+    # pgvector/pgvector:pg15 (not plain postgres:15-alpine): same Postgres 15
+    # data format, plus the `vector` extension binary (ADR 0042, semantic
+    # search). Same major version -> the existing pgdata volume is compatible,
+    # no dump/restore needed on switchover.
+    image: pgvector/pgvector:pg15
     <<: *restart
     environment:
       POSTGRES_USER: ${POSTGRES_USER}

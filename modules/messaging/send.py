@@ -21,6 +21,7 @@ from modules.messaging.errors import MessageAlreadySentError
 from modules.messaging.errors import NotAParticipantError
 from modules.messaging.media_validation import _validate_media
 from modules.media import media_service
+from modules.vector_search.service import enqueue_message_for_embedding
 from infra.redis.client import redis_client
 from infra.ids.client import next_id
 
@@ -103,6 +104,11 @@ async def process_outgoing(
     )
 
     await redis_client.set(idem_key, str(message.id), ex=_IDEMPOTENCY_TTL_SECONDS)
+
+    # Semantic search (ADR 0042): queue-only, never a Gemini call on this path.
+    # process_outgoing already runs off the async send worker (not the WS
+    # request itself), so this only adds one Redis RPUSH here.
+    await enqueue_message_for_embedding(message.id, message.content, message.type)
 
     # Fan-out is a second hop off its own stream (services/fanout/fanout_worker):
     # the message row is already committed by create_message, so the worker can

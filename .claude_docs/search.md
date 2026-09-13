@@ -103,11 +103,76 @@ the box (≥ 400 ms). The global `_per_ip_backstop` (1000/180 s) is above all of
 
 ## Not done / deferred (in the ADR)
 
-`pg_trgm` infix-substring / fuzzy · `ts_rank` sort · pgvector semantic search ·
-SSE stream UI. A **detached** cold partition
-(`manage_partitions.py --cold`) leaves search while detached.
+`pg_trgm` infix-substring / fuzzy · `ts_rank` sort · SSE stream UI. A
+**detached** cold partition (`manage_partitions.py --cold`) leaves search
+while detached.
 
 PoC search UI (magnifying glass → centered modal, cursor-paginated,
 jump-to-result) is built for **both** global (`AppHeader`) and in-chat
 (`ChatHeader`, scoped to the open chat) entry points — see
 `.claude_docs/frontend.md` "Message search UI".
+
+## Semantic (vector) search — ADR 0042
+
+Separate from FTS above: `modules/vector_search/` — `messages.embedding
+vector(768)` (pgvector), Gemini `gemini-embedding-001` via raw `httpx`
+(`gemini_client.py`, no SDK), IVFFlat cosine index built by
+`scripts/seed_vector_data.py` **after** seed data exists (never in
+`init_db.py` — needs representative rows for useful centroids). Embedding is
+off the send hot path: `service.enqueue_message_for_embedding` RPUSHes to a
+Redis list (`vector_embed_queue`), flushed either at `VECTOR_QUEUE_FLUSH_SIZE`
+(50, background task) or synchronously on-demand before a semantic search
+request (`flush_queue_if_pending`). Query membership enforced the same
+`participants` JOIN pattern as FTS above. Known gaps: no retry on a failed
+flush batch (that batch is dropped), no re-embed on message edit.
+
+**Relevance floor**: `crud.semantic_search_messages` filters `embedding <=>
+query < max_distance` in addition to `ORDER BY ... LIMIT` — otherwise LIMIT
+always pads the page with the least-bad matches even when nothing is
+actually related. `VectorSearchLimits.max_distance` ← `VECTOR_SEARCH_MAX_DISTANCE`
+(default `0.35`) in `config/vector_settings.py`. Empirically validated against
+the seeded mock corpus (`gemini-embedding-001`): genuinely relevant queries
+landed at 0.237–0.322 distance, unrelated ones at 0.436–0.488 — a clean,
+non-overlapping gap; 0.35 sits in the middle with margin both ways. Re-check
+this if the embedding model or corpus content changes materially.
+
+**"Show more results" (expanded search)**: `GET /search/semantic` takes an
+`expanded=true` query param → `service.semantic_search(expanded=True)` swaps
+in `VectorSearchLimits.max_distance_expanded` ← `VECTOR_SEARCH_MAX_DISTANCE_EXPANDED`
+(default `0.42`) instead of the default ceiling — same query shape, just a
+looser bound. Exists because the default 0.35 floor, while correct for
+same-language paraphrases, silently drops some legitimate cross-lingual
+matches (a Hebrew query against this English corpus can land as high as
+~0.44 for a loose paraphrase). Validated with 10 Hebrew-query/English-target
+pairs (batched into one Gemini call): landed at 0.167–0.378, still below the
+unrelated-query floor (0.436 English / ~0.49 Hebrew control queries) — 0.42
+sits just under that floor. PoC: `useSearch.js`'s `loadMoreSemanticResults`
+re-fetches with `expanded=true` and replaces the list (a superset, not an
+append); `SearchModal.js` renders the "Show more results" button
+(`showExpandButton`/`expand-results`) under the semantic tab's results once
+the default page has loaded and hasn't already been expanded for this query.
+
+**Dev-only embedding cache (ADR 0043)**: `modules/vector_search/dev_cache.py`,
+active only when `VECTOR_EMBED_CACHE=1` is exported — never set in any
+prod/deploy config, so production always calls `gemini_client` directly.
+Caches `sha256(model:dim:text) → vector` in a local SQLite file
+(`.dev_cache/gemini_embeddings.sqlite`, git-ignored, no TTL — a hit is valid
+forever for a fixed model+dim). Wired into both
+`scripts/seed_vector_data.py` (saves quota across repeated reseeds of the
+mock-data phrase pool — CLAUDE.md Rule 11 regenerates mock data from scratch
+every run) and `service.semantic_search`'s query embedding (saves quota when
+manually re-testing the same/similar search strings). `--clear-cache` flag on
+the seed script wipes it.
+
+**Live query-embedding LRU cache (ADR 0044)**:
+`modules/vector_search/query_cache.py`, always active (prod **and** dev,
+no flag) — independent of ADR 0043's dev cache (different storage, different
+scope, see the ADR's comparison table). Wraps only
+`gemini_client.embed_query` (the single-query live search path, not
+`embed_batch`/seeding). `cachetools.TTLCache(maxsize=20_000, ttl=6h)` guarded
+by an `asyncio.Lock` (held only around dict ops, never across the Gemini HTTP
+call). Key is the same `sha256(model:dim:text)` scheme as the dev cache.
+`service.semantic_search` picks exactly one of the two wrappers around
+`embed_query` — `dev_cache.embed_query_cached` when `VECTOR_EMBED_CACHE=1`,
+else `query_cache.embed_query_cached` — never both stacked. `hits`/`misses`
+module-level counters, no admin endpoint yet.

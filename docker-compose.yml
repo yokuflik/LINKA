@@ -2,8 +2,9 @@ version: '3.8'
 
 services:
   test_db:
-    # We use the Alpine version because it is extremely lightweight and fast to pull
-    image: postgres:15-alpine
+    # pgvector/pgvector:pg15 (not plain postgres:15-alpine): same Postgres 15,
+    # plus the `vector` extension binary needed for semantic search (ADR 0042).
+    image: pgvector/pgvector:pg15
     environment:
       POSTGRES_USER: test_user
       POSTGRES_PASSWORD: test_password

@@ -4,8 +4,10 @@ from sqlalchemy import Column, BigInteger, SMALLINT, Text, Boolean, DateTime, Fo
 from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
+from pgvector.sqlalchemy import Vector
 
 from infra.db.base import Base
+from config import settings
 
 
 # type == 4. Voice recordings are the only message kind that can additionally
@@ -101,6 +103,14 @@ class Message(Base):
     # both in-chat and global keyword search. NULL only until the trigger /
     # backfill runs on a pre-feature row.
     content_tsv = Column(TSVECTOR, nullable=True)
+
+    # Semantic search embedding (ADR 0042): Gemini text-embedding-004, 768-dim.
+    # NULL until the flush-on-demand queue (modules/vector_search/) processes
+    # this row - never written on the send hot path. Matched via cosine
+    # distance (`<=>`) against an IVFFlat index (modules/vector_search/ddl.py);
+    # the index itself is built later, once real data exists (IVFFlat needs
+    # representative rows to compute its cluster centroids).
+    embedding = Column(Vector(settings.VECTOR_EMBEDDING_DIM), nullable=True)
 
     is_edited = Column(Boolean, nullable=False, default=False)
     edited_at = Column(DateTime(timezone=True), nullable=True)

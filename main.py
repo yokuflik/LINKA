@@ -2,6 +2,16 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
+
+# Every scripts/*.py already does this before importing config-dependent
+# modules; main.py didn't, so `uvicorn main:app` silently missed .env unless
+# the shell that launched it had already sourced it (e.g. GEMINI_API_KEY,
+# ADR 0042, reaching the app only by accident). Prod is unaffected - real
+# deploys inject env vars via docker-compose/.env directly, and load_dotenv()
+# is a no-op when no .env file is present.
+load_dotenv()
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -19,6 +29,13 @@ from modules.search.router import chat_search_router
 from modules.search.router import search_router as message_search_router
 from modules.search.errors import SearchQueryTooShortError
 from modules.search.errors import SearchStreamBusyError
+from modules.vector_search.router import vector_search_router
+from modules.vector_search.errors import (
+    EmbeddingProviderError,
+    EmbeddingProviderQuotaExceededError,
+    EmbeddingProviderUnavailableError,
+    VectorSearchQueryTooShortError,
+)
 from realtime.internal_router import router as internal_router
 from config import settings
 from modules.auth import service as auth_service
@@ -169,6 +186,8 @@ app.include_router(scheduled_router)
 # Message search (ADR 0040): in-chat + around under /chats/*, global + SSE under /search/*.
 app.include_router(chat_search_router)
 app.include_router(message_search_router)
+# Semantic vector search (ADR 0042): GET /search/semantic.
+app.include_router(vector_search_router)
 # /ws is served by the standalone Rust ws_gateway (ADR 0033/0038). The Python
 # app only exposes the /internal/* helpers the gateway calls (ADR 0036).
 app.include_router(internal_router)
@@ -281,6 +300,32 @@ async def _handle_search_query_too_short(request: Request, exc: Exception):
 @app.exception_handler(SearchStreamBusyError)
 async def _handle_search_stream_busy(request: Request, exc: Exception):
     return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(VectorSearchQueryTooShortError)
+async def _handle_vector_search_query_too_short(request: Request, exc: Exception):
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
+@app.exception_handler(EmbeddingProviderUnavailableError)
+async def _handle_embedding_provider_unavailable(request: Request, exc: Exception):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@app.exception_handler(EmbeddingProviderError)
+async def _handle_embedding_provider_error(request: Request, exc: Exception):
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
+@app.exception_handler(EmbeddingProviderQuotaExceededError)
+async def _handle_embedding_provider_quota_exceeded(request: Request, exc: Exception):
+    # Free-tier Gemini quota (ADR 0042/0043) - a dev-environment limitation,
+    # not a real outage, so the frontend shows a specific "try again
+    # tomorrow" notice instead of the generic 5xx message.
+    return JSONResponse(
+        status_code=503,
+        content={"detail": str(exc), "reason": "embedding_quota_exceeded"},
+    )
 
 
 @app.exception_handler(SettingsValidationError)

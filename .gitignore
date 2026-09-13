@@ -46,6 +46,9 @@ env/
 /scratch/
 *.local.md
 
+# Local dev-only Gemini embedding cache (ADR 0043) - never shared/committed
+/.dev_cache/
+
 # Rust: single shared workspace target/ (ADR 0033)
 /target/
 id_service/target/

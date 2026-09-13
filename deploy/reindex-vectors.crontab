@@ -1,0 +1,15 @@
+# Linka nightly IVFFlat reindex (ADR 0042) - single-host compose deployment
+# (ADR 0007). Install on the ONE host running the stack:
+#
+#   crontab deploy/reindex-vectors.crontab
+#
+# Or merge this line into the existing partition-maintenance crontab -
+# CRON_TZ/LINKA_APP_DIR only need declaring once. Assumes the repo is at
+# /opt/linka (override with LINKA_APP_DIR). All times UTC.
+
+CRON_TZ=UTC
+LINKA_APP_DIR=/opt/linka
+
+# Rebuild ix_messages_embedding_ivfflat's cluster centroids from current data.
+# CONCURRENTLY: no lock on messages, safe to run while the app is live.
+0 3 * * *   /opt/linka/scripts/reindex_vectors.sh >> /var/log/linka-reindex-vectors.log 2>&1

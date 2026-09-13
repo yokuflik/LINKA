@@ -142,6 +142,10 @@ function useWsRouter(ctx) {
         };
         store.bufferMessage(msg.chat_id, bufRow);
       }
+      // Desktop notification for a peer's message while the tab is
+      // backgrounded/unfocused - covers both the active-chat-but-hidden case
+      // and the not-open-chat case (notifyIncomingMessage gates on windowIsActive).
+      if (!optimistic && ctx.notifyIncomingMessage) ctx.notifyIncomingMessage(msg);
       // System messages ("X joined the group", or a private "role_changed"
       // notice - see shouldShowSystemMessage) must never become the sidebar
       // preview: unlike the message stream, the chat list has no per-viewer

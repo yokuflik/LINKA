@@ -194,6 +194,11 @@ function useCore(ctx) {
     if (status === 413 || (err.body && err.body.reason === 'storage_quota_exceeded')) {
       return 'Storage full — delete some files to upload more.';
     }
+    // Gemini free-tier embedding quota (ADR 0042/0043) - dev-only limitation,
+    // not a real outage: resets on Google's clock, so "try again tomorrow".
+    if (err.body && err.body.reason === 'embedding_quota_exceeded') {
+      return "This is a dev build with no paid Google API credits yet, so semantic search has hit today's free quota — no results right now, try again tomorrow.";
+    }
     if (typeof status === 'number' && status >= 500) {
       return 'The server ran into a problem. Please try again in a little while.';
     }

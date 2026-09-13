@@ -1,15 +1,22 @@
-// Global message search (ADR 0040), opened via the magnifying-glass button in
-// AppHeader. Centered overlay over the chat list, same modal chrome as the
-// other modals but taller (results list). All state/fetching lives in
-// useSearch on the root; this only owns the markup.
+// Message search (ADR 0040 keyword + ADR 0042 semantic), opened via the
+// magnifying-glass button in AppHeader (global) or ChatHeader (scoped).
+// Centered overlay over the chat list, same modal chrome as the other modals
+// but taller (results list) plus a two-tab switcher: "Exact" (keyword FTS,
+// cursor-paginated) and "Related" (vector similarity, flat top-K list, no
+// pagination). All state/fetching lives in useSearch on the root - this only
+// owns the markup, rendering whichever tab's results useSearch hands it via
+// the `results`/`busy`/`error`/`hasMore` props (already the active tab's view).
 const SearchModal = {
   props: {
     query: { type: String, required: true },         // v-model:query
-    busy: { type: Boolean, default: false },          // first page in flight
-    moreBusy: { type: Boolean, default: false },      // next page in flight
+    tab: { type: String, default: 'exact' },          // 'exact' | 'semantic'
+    busy: { type: Boolean, default: false },          // active tab's first-page fetch in flight
+    moreBusy: { type: Boolean, default: false },      // next page in flight (exact tab only)
     error: { type: String, default: '' },
-    results: { type: Array, default: () => [] },      // SearchResultOut[]
-    hasMore: { type: Boolean, default: false },
+    results: { type: Array, default: () => [] },      // active tab's results
+    hasMore: { type: Boolean, default: false },        // exact tab only - semantic has no pagination
+    showExpandButton: { type: Boolean, default: false }, // semantic tab only - "show more results" offered
+    expandBusy: { type: Boolean, default: false },       // "show more results" fetch in flight
     scopedChatName: { type: String, default: '' },    // set -> in-chat search, empty -> global
     chats: { type: Array, required: true },           // ctx.chats - to resolve a hit's chat_id
     chatDisplayName: { type: Function, required: true },
@@ -18,7 +25,7 @@ const SearchModal = {
     chatAvatarColorKey: { type: Function, required: true },
     formatChatTime: { type: Function, required: true },
   },
-  emits: ['update:query', 'input-query', 'search', 'load-more', 'pick', 'close'],
+  emits: ['update:query', 'input-query', 'search', 'switch-tab', 'load-more', 'expand-results', 'pick', 'close'],
   data() {
     return {
       MEDIA_LABELS: { 2: 'Photo', 3: 'Video', 4: 'Voice message', 5: 'File' },
@@ -96,7 +103,24 @@ const SearchModal = {
           </button>
         </div>
 
+        <div class="flex gap-1 mb-2 bg-slate-100 rounded-lg p-0.5">
+          <button @click="$emit('switch-tab', 'exact')"
+                  class="flex-1 text-xs font-medium py-1.5 rounded-md transition-colors"
+                  :class="tab === 'exact' ? 'bg-white text-teal-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'">
+            Exact
+          </button>
+          <button @click="$emit('switch-tab', 'semantic')"
+                  class="flex-1 text-xs font-medium py-1.5 rounded-md transition-colors"
+                  :class="tab === 'semantic' ? 'bg-white text-teal-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'">
+            Related
+          </button>
+        </div>
+
         <InlineAlert :message="error" class="mb-2" />
+
+        <p v-if="tab === 'semantic' && query.trim().length >= 2" class="text-xs text-slate-400 mb-2 px-0.5">
+          Results based on meaning, not exact words.
+        </p>
 
         <p v-if="!busy && query.trim().length >= 2" class="text-xs text-slate-400 mb-1 px-0.5">
           {{ results.length }} result{{ results.length === 1 ? '' : 's' }}
@@ -126,11 +150,14 @@ const SearchModal = {
                   <span v-else-if="isMediaOnly(r)" class="text-sm font-medium text-slate-700 truncate">{{ mediaLabel(r) }}</span>
                   <span class="text-[11px] text-slate-400 shrink-0" :class="{ 'ml-auto': scopedChatName && !isMediaOnly(r) }">{{ formatChatTime(r.created_at) }}</span>
                 </div>
-                <div v-if="!isMediaOnly(r)" class="text-xs text-slate-500 leading-snug line-clamp-2 mt-0.5">
+                <div v-if="!isMediaOnly(r) && tab === 'exact'" class="text-xs text-slate-500 leading-snug line-clamp-2 mt-0.5">
                   <template v-for="(part, i) in snippetParts(r)" :key="i">
                     <mark v-if="part.match" class="bg-teal-100 text-teal-800 rounded-sm px-0.5 font-medium">{{ part.text }}</mark>
                     <template v-else>{{ part.text }}</template>
                   </template>
+                </div>
+                <div v-else-if="!isMediaOnly(r)" class="text-xs text-slate-500 leading-snug line-clamp-2 mt-0.5">
+                  {{ r.snippet || r.content }}
                 </div>
                 <div v-else-if="r.media_name" class="text-xs text-slate-400 truncate mt-0.5">{{ r.media_name }}</div>
               </div>
@@ -143,6 +170,11 @@ const SearchModal = {
             <p v-if="!results.length && query.trim().length >= 2" class="text-center text-sm text-slate-400 py-8">
               No messages found.
             </p>
+
+            <button v-if="showExpandButton" @click="$emit('expand-results')" :disabled="expandBusy"
+                    class="w-full text-center text-xs font-medium text-teal-700 hover:text-teal-800 py-2.5 disabled:opacity-50">
+              {{ expandBusy ? 'Loading…' : 'Show more results' }}
+            </button>
             <p v-if="!query.trim()" class="text-center text-sm text-slate-400 py-8">
               Type at least 2 characters to search.
             </p>

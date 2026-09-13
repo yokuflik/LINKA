@@ -25,6 +25,8 @@ from infra.db.connection import DATABASE_URL
 from scripts.manage_partitions import ensure_partitions
 # Message search schema: content_tsv column + trigger + btree_gin index (ADR 0040).
 from modules.search.ddl import apply_search_ddl
+# Semantic vector search (ADR 0042): pgvector extension + embedding column.
+from modules.vector_search.ddl import apply_vector_ddl, ensure_vector_extension
 # Registers every model on Base.metadata - importing database.connection alone
 # doesn't import the model modules themselves.
 from modules.chats.models import chat
@@ -46,6 +48,9 @@ async def main(drop: bool) -> None:
             await conn.run_sync(Base.metadata.drop_all)
             print("Dropped all tables.")
         else:
+            # Must run before create_all: Message.embedding is `vector(768)`,
+            # a type the `vector` extension provides (ADR 0042).
+            await ensure_vector_extension(conn)
             await conn.run_sync(Base.metadata.create_all)
             await conn.execute(text(
                 "CREATE TABLE IF NOT EXISTS messages_default PARTITION OF messages DEFAULT"
@@ -178,6 +183,11 @@ async def main(drop: bool) -> None:
                 ")",
             ):
                 await conn.execute(text(ddl))
+            # Semantic vector search (ADR 0042): embedding column safety net
+            # for an already-initialised dev DB (extension already ensured
+            # above, before create_all). The IVFFlat index is deliberately
+            # NOT created here - see scripts/seed_vector_data.py.
+            await apply_vector_ddl(conn)
             # Message search (ADR 0040): content_tsv column + the trigger that
             # maintains it + the composite btree_gin index. Runs after the
             # column DDL above and before ensure_partitions() so the trigger /

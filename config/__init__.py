@@ -28,6 +28,7 @@ from . import (  # noqa: F401
     messaging_settings,
     partition_settings,
     search_settings,
+    vector_settings,
 )
 
 # ADR 0029: single flat accessor over every setting - the preferred surface.

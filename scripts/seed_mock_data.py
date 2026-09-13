@@ -1,7 +1,8 @@
 """
-Fills the database with a dataset big enough to actually navigate: ten users,
-private chats between some of them, group chats containing some of them, and a
-backdated message history in every one of those chats.
+Fills the database with a dataset big enough to actually navigate: three
+users, private chats between all of them plus one group chat, and a backdated
+message history in every one of those chats (default: 1,000 messages total -
+4 chats * 250 messages-per-chat, sized for scripts/seed_vector_data.py, ADR 0042).
 
 Safe to re-run - users, private chats and groups are looked up before they're
 created, and a second run just appends more history to the chats that exist.
@@ -75,32 +76,19 @@ USERS = [
     ("1", "lior_azoulay", "ליאור"),
     ("2", "hila_moreno", "Hila ✨"),
     ("3", "yossi_peretz", None),
-    ("4", "gili_avrahami", "גילי אברהמי"),
-    ("5", "amit_shani", None),
-    ("6", "dana_khoury", "دانا"),
-    ("7", "kenji_ito", "ケンジ"),
-    ("8", "michal_sror", None),
-    ("9", "boaz_gutman", "Boaz G."),
-    ("10", "netta_lavi", None),
 ]
 
-# Indices into USERS. Deliberately not every possible pair - a dataset where
-# everyone has a chat with everyone hides bugs in the "no chat with this
-# person yet" path. Users 4 and 6 are left with no private chats at all so
-# the "search for someone you've never messaged" path has real subjects.
+# Indices into USERS. 3 users -> every pair, so there's still private-chat
+# coverage even with the smaller cast.
 PRIVATE_PAIRS = [
-    (0, 1), (0, 2), (0, 7), (0, 9), (1, 2),
-    (1, 3), (1, 8), (2, 5), (2, 9), (3, 8),
-    (5, 8), (5, 9), (7, 9), (8, 9),
+    (0, 1), (0, 2), (1, 2),
 ]
 
 # (title, owner index, other member indices, group photo file in mock_photos/)
+# One small group so `messages_per_chat` (default 250) * 4 chats = 1000
+# messages total (ADR 0042 seed size).
 GROUP_CHATS = [
-    ("Product Standup", 0, [1, 2, 5, 8], "g1.jpg"),
-    ("Eilat Trip 🌊", 9, [0, 3, 7], "g2.jpg"),
-    ("Lavi Family", 9, [1, 3, 8], "g3.jpg"),
-    ("Sunday Football", 5, [0, 2, 7, 8], "g4.jpg"),
-    ("Building Committee", 3, [4, 6, 8], "g5.jpg"),
+    ("Product Standup", 0, [1, 2], "g1.jpg"),
 ]
 
 # Nothing here matters beyond being varied in length - a few are long enough

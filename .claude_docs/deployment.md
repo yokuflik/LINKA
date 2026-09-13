@@ -63,6 +63,8 @@ Must-set for prod (no safe default in `config.py`):
 `SNOWFLAKE_MACHINE_ID`, `SERVER_ID`, `S3_*` (endpoint host == `S3_ADDRESS`).
 Demo sizing: `DB_POOL_SIZE=5`, `REDIS_MAX_CONNECTIONS=50`, stream `MAXLEN=20000`,
 `SEND_STREAM_SHARDS=1`, `FANOUT_STREAM_SHARDS=1`.
+`GEMINI_API_KEY` (ADR 0042, semantic search) — optional; empty disables the
+feature cleanly (`GET /search/semantic` → 503) rather than erroring.
 
 ## First boot / updates
 
@@ -70,6 +72,12 @@ Demo sizing: `DB_POOL_SIZE=5`, `REDIS_MAX_CONNECTIONS=50`, stream `MAXLEN=20000`
 DEFAULT partitions + `ensure_partitions` + media/receipt ALTERs — no Alembic)
 then `... init_storage` (buckets + public-read avatars). Re-run `init_db` after
 a `git pull` that adds tables/columns/partitions.
+**One-time, after the ADR 0042 `git pull`:** the `db` service image changed to
+`pgvector/pgvector:pg15` (plain `postgres:15-alpine` has no `vector`
+extension) — `docker compose pull db && docker compose up -d db` (same
+Postgres 15, same `pgdata` volume, no dump/restore) *before* running `init_db`,
+or `CREATE EXTENSION vector` fails the same way it does on an un-updated local
+dev container.
 
 ## Cron (one host only)
 
@@ -78,6 +86,16 @@ a `git pull` that adds tables/columns/partitions.
 which is `docker compose exec -T app python -m scripts.partition_maintenance …`.
 Same crontab also does a nightly `pg_dump` → `/opt/linka/backups` (7-day keep);
 the named volumes are otherwise the only copy of the data.
+
+**IVFFlat reindex (ADR 0042):** `crontab deploy/reindex-vectors.crontab` (or
+merge its one line into the crontab above) runs `scripts/reindex_vectors.sh`
+→ `python -m scripts.reindex_vectors` nightly at 03:00 UTC. Issues
+`REINDEX INDEX CONCURRENTLY ix_messages_embedding_ivfflat` on an
+`AUTOCOMMIT`-isolation connection (required — `CONCURRENTLY` is rejected
+inside a transaction block) so the rebuild never locks `messages`; recomputes
+centroids as the embedded corpus grows. Only meaningful once
+`ensure_ivfflat_index` has actually been run (see `modules/vector_search/ddl.py`
+— not created by `init_db.py` on an empty table).
 
 ## Caddy security block + transport hardening (ADR 0012 / step 3 — DONE)
 

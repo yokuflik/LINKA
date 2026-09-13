@@ -176,6 +176,11 @@ function useAuth(ctx) {
   }
 
   async function verifyOtp() {
+    // Must run synchronously off the click, before any `await` - a permission
+    // prompt requested after the call stack unwinds through network awaits is
+    // no longer considered "in response to a user gesture" and browsers
+    // silently ignore it (permission stays 'default' forever).
+    if (ctx.requestNotificationPermission) ctx.requestNotificationPermission();
     authError.value = '';
     authBusy.value = true;
     clearConnRetry();
@@ -255,6 +260,8 @@ function useAuth(ctx) {
   // Submit the welcome form: best-effort PATCH of the changed fields + avatar,
   // then start the app. A rejected username keeps the user on the form.
   async function submitWelcome() {
+    // Synchronous, off the click - see the comment in verifyOtp.
+    if (ctx.requestNotificationPermission) ctx.requestNotificationPermission();
     authError.value = '';
     authBusy.value = true;
     clearConnRetry();
@@ -295,6 +302,8 @@ function useAuth(ctx) {
 
   // Skip the welcome form - the random username and empty profile stand.
   async function skipWelcome() {
+    // Synchronous, off the click - see the comment in verifyOtp.
+    if (ctx.requestNotificationPermission) ctx.requestNotificationPermission();
     authBusy.value = true;
     try { await enterApp(); } finally { authBusy.value = false; }
   }

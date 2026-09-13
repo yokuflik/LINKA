@@ -113,5 +113,11 @@ Full plan: `RUST_WS_GATEWAY_PLAN.md`.
 - `edit_message`/`delete_message`/`restore_message`/`purge_message` were already correctly erroring (`internal_error`) in this scenario since ADR 0038 relays them synchronously to `/internal/message/*` — no change needed there. `typing`/`presence_active`/`subscribe_presence`/`ws-bootstrap` stay best-effort/self-healing by design (ADR 0036) — not gated.
 - **Frontend needed no changes**: `poc/composables/useOutbox.js` already treats `internal_error` as retryable (exponential backoff, bubble stays on 🕓), and its existing 90s `ACK_TIMEOUT_MS` safety net already flags the bubble ⚠️ ("not sent") if retries never resolve — this fix makes that existing indicator fire correctly instead of the bubble staying falsely "sent"/pending forever.
 
+## Semantic vector search — flush-on-demand queue (ADR 0042)
+- `modules/vector_search/queue.py` — a plain Redis **list** (`vector_embed_queue`, not a Stream — no consumer-group needed, a dropped batch on a Gemini failure is an accepted gap). `RPUSH` from `modules/messaging/send.py::process_outgoing` right after `create_message`, for text messages (`type==1`) with content only.
+- **Two flush triggers**, both in `modules/vector_search/service.py`: (1) auto — `enqueue_message_for_embedding` checks `LLEN` after every push and fires a background `asyncio.create_task(flush_queue())` once it reaches `VECTOR_QUEUE_FLUSH_SIZE` (50), never awaited inline on the sender's path; (2) on-demand — `GET /search/semantic` calls `flush_queue_if_pending` **synchronously** before the DB query, draining the whole queue so a just-sent message is guaranteed searchable even below the size threshold.
+- `flush_queue` pops up to 50 entries (`LPOP ... count`), calls Gemini `batchEmbedContents` once (chunked further at `VECTOR_GEMINI_BATCH_SIZE`=90 if ever larger — under the 100/minute free-tier quota, which counts each item inside a batch call individually), `UPDATE messages SET embedding = ...` per id. A Gemini failure drops that batch — logged, not retried/requeued.
+- No dedicated worker/poll loop (unlike `receipt_log`/`send_worker`/`fanout_worker`) — the two triggers above are the whole mechanism.
+
 ## Local dev note
 `uvicorn --reload` drops every WebSocket on each `.py` save; the PoC auto-reconnects (~3s). Not a bug.

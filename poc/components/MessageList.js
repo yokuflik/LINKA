@@ -331,7 +331,7 @@ const MessageList = {
   },
   expose: ['messagesEl'],
   template: `
-    <div ref="messagesEl" @scroll="onScroll" class="flex-1 overflow-y-auto p-4">
+    <div ref="messagesEl" @scroll="onScroll" class="flex-1 overflow-y-auto p-4 chat-background">
       <!-- "Load older" spinner, pinned at the top while a previous page is
            being fetched (or retried on a dead connection). -->
       <div v-if="messages.length && loadingOlder" class="flex flex-col items-center justify-center gap-1 py-3 text-xs text-slate-400">

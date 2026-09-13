@@ -142,9 +142,9 @@ function useWsRouter(ctx) {
         };
         store.bufferMessage(msg.chat_id, bufRow);
       }
-      // Desktop notification for a peer's message while the tab is
-      // backgrounded/unfocused - covers both the active-chat-but-hidden case
-      // and the not-open-chat case (notifyIncomingMessage gates on windowIsActive).
+      // Desktop notification for a peer's message the user isn't looking at -
+      // covers both the "chat not open" and "chat open but tab hidden" cases
+      // (notifyIncomingMessage does its own visibility/active-chat gating).
       if (!optimistic && ctx.notifyIncomingMessage) ctx.notifyIncomingMessage(msg);
       // System messages ("X joined the group", or a private "role_changed"
       // notice - see shouldShowSystemMessage) must never become the sidebar

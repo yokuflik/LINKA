@@ -1,8 +1,16 @@
-// Browser system notifications for incoming messages while the tab is
-// backgrounded/hidden. Frontend-only, no backend change - uses the standard
-// Notification API. Global `useDesktopNotifications(ctx)` factory.
+// Browser system notifications for incoming messages the user isn't actually
+// looking at. Frontend-only, no backend change - uses the standard Notification
+// API. Global `useDesktopNotifications(ctx)` factory.
 //
-// Needs from ctx (call-time): windowIsActive, chatDisplayName, chatAvatarUrl,
+// "Not looking at it" = the tab isn't visible (document.hidden - switched to
+// another tab, minimized, screen off), OR it's visible but the message is for
+// a chat other than the one currently open. Deliberately does NOT require
+// document.hasFocus() (unlike useChatOpen.windowIsActive, used for mark-read/
+// presence): a Chrome window can be fully visible side-by-side with another
+// app/window that holds OS focus, and the user is still plainly reading it -
+// requiring focus there caused notifications to needlessly fire in that case.
+//
+// Needs from ctx (call-time): activeChatId, chatDisplayName, chatAvatarUrl,
 // senderLabel, previewText, currentUser.
 function useDesktopNotifications(ctx) {
   const supported = typeof window !== 'undefined' && 'Notification' in window;
@@ -25,12 +33,16 @@ function useDesktopNotifications(ctx) {
 
   let lastNotification = null;
 
-  // Only for a message that isn't ours and while the tab is hidden/unfocused -
-  // a visible foreground chat already shows the message in the pane.
+  // Only for a message that isn't ours, and only when the user isn't already
+  // looking at it (see the file-header comment for what that means here).
   function notifyIncomingMessage(msg) {
-    if (!supported || Notification.permission !== 'granted') return;
-    if (msg.sender_id == null || msg.sender_id === ctx.currentUser.value.id) return;
-    if (ctx.windowIsActive()) return;
+    if (!supported) { ctx.log && ctx.log('[notify] skipped: Notification API unsupported'); return; }
+    if (Notification.permission !== 'granted') { ctx.log && ctx.log('[notify] skipped: permission is', Notification.permission); return; }
+    if (msg.sender_id == null || msg.sender_id === ctx.currentUser.value.id) { ctx.log && ctx.log('[notify] skipped: own message or system'); return; }
+    const tabVisible = document.visibilityState === 'visible';
+    const chatOpen = msg.chat_id === ctx.activeChatId.value;
+    if (tabVisible && chatOpen) { ctx.log && ctx.log('[notify] skipped: tab visible and this chat is open'); return; }
+    ctx.log && ctx.log('[notify] firing for chat', msg.chat_id, 'from', msg.sender_id);
 
     // chatDisplayName/chatAvatarUrl take the raw chat object, not the
     // ChatListItem wrapper ({chat, ...}) - unwrap it here.

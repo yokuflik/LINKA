@@ -57,7 +57,7 @@ AGENT_TURN_MAX_TOOL_ROUNDTRIPS = int(os.environ.get("AGENT_TURN_MAX_TOOL_ROUNDTR
 
 # Whole-turn wall-clock timeout (asyncio.wait_for) - aborts a stuck turn
 # cleanly instead of holding a worker slot indefinitely.
-AGENT_TURN_TIMEOUT_SECONDS = float(os.environ.get("AGENT_TURN_TIMEOUT_SECONDS", "20"))
+AGENT_TURN_TIMEOUT_SECONDS = float(os.environ.get("AGENT_TURN_TIMEOUT_SECONDS", "90"))
 
 # --- Trigger pre-filter cache (ADR 0046, decision 1) ---
 # SET of owner_user_ids with Agent.is_enabled=true - SISMEMBER lets
@@ -79,6 +79,15 @@ AGENT_UNKNOWN_SENDER_QUOTA_PER_DAY = int(
 AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS = int(
     os.environ.get("AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS", str(24 * 60 * 60))
 )
+
+# ADR 0051: once on_unknown_sender fires for a chat and the turn is actually
+# enqueued, that chat is auto-registered into on_specific_chats (empty
+# keywords, tagged with _auto_added_at) so the agent keeps responding to the
+# same person afterward. Cap on how many such auto-added entries one agent
+# can hold at once - oldest _auto_added_at evicted first (FIFO) on overflow.
+# Manually-added on_specific_chats entries (no _auto_added_at) never count
+# against this cap and are never evicted by it.
+AGENT_MAX_AUTO_CHATS = int(os.environ.get("AGENT_MAX_AUTO_CHATS", "200"))
 
 # --- on_schedule trigger (ADR 0046, decision 3) ---
 # Cap on how many schedule entries one agent can hold - enforced at
@@ -132,6 +141,16 @@ AGENT_KNOWLEDGE_MAX_UPLOAD_BYTES = int(
     os.environ.get("AGENT_KNOWLEDGE_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024))
 )
 
+# --- Turn history transcript (invoke_worker.py) ---
+# Char cap on the formatted "sender: content" transcript seeded into a turn's
+# first Gemini prompt (_build_initial_contents/_build_schedule_contents) -
+# the 20-message window itself has no size bound, so a burst of long messages
+# could otherwise blow up prompt size/cost. Truncated from the start (oldest
+# lines dropped first) so the most recent context is always kept.
+AGENT_HISTORY_TRANSCRIPT_MAX_CHARS = int(
+    os.environ.get("AGENT_HISTORY_TRANSCRIPT_MAX_CHARS", "4000")
+)
+
 # --- BYOK: bring your own Gemini key (ADR 0046, decision 5) ---
 # Fernet key used to encrypt Agent.encrypted_gemini_api_key at rest. Only
 # required if any owner actually sets a custom key - modules/agents/crypto.py
@@ -159,7 +178,9 @@ __all__ = [
     "AGENT_TRIGGER_CFG_KEY_PREFIX",
     "AGENT_UNKNOWN_SENDER_QUOTA_PER_DAY",
     "AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS",
+    "AGENT_MAX_AUTO_CHATS",
     "AGENT_MAX_SCHEDULE_ENTRIES",
+    "AGENT_HISTORY_TRANSCRIPT_MAX_CHARS",
     "AGENT_SCHEDULE_DUE_ZSET_KEY",
     "AGENT_SCHEDULE_POLL_INTERVAL_SECONDS",
     "AGENT_KNOWLEDGE_CHUNK_MAX_CHARS",

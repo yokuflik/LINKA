@@ -212,6 +212,41 @@ trigger). Brought to parity:
   props and `load-older-messages` event threaded through, same pattern as
   the other drawer props/events.
 
+## Delivered/read ticks removed from the agent chat (2026-09-25)
+
+`AgentChatView.js`'s per-message footer no longer renders the delivered/read
+tick (`statusTickSymbol`/`statusTickClass`, the ✓✓ shown in every real 1:1
+chat via `MessageList.js`) - user request: the owner's own chat with the
+agent is a synchronous, always-answered loop, so a receipt tick added noise
+with no real signal. `send_failed`/`pending` indicators are untouched. Purely
+a `v-else-if` branch removed plus the two now-dead helper methods deleted
+from the component - no store/backend change, `LinkaChatStore.statusTick*`
+itself is untouched (`MessageList.js` still uses it normally).
+
+## Typing indicator never shows an unresolved identity (2026-09-25)
+
+Two-part fix, both in-scope bug fixes (no ADR) after the user reported the
+customer side of an agent conversation briefly saw a bare number instead of
+the owner's name in the "typing…" indicator - note `_publish_peer_typing_loop`
+(see `ai_agent.md`) already sent the *correct* identity (`user_id:
+owner_user_id`, never an agent id); the bug was entirely client-side
+resolution timing, not a wrong id being sent:
+
+- `useWsRouter.js`'s `typing` handler used to call `noteUserTyping`
+  immediately and only *lazily* kick off `resolveChatMemberPhones` alongside
+  it when the sender wasn't yet in `ctx.userById` - so the indicator could
+  render for one or more frames before the name resolved. Now, when the
+  sender is unresolved, `noteUserTyping` is deferred until AFTER
+  `resolveChatMemberPhones` resolves (`.then()`), instead of firing in
+  parallel - the indicator only ever appears already carrying the right name.
+  A short delay before "X is typing…" first appears is preferred over it ever
+  showing a placeholder or raw id.
+- `useChatMembers.js::userLabelById(userId)` used to `return userId` (the raw
+  numeric id) as its no-user-cached fallback - violates CLAUDE.md Rule 5
+  (never display `user_id`). Now falls back to `'Someone'`. With the above
+  fix this path is now a rare-error-only fallback (e.g. `resolveChatMember
+  Phones`'s fetch itself fails), not the common case.
+
 ## Known follow-ups (frontend)
 
 - Owner-agent-chat avatar showing the agent's picture in its chat header/

@@ -99,8 +99,6 @@ const AgentChatView = {
     // owner's own sends) renders like "mine" - same rule AgentChatView has
     // always used, kept here for the tick/side logic below.
     isMine(m) { return m.type !== 7; },
-    statusTickSymbol(status) { return LinkaChatStore.statusTickSymbol(status); },
-    statusTickClass(status) { return LinkaChatStore.statusTickClass(status); },
     formatTime(iso) {
       return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     },
@@ -123,6 +121,19 @@ const AgentChatView = {
       this.pinnedToBottom = true;
       this.$emit('send', text);
       this.draft = '';
+      this.$nextTick(this.resizeDraft);
+    },
+    onEnter(event) {
+      if (event.shiftKey) return; // allow newline
+      event.preventDefault();
+      this.submit();
+    },
+    // Auto-grow the textarea to fit its content, capped at ~6 lines.
+    resizeDraft() {
+      const el = this.$refs.draftEl;
+      if (!el) return;
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 144) + 'px';
     },
   },
   template: `
@@ -157,7 +168,6 @@ const AgentChatView = {
                   <span>{{ formatTime(row.m.created_at) }}</span>
                   <span v-if="row.m.send_failed" class="text-sm font-bold leading-none text-red-500" title="Not sent">⚠️</span>
                   <span v-else-if="row.m.pending" class="text-sm leading-none text-slate-400" title="Sending…">🕓</span>
-                  <span v-else-if="isMine(row.m)" class="text-sm font-bold leading-none" :class="statusTickClass(row.m.status)">{{ statusTickSymbol(row.m.status) }}</span>
                 </div>
               </div>
             </div>
@@ -171,10 +181,11 @@ const AgentChatView = {
         </div>
       </div>
       <div class="shrink-0 border-t border-slate-200 p-2 flex items-center gap-2">
-        <input v-model="draft" @keyup.enter="submit" type="text" placeholder="Message your agent…"
-               class="flex-1 min-w-0 px-3 py-1.5 text-sm border border-slate-300 rounded-full" />
+        <textarea ref="draftEl" v-model="draft" @keydown.enter="onEnter" @input="resizeDraft"
+                  rows="1" placeholder="Message your agent…" dir="auto"
+                  class="flex-1 min-w-0 px-3 py-1.5 text-sm border border-slate-300 rounded-2xl resize-none leading-normal max-h-36 overflow-y-auto"></textarea>
         <button @click="submit" :disabled="!draft.trim()"
-                class="w-9 h-9 shrink-0 flex items-center justify-center rounded-full bg-teal-700 text-white disabled:opacity-40">
+                class="w-9 h-9 shrink-0 self-end flex items-center justify-center rounded-full bg-teal-700 text-white disabled:opacity-40">
           <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M3 20l18-8L3 4v6l12 2-12 2z"/></svg>
         </button>
       </div>

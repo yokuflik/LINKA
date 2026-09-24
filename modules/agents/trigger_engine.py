@@ -26,7 +26,12 @@ from modules.agents.cache import (
     is_owner_cached_enabled,
     sync_agent_cache,
 )
-from modules.agents.crud import get_agent_by_id, get_agent_by_owner_chat, get_enabled_agents_for_owners
+from modules.agents.crud import (
+    auto_register_unknown_sender_chat,
+    get_agent_by_id,
+    get_agent_by_owner_chat,
+    get_enabled_agents_for_owners,
+)
 from modules.agents.invoke_queue import enqueue_invocation
 from modules.chats.crud.crud_chat import get_chat_by_id
 from modules.chats.crud.crud_participant import get_chat_participants
@@ -223,5 +228,11 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
             )
             if not sender_allowed:
                 continue
+
+            # ADR 0051: first-contact reply just cleared every gate - keep
+            # the agent responding to this same person going forward by
+            # folding the chat into on_specific_chats (FIFO-capped at
+            # AGENT_MAX_AUTO_CHATS).
+            await auto_register_unknown_sender_chat(session, agent, message.chat_id)
 
         await enqueue_invocation(agent_id=agent.id, chat_id=message.chat_id, message_id=message.id)

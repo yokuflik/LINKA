@@ -367,7 +367,7 @@ const MessageList = {
           <div v-else class="w-7 shrink-0"></div>
         </template>
         <div class="min-w-0">
-        <div class="inline-block text-sm cursor-pointer"
+        <div dir="auto" class="inline-block text-sm cursor-pointer"
              :class="[
                isBareMedia(m)
                  ? 'p-0 bg-transparent rounded-lg'

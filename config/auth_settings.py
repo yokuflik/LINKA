@@ -46,7 +46,7 @@ FIREBASE_AUTH_ENABLED = bool(FIREBASE_PROJECT_ID)
 # Exact phone-number strings that skip all verification (dev/PoC only). These
 # are not real numbers - the client routes them through the legacy OTP stub.
 DEV_AUTH_WHITELIST = set(
-    x.strip() for x in os.environ.get("DEV_AUTH_WHITELIST", "1,2,3,4,5").split(",") if x.strip()
+    x.strip() for x in os.environ.get("DEV_AUTH_WHITELIST", "1,2,3,4,5,6,7,8,9,10").split(",") if x.strip()
 )
 
 __all__ = [

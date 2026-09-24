@@ -1,9 +1,11 @@
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from modules.agents.cache import sync_agent_cache
 from modules.agents.models import Agent, AgentKnowledgeChunk, AgentKnowledgeDocument
 
 
@@ -217,6 +219,40 @@ async def resume_agent_chat(session: AsyncSession, agent: Agent, chat_id: int) -
     un-pausing is deliberately not something an agent can do to itself)."""
     agent.paused_chat_ids = [cid for cid in agent.paused_chat_ids if int(cid) != chat_id]
     await session.flush()
+    return agent
+
+
+async def auto_register_unknown_sender_chat(session: AsyncSession, agent: Agent, chat_id: int) -> Agent:
+    """ADR 0051: called once on_unknown_sender has actually fired and the
+    turn is enqueued - merges chat_id into on_specific_chats (empty keywords,
+    tagged with _auto_added_at) so future messages in that chat keep matching
+    via the normal _matches_trigger_config path. Idempotent: re-registering
+    an already-present chat just refreshes nothing (keeps the original
+    timestamp) rather than bumping it to the back of the FIFO queue.
+    Manually-added entries (no _auto_added_at) are never touched or counted
+    against AGENT_MAX_AUTO_CHATS - only auto-added entries evict each other."""
+    chat_key = str(chat_id)
+    specific_chats = dict(agent.triggers.get("on_specific_chats", {}))
+    if chat_key in specific_chats:
+        return agent
+
+    specific_chats[chat_key] = {
+        "keywords": [],
+        "_auto_added_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    auto_entries = [
+        (key, entry) for key, entry in specific_chats.items() if "_auto_added_at" in entry
+    ]
+    overflow = len(auto_entries) - settings.AGENT_MAX_AUTO_CHATS
+    if overflow > 0:
+        auto_entries.sort(key=lambda kv: kv[1]["_auto_added_at"])
+        for key, _ in auto_entries[:overflow]:
+            del specific_chats[key]
+
+    agent.triggers = {**agent.triggers, "on_specific_chats": specific_chats}
+    await session.flush()
+    await sync_agent_cache(agent)
     return agent
 
 

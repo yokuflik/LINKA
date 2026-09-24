@@ -233,12 +233,23 @@ function useWsRouter(ctx) {
       // Never our own echo back (the server fans this out to the whole chat,
       // sender included, same as new_message).
       if (msg.user_id !== currentUser.value.id) {
-        noteUserTyping(msg.chat_id, msg.user_id, msg.kind);
         // The sidebar shows a name (not just a count) for a lone typer in any
         // chat, including one never opened this session - userById only gets
         // populated by resolveChatMemberPhones, which normally only runs on
-        // selectChat/openMembersModal. Lazily resolve here too.
-        if (!store.userById.value[msg.user_id]) ctx.resolveChatMemberPhones(msg.chat_id);
+        // selectChat/openMembersModal. If it's still missing here, resolve
+        // first and only THEN surface the indicator - never call
+        // noteUserTyping while the sender is unresolved, or userLabelById
+        // renders a placeholder/raw id for one frame (reported: looked like
+        // an agent's reply was typed by someone other than the chat owner
+        // it's impersonating). A short delay before "X is typing…" appears
+        // is preferable to it ever showing the wrong identity.
+        if (!store.userById.value[msg.user_id]) {
+          ctx.resolveChatMemberPhones(msg.chat_id).then(() => {
+            noteUserTyping(msg.chat_id, msg.user_id, msg.kind);
+          });
+        } else {
+          noteUserTyping(msg.chat_id, msg.user_id, msg.kind);
+        }
       }
       return;
     }

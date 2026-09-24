@@ -441,12 +441,32 @@ async def _tool_schedule_one_off_task(session: AsyncSession, agent: Agent, argum
 
 async def _tool_transfer_to_builder(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
     updated = await update_agent_config(session, agent, {"builder_state": BuilderState.BUILDER.value})
-    return {"status": "transferred", "to": updated.builder_state}
+    # invoke_worker.py now re-derives system_prompt/tool_schemas every
+    # round-trip (ADR 0049 handoff fix, 2026-09-25), so the very next Gemini
+    # call in this same turn already runs as the Builder with its own tools.
+    # Nudge it explicitly to act on the user's own message that triggered the
+    # handoff instead of just acknowledging the transfer - without this the
+    # model tends to emit a generic "you're now with the builder" line and
+    # stop, leaving the user's actual request unanswered until their next
+    # message.
+    return {
+        "status": "transferred",
+        "to": updated.builder_state,
+        "instruction": "You are now the Builder Agent. Do not just announce the handoff - "
+        "look at the user's own preceding message in this conversation and respond to it "
+        "directly, continuing the interview from there.",
+    }
 
 
 async def _tool_transfer_to_help(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
     updated = await update_agent_config(session, agent, {"builder_state": BuilderState.HELP.value})
-    return {"status": "transferred", "to": updated.builder_state}
+    return {
+        "status": "transferred",
+        "to": updated.builder_state,
+        "instruction": "You are now the Help Agent. Do not just announce the handoff - "
+        "look at the user's own preceding message in this conversation and answer their "
+        "actual question directly.",
+    }
 
 
 async def _tool_finish_building_agent(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
@@ -695,7 +715,10 @@ CONFIG_TOOL_SCHEMAS = [
 # one of three disjoint handler/schema sets - never a fallback to another
 # state's tools, same one-decision-point discipline as is_config_mode itself.
 _BUILDER_STATE_HANDLERS = {
-    BuilderState.SUPERVISOR: {"transfer_to_builder": _tool_transfer_to_builder},
+    BuilderState.SUPERVISOR: {
+        "transfer_to_builder": _tool_transfer_to_builder,
+        "transfer_to_help": _tool_transfer_to_help,
+    },
     BuilderState.BUILDER: {
         **_CONFIG_TOOL_HANDLERS,
         "transfer_to_help": _tool_transfer_to_help,
@@ -705,7 +728,7 @@ _BUILDER_STATE_HANDLERS = {
 }
 
 _BUILDER_STATE_TOOL_SCHEMAS = {
-    BuilderState.SUPERVISOR: [TRANSFER_TO_BUILDER_SCHEMA],
+    BuilderState.SUPERVISOR: [TRANSFER_TO_BUILDER_SCHEMA, TRANSFER_TO_HELP_SCHEMA],
     BuilderState.BUILDER: [*CONFIG_TOOL_SCHEMAS, TRANSFER_TO_HELP_SCHEMA, FINISH_BUILDING_AGENT_SCHEMA],
     BuilderState.HELP: [TRANSFER_TO_BUILDER_SCHEMA],
 }

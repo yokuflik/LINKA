@@ -80,7 +80,10 @@ function useChatMembers(ctx) {
 
   function userLabelById(userId) {
     const user = ctx.userById.value[userId];
-    if (!user) return userId;
+    // Never surface the raw numeric id (CLAUDE.md Rule 5) - e.g. the peer
+    // side of a chat with an agent, where the "typing" event's sender is the
+    // agent owner's user_id, but userById hasn't been populated for them yet.
+    if (!user) return 'Someone';
     return peerName(user);
   }
 

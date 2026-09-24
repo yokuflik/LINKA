@@ -16,6 +16,7 @@ asyncio.wait_for(AGENT_TURN_TIMEOUT_SECONDS) by process_entry below so a
 stuck Gemini call or tool execution can't hold a worker slot indefinitely.
 """
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -114,6 +115,34 @@ async def _publish_agent_thinking(owner_user_id: int, status: str, detail: str |
         logger.exception("agent_worker: failed to publish agent_thinking for owner %s", owner_user_id)
 
 
+# How often to re-publish the real chat `typing` event while a turn is
+# working - matches useTyping.js's TYPING_SEND_THROTTLE_MS/TYPING_EXPIRY_MS on
+# the client (a real user's browser resends every 3s, and a receiver's
+# indicator expires 5s after the last one), so a working agent keeps looking
+# "typing" continuously instead of flickering off between updates.
+_PEER_TYPING_REFRESH_SECONDS = 3.0
+
+
+async def _publish_peer_typing_loop(chat_id: int, sender_id: int) -> None:
+    """Real `typing` event fanned out to the chat's other participants (same
+    `publish_event` a genuine user's WS `typing` frame goes through) - runs
+    for the lifetime of an execution-mode turn targeting a real chat, so
+    whoever the agent is about to message sees an ordinary "typing…"
+    indicator instead of nothing, until the reply itself lands. Distinct from
+    `_publish_agent_thinking`, which is a private, owner-only signal for the
+    agent drawer and is never seen by other chat members."""
+    try:
+        while True:
+            await realtime_service.publish_event(
+                chat_id, {"event": "typing", "user_id": sender_id, "kind": "typing"}
+            )
+            await asyncio.sleep(_PEER_TYPING_REFRESH_SECONDS)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("agent_worker: failed to publish peer typing for chat %s", chat_id)
+
+
 async def _check_gemini_call_budget(agent_id: int) -> bool:
     return await check_and_increment(
         agent_id,
@@ -123,17 +152,32 @@ async def _check_gemini_call_budget(agent_id: int) -> bool:
     )
 
 
+def _format_history_transcript(history) -> str | None:
+    """Formats a message history window into a single 'Agent: ...' /
+    'Customer: ...' transcript block (oldest first) - the explicit role
+    label (rather than a raw sender_id) reads far better to Gemini than a
+    numeric id, and matches how a human would paste a chat log. Truncated to
+    AGENT_HISTORY_TRANSCRIPT_MAX_CHARS from the start (oldest lines dropped
+    first) so the most recent context always survives a long/verbose chat."""
+    lines = [
+        f'{"Agent" if m.type == AGENT_REPLY_MESSAGE_TYPE else "Customer"}: {m.content}'
+        for m in reversed(list(history))
+        if m.content
+    ]
+    if not lines:
+        return None
+    transcript = "\n".join(lines)
+    if len(transcript) > settings.AGENT_HISTORY_TRANSCRIPT_MAX_CHARS:
+        transcript = "…(earlier messages truncated)…\n" + transcript[-settings.AGENT_HISTORY_TRANSCRIPT_MAX_CHARS:]
+    return transcript
+
+
 async def _build_initial_contents(session: AsyncSession, agent: Agent, chat_id: int) -> list[dict]:
     """Seeds the conversation with the same structured shape read_history
     hands back to the model - sender/timestamp/content - so Gemini's first
     turn already has context instead of starting from nothing."""
     history = await get_message_history(session, agent.owner_user_id, chat_id, limit=20)
-    lines = [
-        f'[{m.created_at.isoformat()}] sender={m.sender_id}: {m.content}'
-        for m in reversed(list(history))
-        if m.content
-    ]
-    transcript = "\n".join(lines) if lines else "(no prior text messages in this chat)"
+    transcript = _format_history_transcript(history) or "(no prior text messages in this chat)"
     prompt = (
         f"You were woken up by new activity in chat {chat_id}. "
         f"Recent chat history (oldest first):\n{transcript}\n\n"
@@ -149,13 +193,9 @@ async def _build_schedule_contents(session: AsyncSession, agent: Agent, instruct
     parts = [f"Scheduled task: {instruction}"]
     if chat_id is not None:
         history = await get_message_history(session, agent.owner_user_id, chat_id, limit=20)
-        lines = [
-            f'[{m.created_at.isoformat()}] sender={m.sender_id}: {m.content}'
-            for m in reversed(list(history))
-            if m.content
-        ]
-        if lines:
-            parts.append(f"Recent history in chat {chat_id} (oldest first):\n" + "\n".join(lines))
+        transcript = _format_history_transcript(history)
+        if transcript:
+            parts.append(f"Recent history in chat {chat_id} (oldest first):\n{transcript}")
     parts.append("Decide whether and how to act using the available tools.")
     return [{"role": "user", "parts": [{"text": "\n\n".join(parts)}]}]
 
@@ -182,31 +222,31 @@ async def _run_turn(
         # Live "thinking" status for the agent drawer (AGENT_DRAWER_UI_PLAN.md
         # Wave 2) - ephemeral, bounded by the turn's own limits (at most
         # AGENT_TURN_MAX_TOOL_ROUNDTRIPS + 1 tool_call pushes), so no separate
-        # rate limit is needed. "done"/"error" always fires exactly once via
-        # the finally below, regardless of which early return below fires.
+        # rate limit is needed. Owner-only signal, so it must only fire for
+        # config-mode turns (the owner's own drawer chat) - an execution-mode
+        # turn against a third-party chat has nothing to do with whatever the
+        # owner might have open in their drawer right now, so it must not push
+        # a "thinking" status there (2026-09-25, user-reported: the drawer lit
+        # up "thinking" while the agent was mid-reply to an unrelated
+        # customer). "done"/"error" mirrors the same gate in the finally below.
         owner_user_id = agent.owner_user_id
         ended_status = "error"
-        await _publish_agent_thinking(owner_user_id, "started")
+        config_mode_turn = chat_id is None or is_config_mode(agent, chat_id)
+        if config_mode_turn:
+            await _publish_agent_thinking(owner_user_id, "started")
+        # Real peer-visible "typing" indicator (not the owner-only
+        # agent_thinking above) - only for execution-mode turns against an
+        # actual chat with the agent, never the owner's own config-mode
+        # drawer chat (that already gets agent_thinking) and never a
+        # schedule-fired turn with chat_id=None.
+        peer_typing_task: asyncio.Task | None = None
+        if chat_id is not None and not is_config_mode(agent, chat_id):
+            peer_typing_task = asyncio.create_task(_publish_peer_typing_loop(chat_id, owner_user_id))
         try:
             if schedule_instruction is not None:
                 contents = await _build_schedule_contents(session, agent, schedule_instruction, chat_id)
             else:
                 contents = await _build_initial_contents(session, agent, chat_id)
-
-            # ADR 0047 decisions 3+4: tool set is decided purely by chat_id,
-            # never by active_skill/system_prompt/anything model-controlled.
-            # ADR 0049: within config mode (chat_id == owner_agent_chat_id),
-            # the persona/tool set further narrows to one of three sub-states
-            # (supervisor/builder_agent/help_agent) keyed on Agent.builder_state,
-            # never selected by the model itself. Every other chat (or a
-            # schedule-fired turn with chat_id=None) runs the owner's
-            # configured execution skill, unchanged from ADR 0047.
-            tool_schemas = get_tool_schemas_for_chat(agent, chat_id)
-            if is_config_mode(agent, chat_id):
-                persona_prompt = get_builder_state_prompt(BuilderState(agent.builder_state))
-            else:
-                persona_prompt = get_persona_system_prompt(agent.active_skill)
-            system_prompt = f"{persona_prompt}\n\n{agent.system_prompt}" if agent.system_prompt else persona_prompt
 
             # BYOK (ADR 0046 decision 5) is disabled for now (2026-09-24, not
             # available yet in the frontend) - always use the shared key, even
@@ -219,6 +259,28 @@ async def _run_turn(
                 if api_key is None and not await _check_gemini_call_budget(agent_id):
                     logger.info("agent_worker: agent %s over Gemini call budget, ending turn", agent_id)
                     return
+
+                # Re-derived every round-trip, not just once before the loop:
+                # a config-mode handoff tool (transfer_to_builder/
+                # transfer_to_help/finish_building_agent, ADR 0049) flips
+                # agent.builder_state mid-turn, and without this the very next
+                # Gemini call would still run under the OLD state's prompt and
+                # (more importantly) its OLD, now-wrong tool_schemas - unable
+                # to actually act as the new state. Refreshing here means a
+                # handoff takes effect immediately within the same turn, so
+                # e.g. Supervisor->Builder responds to the user's original
+                # request ("I want an agent that sells iPhones") in the same
+                # reply instead of a generic "handed off" line, then going
+                # silent until the user's next message. ADR 0047 decisions
+                # 3+4 are otherwise unchanged: tool set is still decided
+                # purely by chat_id (+ builder_state for config mode), never
+                # by active_skill/system_prompt/anything model-controlled.
+                tool_schemas = get_tool_schemas_for_chat(agent, chat_id)
+                if is_config_mode(agent, chat_id):
+                    persona_prompt = get_builder_state_prompt(BuilderState(agent.builder_state))
+                else:
+                    persona_prompt = get_persona_system_prompt(agent.active_skill)
+                system_prompt = f"{persona_prompt}\n\n{agent.system_prompt}" if agent.system_prompt else persona_prompt
 
                 try:
                     content = await generate_turn(
@@ -273,9 +335,10 @@ async def _run_turn(
                     ended_status = "done"
                     return
 
-                await _publish_agent_thinking(
-                    owner_user_id, "tool_call", _TOOL_THINKING_LABELS.get(call["name"], "Working…")
-                )
+                if config_mode_turn:
+                    await _publish_agent_thinking(
+                        owner_user_id, "tool_call", _TOOL_THINKING_LABELS.get(call["name"], "Working…")
+                    )
                 tool_result = await execute_tool_call(session, agent, call["name"], call["args"], chat_id=chat_id)
                 await session.commit()
                 contents.append({"role": "user", "parts": [function_response_part(call["name"], tool_result)]})
@@ -286,7 +349,12 @@ async def _run_turn(
                 # error status if control ever reaches here).
                 ended_status = "done"
         finally:
-            await _publish_agent_thinking(owner_user_id, ended_status)
+            if peer_typing_task is not None:
+                peer_typing_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await peer_typing_task
+            if config_mode_turn:
+                await _publish_agent_thinking(owner_user_id, ended_status)
 
 
 class AgentInvokeConsumer(BaseStreamConsumer):
@@ -360,6 +428,17 @@ class AgentInvokeConsumer(BaseStreamConsumer):
                     "agent_worker: turn for agent %s %s timed out after %ss",
                     agent_id, log_target, settings.AGENT_TURN_TIMEOUT_SECONDS,
                 )
+                # Generic, non-technical notice to the owner - always posted to
+                # their dedicated agent chat regardless of which chat/schedule
+                # entry triggered the turn (frontend error UX rule: no raw
+                # timeout/technical detail surfaced to the user).
+                await _post_config_reply(
+                    session,
+                    agent,
+                    agent.owner_agent_chat_id,
+                    "This took a bit too long to process. Please try again in a moment.",
+                )
+                await session.commit()
             finally:
                 await record_active_seconds(agent_id, time.monotonic() - started)
 

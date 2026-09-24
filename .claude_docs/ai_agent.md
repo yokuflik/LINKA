@@ -1,14 +1,17 @@
-# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049
+# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051
 
 Full design rationale: `docs/adr/0045-ai-agent-service-account-tool-calling.md`
 (base design), `docs/adr/0046-agent-schedules-knowledge-base-and-byok.md`
 (schedules, knowledge base, BYOK, pre-filter cache - extends 0045, does not
 replace it), `docs/adr/0047-agent-skills-tool-mode-gate-and-escalation.md`
 (paid-tier rate limits, skills/personas, hard tool-mode gate, Agentic RAG,
-escalation - extends 0045/0046; all 7 decisions implemented), and
+escalation - extends 0045/0046; all 7 decisions implemented),
 `docs/adr/0049-agent-builder-supervisor-help-substates.md` (Supervisor/
 Builder/Help sub-states inside the config chat - extends 0047 decision 4,
-does not replace it). This file tracks current implementation state, schema,
+does not replace it), and `docs/adr/0051-unknown-sender-auto-registration.md`
+(auto-registers a chat into `on_specific_chats` after `on_unknown_sender`
+fires, so the agent keeps replying to that same person - extends 0046
+decision 2). This file tracks current implementation state, schema,
 and rate limits/budgets - the detailed step-by-step build log (ADR 0045
 steps 1-5, ADR 0046 decisions 1-6) moved to `.claude_docs/ai_agent_history.md`
 on 2026-09-23 once this file passed the ~300-line split threshold again;
@@ -16,6 +19,50 @@ frontend detail (drawer UI, knowledge upload, BYOK UI) lives in
 `.claude_docs/ai_agent_frontend.md`. ADR 0047's own implementation log for
 decisions 5-7 lives in the ADR file itself, per the user's explicit request
 to keep it alongside the ADR.
+
+**Real peer-visible typing indicator DONE 2026-09-25** (no ADR - in-scope UX
+fix, not a new architectural decision): `invoke_worker.py::_run_turn` now
+starts a `_publish_peer_typing_loop` background task whenever a turn is
+execution-mode against a real chat (`chat_id is not None and not
+is_config_mode(agent, chat_id)`) - it calls the same `realtime_service.
+publish_event(chat_id, {event:"typing", user_id, kind:"typing"})` a genuine
+user's WS `typing` frame goes through, re-published every 3s
+(`_PEER_TYPING_REFRESH_SECONDS`, matching the client's own
+`TYPING_SEND_THROTTLE_MS`/`TYPING_EXPIRY_MS` in `useTyping.js`) for the
+lifetime of the turn, cancelled in the `finally` right before the reply is
+posted. This is distinct from the pre-existing `agent_thinking` event below:
+`agent_thinking` is a private, owner-only signal for the agent drawer;
+the chat's other participants now see an ordinary "X is typing…" indicator
+like they would from a human, with no other UI surfaced to them. Never fired
+for config-mode turns (the owner's own drawer chat, which already has
+`agent_thinking`) or schedule-fired turns with `chat_id=None`.
+
+**`agent_thinking` no longer leaks into the drawer during execution-mode
+turns (2026-09-25, no ADR - in-scope bug fix)**: all three
+`_publish_agent_thinking` call sites in `_run_turn` (`"started"`, each
+`"tool_call"`, and the final `done`/`error` in the `finally`) are now gated
+behind `config_mode_turn = chat_id is None or is_config_mode(agent,
+chat_id)`. Previously they fired unconditionally, so the owner's drawer would
+show a live "thinking…" status even while the agent was mid-turn replying to
+an unrelated third-party chat - reported by the user as confusing (looks like
+the owner's own conversation with the agent is doing something, when it's
+actually a customer's chat being served). `agent_thinking` is scoped to
+config-mode turns (the owner's own drawer chat) only, matching its doc'd
+"private, owner-only signal for the agent drawer" contract - the peer-visible
+`typing` event above (already chat-scoped, not owner-drawer-scoped) is
+unaffected and remains the correct signal for execution-mode turns. No
+schema/API change, import-smoke-tested only (same gap as every prior
+agents-module step).
+
+**Peer-visible typing indicator could momentarily show an unresolved
+identity instead of the owner's name (2026-09-25, frontend-only fix, no
+ADR)**: `_publish_peer_typing_loop` already sent the correct identity
+(`user_id: owner_user_id`, never an agent id - the agent has no `user_id` of
+its own, ADR 0045) - the bug was purely client-side resolution timing. Fixed
+so the indicator never renders until the sender's identity is fully
+resolved (deferred instead of racing), with a raw-id-safe fallback for the
+remaining rare-error case. Full detail in
+`.claude_docs/ai_agent_frontend.md`.
 
 **ADR 0049 DONE 2026-09-24**: config-mode turns (`chat_id ==
 owner_agent_chat_id`) no longer always run the single `agent_builder`
@@ -202,6 +249,102 @@ into the now-empty chat afterward, same `process_outgoing` path as agent
 creation. Same cache/event side effects as `PATCH /agents/me`
 (`sync_agent_cache` + `agent_config_changed` + `sync_schedule_zset`).
 
+**Unknown-sender chats now auto-register into `on_specific_chats` (ADR 0051,
+2026-09-25)**: previously `on_unknown_sender` fired exactly once per private
+chat and then went silent for every later message from that same person -
+surprising for a `sales_agent`-style deployment (one reply to a new lead,
+then nothing). `trigger_engine.py::_evaluate_triggers` now calls the new
+`modules/agents/crud.py::auto_register_unknown_sender_chat` right after the
+per-sender daily quota check passes (i.e. only once the turn is actually
+enqueued) - merges `chat_id` into `Agent.triggers.on_specific_chats` with
+empty keywords (wake on any message) and an `_auto_added_at` UTC ISO
+timestamp, then calls `sync_agent_cache` so the Redis pre-filter cache picks
+it up immediately (same pattern as every other trigger-affecting write).
+Registration is **permanent** (no expiry) until the owner removes it
+manually. Capped at `AGENT_MAX_AUTO_CHATS` (200, `config/agent_settings.py`)
+- only entries carrying `_auto_added_at` count against the cap or are
+eligible for eviction; on overflow the oldest `_auto_added_at` entries are
+evicted first (FIFO). Manually-added `on_specific_chats` entries (owner-set,
+or via `update_own_triggers`/`set_trigger` without going through this path)
+never carry `_auto_added_at` and are immune to both the cap and eviction.
+Idempotent - re-firing for an already-registered chat is a no-op (keeps the
+original timestamp, does not bump it to the back of the FIFO queue). No
+frontend change needed - the auto-added chat just appears as a normal
+`on_specific_chats` entry, subject to the existing "no chat picker" known
+gap. No new tests (same gap as every prior agents-module step) -
+import-smoke-tested only.
+
+**Supervisor can hand off to Help directly (2026-09-25, no ADR - prompt +
+tool-set fix)**: `modules/agents/builder_flow.py::SUPERVISOR_PROMPT` +
+`modules/agents/tools.py` now give the `supervisor` builder-state its own
+`transfer_to_help` tool (alongside the existing `transfer_to_builder`),
+instead of forcing every "what is this / how does this work" question
+through the Builder first. Requested by the user so a brand-new owner who
+opens the drawer (lazy `Agent` create-if-missing, lands on `supervisor` per
+ADR 0045/0047) and just wants an explanation isn't detoured into the
+Builder's interview flow before reaching Help. Scope confirmed with the
+user: Help Agent stays config-chat-only (`owner_agent_chat_id`) - an
+execution-mode end-user talking to someone else's deployed agent never gets
+routed to Help; only the agent's own owner does, in their own config chat.
+No schema/architecture change (ADR 0049's `BuilderState`/dispatch-table
+shape is unchanged, just `SUPERVISOR`'s handler dict and schema list grew
+by one entry each) - same class of change as the other no-ADR prompt-only
+fixes already logged in this file. Import-smoke-tested only, same gap as
+every prior agents-module step.
+
+**Standing obligation: keep the Help Agent's answers accurate as the agent
+system evolves (2026-09-25, process note, not code)**: the Help Agent
+(`modules/agents/builder_flow.py::HELP_PROMPT`) explains "how the system
+works" purely from its static system prompt - it has no tool that reads
+live code or docs. Per the user's explicit request, whenever a change in
+this session touches the agent system's user-facing behavior (new/changed
+tools, triggers, skills, restrictions, rate limits, or flow), the same task
+must also check whether `HELP_PROMPT` needs a matching update so its
+explanations don't go stale, the same way this file and the ADR index are
+kept current. Not automated - a discipline for this assistant to apply
+every time the agents module changes, alongside the existing
+`.claude_docs/` auto-maintenance rule in the root `CLAUDE.md`.
+
+**History transcript now uses role labels + a char cap (2026-09-25, no ADR -
+prompt quality + cost guardrail)**: `invoke_worker.py::_format_history_
+transcript` (new, shared by `_build_initial_contents` and
+`_build_schedule_contents`) replaces the old `[timestamp] sender=<id>:
+<content>` lines with `Agent: ...` / `Customer: ...` (role decided by
+`m.type == AGENT_REPLY_MESSAGE_TYPE`, not sender_id) - reads far better to
+Gemini than a raw numeric id, matches how a human would paste a chat log.
+Also truncates the joined transcript to `AGENT_HISTORY_TRANSCRIPT_MAX_CHARS`
+(`config/agent_settings.py`, default 4000) by keeping only the tail (most
+recent context wins, oldest lines dropped first) - the 20-message window
+itself has no size bound, so a burst of long messages could otherwise blow
+up prompt size/cost. Timestamps dropped from the transcript (were unused by
+the model in practice); the window size (`limit=20`, still a hardcoded
+literal, not in `config/agent_settings.py`) is unchanged.
+
+**Config-mode handoff now takes effect within the same turn (2026-09-25, no
+ADR - in-scope bug fix in ADR 0049's implementation)**: `invoke_worker.py`'s
+round-trip loop used to compute `system_prompt`/`tool_schemas` once, before
+the loop, from the `builder_state` at turn start. A handoff tool
+(`transfer_to_builder`/`transfer_to_help`/`finish_building_agent`) flips
+`agent.builder_state` mid-turn, but the *next* Gemini call in that same turn
+kept running under the OLD state's prompt and (critically) its OLD
+tool_schemas - it could see the tool result confirming the transfer but had
+no way to actually act as the new state, so it just emitted a generic
+"you've been handed off to the builder" line and stopped; the user's actual
+request (e.g. "I want an agent that sells iPhones") sat unanswered until
+their next message, and the Supervisor's canned handoff response looked like
+it had ignored what they'd just said. Fixed by moving the
+`get_tool_schemas_for_chat`/`get_builder_state_prompt`/`get_persona_system_
+prompt` derivation inside the round-trip loop (re-read fresh every
+iteration) - a handoff now takes effect on the very next Gemini call within
+the same turn. Also strengthened `_tool_transfer_to_builder`/
+`_tool_transfer_to_help`'s (`modules/agents/tools.py`) return payload with an
+explicit `instruction` field telling the model to address the user's
+preceding message directly instead of just acknowledging the transfer - the
+conversation history (including that message) was already present in
+`contents`, the model just wasn't being told to use it. No schema/API change,
+no new tests (same gap as every prior agents-module step) - import-smoke-
+tested only.
+
 **BYOK temporarily disabled (2026-09-24, no ADR)**: `poc/components/
 AgentSettingsView.js`'s "Your own Gemini key" section is hidden (`v-if=
 "false"`) - not available yet in the frontend. `modules/agents/
@@ -225,7 +368,7 @@ schedule-fired turn): `send_message`, `reply_message`, `create_chat`,
 
 | `builder_state` | Persona prompt | Tools |
 |---|---|---|
-| `supervisor` (default) | routes only | `transfer_to_builder` |
+| `supervisor` (default) | routes only | `transfer_to_builder`, `transfer_to_help` |
 | `builder_agent` | interviews the owner | the 6 ADR 0047 config tools (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`, `schedule_one_off_task`) + `transfer_to_help` + `finish_building_agent` |
 | `help_agent` | explains the system | `transfer_to_builder` |
 

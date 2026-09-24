@@ -8,7 +8,7 @@
 //
 // The [+] button opens a small WhatsApp-style attach menu: "Photos & Videos"
 // (native picker filtered to image/video types -> pick-media) and "Documents"
-// (unfiltered picker, any file type -> pick-document).
+// (picker restricted to PDF only for now -> pick-document).
 const MessageInput = {
   emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'cancel-edit', 'pick-media', 'pick-document', 'start-recording', 'stop-recording', 'clear-attach-error', 'open-schedule'],
   props: {
@@ -34,6 +34,19 @@ const MessageInput = {
     onInput(event) {
       this.$emit('update:messageInput', event.target.value);
       this.$emit('typing');
+      this.autoGrow(event.target);
+    },
+    // Grows the textarea up to a max height (~6 lines), then lets it scroll.
+    autoGrow(el) {
+      if (!el) return;
+      el.style.height = 'auto';
+      const max = 150;
+      el.style.height = Math.min(el.scrollHeight, max) + 'px';
+    },
+    onEnterKeydown(event) {
+      if (event.shiftKey) return;
+      event.preventDefault();
+      this.$emit('send-message');
     },
     toggleAttachMenu() {
       this.attachMenuOpen = !this.attachMenuOpen;
@@ -114,6 +127,11 @@ const MessageInput = {
     },
   },
   inject: { thumbHashToDataUrl: { default: null } },
+  watch: {
+    messageInput(val) {
+      if (!val && this.$refs.textInput) this.$refs.textInput.style.height = 'auto';
+    },
+  },
   computed: {
     recordingClock() {
       const s = Math.max(0, Math.floor(this.recordingSeconds));
@@ -153,18 +171,18 @@ const MessageInput = {
       <div v-if="editingMessage" class="px-3 pt-2 flex items-start gap-2">
         <div class="flex-1 min-w-0 pl-2 border-l-4 border-amber-500 text-xs">
           <div class="font-semibold text-amber-600">Editing message</div>
-          <div class="truncate text-slate-500">{{ editingMessage.content }}</div>
+          <div dir="auto" class="truncate text-slate-500">{{ editingMessage.content }}</div>
         </div>
         <button @click="$emit('cancel-edit')" class="text-slate-400 hover:text-slate-600 text-lg leading-none px-1">&times;</button>
       </div>
       <div v-else-if="replyingToMessage" class="px-3 pt-2 flex items-center gap-2">
         <div class="flex-1 min-w-0 pl-2 border-l-4 border-teal-600 text-xs">
           <div class="font-semibold text-teal-700">{{ senderLabel(replyingToMessage.sender_id) }}</div>
-          <div v-if="replyMediaKind" class="truncate text-slate-500 flex items-center gap-1">
+          <div v-if="replyMediaKind" dir="auto" class="truncate text-slate-500 flex items-center gap-1">
             <span>{{ replyMediaKind.icon }}</span>
             <span class="truncate">{{ (replyingToMessage.content || '').trim() || replyingToMessage.media_name || replyMediaKind.label }}</span>
           </div>
-          <div v-else class="truncate text-slate-500">{{ replyingToMessage.content }}</div>
+          <div v-else dir="auto" class="truncate text-slate-500">{{ replyingToMessage.content }}</div>
         </div>
         <img v-if="replyMediaThumb" :src="replyMediaThumb" alt=""
              @error="$event.target.style.display='none'"
@@ -185,7 +203,7 @@ const MessageInput = {
             </button>
             <button type="button" @click="openDocumentPicker"
                     class="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
-              <span>📄</span><span>Documents</span>
+              <span>📄</span><span>Document (PDF)</span>
             </button>
             <button type="button" @click="openSchedule"
                     class="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
@@ -211,9 +229,10 @@ const MessageInput = {
           </div>
         </template>
         <template v-else>
-          <input :value="messageInput" @input="onInput" @focus="closeAttachMenu"
-                 @keyup.enter="$emit('send-message')" placeholder="Message…"
-                 class="flex-1 min-w-0 px-3 py-2 border border-slate-300 rounded-lg" />
+          <textarea ref="textInput" :value="messageInput" @input="onInput" @focus="closeAttachMenu"
+                 @keydown.enter="onEnterKeydown" placeholder="Message…" dir="auto" rows="1"
+                 class="flex-1 min-w-0 px-3 py-2 border border-slate-300 rounded-lg resize-none leading-normal"
+                 style="max-height:150px; overflow-y:auto;"></textarea>
           <button v-if="messageInput.trim()" @click="$emit('send-message')"
                   class="shrink-0 px-4 py-2 bg-teal-700 text-white rounded-lg font-medium">Send</button>
         </template>
@@ -253,6 +272,7 @@ const MessageInput = {
                accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
                @change="onMediaFileChosen" />
         <input ref="documentFileInput" type="file" class="hidden"
+               accept="application/pdf"
                @change="onDocumentFileChosen" />
         <!-- Not display:none: iOS Safari won't open the camera for a
              display:none file input triggered via .click(). Kept off-screen. -->

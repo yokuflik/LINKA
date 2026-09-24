@@ -25,6 +25,7 @@ from modules.messaging.router import router as messages_router
 from modules.messaging.router import scheduled_create_router
 from modules.messaging.router import scheduled_router
 from modules.users.router import router as users_router
+from modules.agents.router import router as agents_router
 from modules.search.router import chat_search_router
 from modules.search.router import search_router as message_search_router
 from modules.search.errors import SearchQueryTooShortError
@@ -179,6 +180,7 @@ async def _per_ip_backstop(request: Request, call_next):
 
 app.include_router(auth_router)
 app.include_router(users_router)
+app.include_router(agents_router)
 app.include_router(chats_router)
 app.include_router(messages_router)
 app.include_router(scheduled_create_router)

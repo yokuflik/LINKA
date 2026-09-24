@@ -5,8 +5,12 @@ const AppHeader = {
     currentUser: { type: Object, required: true },
     avatarUrl: { default: null },
     avatarPreview: { default: null },
+    // Unread count for the AI agent's own chat (AGENT_DRAWER_UI_PLAN.md
+    // Step 10) - computed by the root from unreadCountByChatId, kept as a
+    // plain number prop so this component stays presentational.
+    agentUnreadCount: { type: Number, default: 0 },
   },
-  emits: ['logout', 'edit-profile', 'open-settings', 'open-search'],
+  emits: ['logout', 'edit-profile', 'open-settings', 'open-search', 'open-agent'],
   computed: {
     // User-friendly label for the connection dot - never the raw
     // 'disconnected' / 'error' state names.
@@ -18,7 +22,7 @@ const AppHeader = {
     },
   },
   template: `
-    <header class="flex items-center justify-between px-4 py-2 bg-white border-b border-slate-200">
+    <header class="h-14 shrink-0 flex items-center justify-between px-4 bg-white border-b border-slate-200">
       <div class="flex items-center gap-3">
         <span class="flex items-center gap-2 font-semibold">
           <img src="assets/maskable_icon_x192.png" alt="Linka"
@@ -32,6 +36,15 @@ const AppHeader = {
         </span>
       </div>
       <div class="flex items-center gap-3 text-sm">
+        <button type="button" @click="$emit('open-agent')"
+                class="relative w-8 h-8 rounded-full overflow-hidden shrink-0 border border-slate-200 hover:border-teal-400"
+                title="Your AI agent">
+          <img src="assets/AI-agent-profile.jpeg" alt="Your AI agent" class="w-full h-full object-cover" draggable="false" />
+          <span v-if="agentUnreadCount"
+                class="absolute -top-1 -right-1 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-teal-600 text-white text-[10px] font-semibold flex items-center justify-center">
+            {{ agentUnreadCount }}
+          </span>
+        </button>
         <button type="button" @click="$emit('edit-profile')"
                 class="flex items-center gap-3 hover:bg-slate-50 rounded-lg px-2 py-1 -mx-1"
                 title="Edit your profile">

@@ -46,4 +46,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 # Single process on purpose: the send / fan-out / receipt workers and the
 # routing heartbeat run in the app's FastAPI lifespan, so one Uvicorn
 # process is the whole system at demo scale (see ADR 0007). No --reload.
+# The agent_worker Compose service (ADR 0045) reuses this same image but
+# overrides CMD to run agent_worker_main.py instead - kept in its own
+# container/process so a stuck Gemini turn can't affect this one.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-server-header", "--proxy-headers", "--forwarded-allow-ips", "*"]

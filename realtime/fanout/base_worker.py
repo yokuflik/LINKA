@@ -16,7 +16,7 @@ import asyncio
 import logging
 from typing import Optional
 
-from redis.exceptions import ResponseError
+from redis.exceptions import RedisError, ResponseError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import APP_LIVENESS_TTL_SECONDS, SERVER_ID
@@ -138,8 +138,36 @@ class BaseStreamConsumer:
             ack_ids.append(entry_id)
 
         if ack_ids:
-            await redis_client.xack(stream_key, self.group, *ack_ids)
+            await self._ack_with_retry(stream_key, ack_ids)
         return len(ack_ids)
+
+    async def _ack_with_retry(self, stream_key: str, ack_ids: list, attempts: int = 3) -> None:
+        """XACK runs after process_entry's side effects are already committed
+        (a message sent, a receipt applied, ...) - a transient Redis hiccup
+        here must not be treated the same as a process_entry failure (which
+        correctly leaves an entry unacked for reclaim/retry), or a fully
+        successful entry gets silently redelivered and its side effects
+        re-run (found via a real duplicate-agent-reply bug: three identical
+        replies for one send, traced to XACK timing out against a Redis
+        instance that had been intermittently slow all session, leaving an
+        already-answered turn's entry to be auto-claimed and reprocessed).
+        A few retries with a short backoff absorb that without giving up
+        eagerly; a real Redis outage still surfaces (and the entry still
+        redelivers - see docstring above) rather than being silently
+        swallowed."""
+        for attempt in range(attempts):
+            try:
+                await redis_client.xack(stream_key, self.group, *ack_ids)
+                return
+            except RedisError:
+                if attempt == attempts - 1:
+                    logger.exception(
+                        "%s: XACK failed after %d attempts for %s - entries will be "
+                        "redelivered and reprocessed (side effects are not idempotent)",
+                        self.name, attempts, ack_ids,
+                    )
+                    raise
+                await asyncio.sleep(0.2 * (attempt + 1))
 
     async def drain_once(
         self,

@@ -68,6 +68,37 @@ services:
       start_period: 20s
       retries: 3
 
+  # Consumer for agent_invoke_stream (ADR 0045, step 3). Own container, not a
+  # task in `app`'s lifespan like the other stream workers: a stuck/crashing
+  # Gemini turn must never affect the WS gateway hand-off or message
+  # delivery. Scale horizontally by adding more replicas of this service -
+  # the shared consumer group on agent_invoke_stream splits the load.
+  agent_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linka-app:latest
+    <<: *restart
+    env_file: .env
+    command: ["python", "agent_worker_main.py"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      ID_SERVICE_ADDR: id_service:50051
+      # Own liveness key, distinct from the app's SERVER_ID (ADR 0041) -
+      # this process doesn't drain message_send_stream/receipt_log_stream,
+      # so it must not be conflated with the app's own liveness signal.
+      SERVER_ID: ${SERVER_ID:?set SERVER_ID in .env}-agent-worker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      id_service:
+        condition: service_healthy
+    mem_limit: 192m
+    cpus: 0.5
+
   id_service:
     build:
       context: .

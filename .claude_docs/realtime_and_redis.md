@@ -7,6 +7,26 @@ Design rationale & trade-offs: `docs/adr/0001-redis-pubsub-fanout-routing.md`.
 ## Redis usage overview
 Redis 7 is used for: presence, pub/sub fan-out routing, rate limiting, idempotency, OTP, and the async send/fan-out/receipt Streams.
 
+## Redis client socket_timeout fix + XACK retry (2026-09-24, no ADR - reliability fixes)
+Root cause found for the `redis.exceptions.TimeoutError: Timeout reading from
+localhost:6380` noise recurring throughout local dev on the blocking `XREADGROUP`
+calls: `infra/redis/client.py`'s `redis.from_url(...)` never set `socket_timeout`, so
+redis-py's async client defaulted to 5s - the *same* value as
+`AGENT_INVOKE_STREAM_BLOCK_MS` (the largest `block_ms` any stream worker passes). With
+no slack between the two, ordinary scheduling jitter made the client's own socket-level
+read timeout race Redis's own `block` deadline, raising a spurious `TimeoutError`
+against a perfectly healthy, idle Redis (`INFO stats` confirmed no real load). Not
+cosmetic: one such timeout landing exactly on the post-`process_entry` `XACK` call left
+an already-fully-processed stream entry unacked, so `_claim_stale`/`XAUTOCLAIM`
+redelivered it and **re-ran its side effects** - caught via a real bug where one agent
+chat message produced three identical replies (three full Gemini-turn-and-post cycles
+for one send). Two-part fix: `infra/redis/client.py` now passes
+`socket_timeout=15` (comfortably above the 5000ms max `block_ms`) and
+`retry_on_timeout=True`; `realtime/fanout/base_worker.py::_drain_shard`'s `XACK` call is
+now wrapped in `_ack_with_retry` (3 attempts, short backoff) as defense in depth - both
+apply process-wide (every stream worker: send/fan-out/receipt/agent-invoke), not just
+the agent one.
+
 ## Async send path (FANOUT_REWRITE_PLAN.md steps 1–4, all landed)
 - WS `send_message` does only a rate-limit + participant check, then `realtime/fanout/send_queue.enqueue_outgoing_message` (XADD `message_send_stream`) and ACKs `{"type":"ack","for":"send_message","status":"queued"}` (no `message_id`/`created_at`).
 - `realtime/fanout/worker.py` (`run_forever`, one task/process, started in `main.py` lifespan; `drain_once` exposed for tests) runs the old send flow via `message_service.process_outgoing` — idempotency, `_validate_media` HEAD, `create_message`, then `send_queue.enqueue_fanout`.

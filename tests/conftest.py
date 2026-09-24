@@ -40,6 +40,7 @@ from modules.users import models as _user  # noqa: F401
 from modules.chats.models import private_chat_pair as _private_chat_pair  # noqa: F401
 from modules.settings import models as _user_settings  # noqa: F401
 from modules.auth import models as _reserved_username  # noqa: F401
+from modules.agents import models as _agent  # noqa: F401
 
 @pytest.fixture(scope="session", autouse=True)
 def _ephemeral_database():
@@ -105,6 +106,11 @@ async def session_factory():
         # the trigger + index + extension the same way scripts/init_db.py does.
         from modules.search.ddl import apply_search_ddl
         await apply_search_ddl(conn)
+
+        # Agent knowledge base FTS (ADR 0046 decision 4): same trigger+index
+        # convention on agent_knowledge_chunks.content_tsv.
+        from modules.agents.knowledge_ddl import apply_knowledge_ddl
+        await apply_knowledge_ddl(conn)
 
     async_session = sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False

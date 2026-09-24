@@ -18,7 +18,10 @@
 // loadChats, showMembersModal, markActiveChatReadIfVisible, noteAvatarUrl,
 // removeFromOutbox, onSendError, onScheduledMessageSent/Failed, onPresenceRevoked.
 // From other composables: presenceByUserId, clearUserTyping, noteUserTyping,
-// sendReceipt, currentUser, log, logError.
+// sendReceipt, currentUser, log, logError. AI agent drawer (Wave 1, see
+// AGENT_DRAWER_UI_PLAN.md): myAgent, showAgentDrawer, onAgentChatMessage,
+// onAgentChatMessageFailed, applyAgentThinking, applyAgentConfigChanged
+// (all from useAgentConfig.js).
 function useWsRouter(ctx) {
   const { nextTick } = Vue;
   const store = LinkaChatStore;
@@ -41,6 +44,48 @@ function useWsRouter(ctx) {
     }
     if (msg.type === 'ack') { log('ack:', msg.for, msg); return; }
     if (msg.type === 'heartbeat_ack') { return; }
+
+    // The AI agent's own 1:1 chat (ADR 0045, AGENT_DRAWER_UI_PLAN.md) is
+    // deliberately kept OUT of LinkaChatStore.messages/activeChatId - it has
+    // its own small message list in useAgentConfig.js so opening the agent
+    // drawer never hijacks whatever chat the user has open behind it. Route
+    // its message events there instead of falling into the generic
+    // new_message/message_failed handling below (which assumes the active-
+    // chat/unread-badge semantics this chat doesn't use the same way).
+    if (
+      ctx.myAgent && ctx.myAgent.value &&
+      msg.chat_id === ctx.myAgent.value.owner_agent_chat_id &&
+      (msg.event === 'new_message' || msg.event === 'message_failed' || msg.event === 'message_already_sent')
+    ) {
+      if (msg.event === 'message_failed') {
+        ctx.onAgentChatMessageFailed(msg.client_message_id);
+        logError('agent message failed to send:', msg.reason);
+        return;
+      }
+      if (msg.event === 'message_already_sent') {
+        ctx.onAgentChatMessage(msg);
+        return;
+      }
+      if (msg.sender_id != null) clearUserTyping(msg.chat_id, msg.sender_id);
+      ctx.onAgentChatMessage(msg);
+      // Badge: only for the agent's own replies, and only while the drawer's
+      // chat isn't the one currently open (mirrors the normal unread rule).
+      if (msg.sender_id !== currentUser.value.id && !ctx.showAgentDrawer.value) {
+        store.bumpUnreadCount(msg.chat_id);
+      }
+      return;
+    }
+
+    // AI agent live status (modules/agents/invoke_worker.py /
+    // modules/agents/router.py) - see AGENT_DRAWER_UI_PLAN.md.
+    if (msg.event === 'agent_thinking') {
+      ctx.applyAgentThinking({ status: msg.status, detail: msg.detail });
+      return;
+    }
+    if (msg.event === 'agent_config_changed') {
+      ctx.applyAgentConfigChanged(msg.agent);
+      return;
+    }
 
     // The send worker couldn't persist a queued message (bad media, no longer
     // a participant, too long). Flag the optimistic bubble so the user sees it

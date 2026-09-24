@@ -313,6 +313,12 @@ function useAuth(ctx) {
     authStage.value = 'phone';
     if (ctx.scheduleTokenRefresh) ctx.scheduleTokenRefresh();
     ctx.connectWebSocket();
+    // Load the agent first so loadChats() can filter its owner chat out of
+    // the sidebar (it's a real chat_id server-side, but must only ever
+    // surface via the AgentDrawer). Non-fatal: never blocks entering the app.
+    if (ctx.loadMyAgent) {
+      try { await ctx.loadMyAgent(); } catch (err) { ctx.logError && ctx.logError('failed to load agent (non-fatal)', err); }
+    }
     await ctx.loadChats();
   }
 
@@ -329,6 +335,7 @@ function useAuth(ctx) {
     ctx.resetPresence();
     ctx.resetTyping();
     ctx.resetSettings();
+    if (ctx.resetAgentConfig) ctx.resetAgentConfig();
     ctx.unreadCountByChatId.value = {};
     ctx.contextMenuMessage.value = null;
     ctx.replyingToMessage.value = null;

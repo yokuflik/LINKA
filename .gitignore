@@ -64,3 +64,6 @@ htmlcov/
 # Docker & OS specific
 .DS_Store
 Thumbs.db
+
+# Local dev server launcher (per-machine paths/ports)
+run_dev.sh

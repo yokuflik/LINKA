@@ -242,6 +242,25 @@ async def get_chat_messages(
     return result.scalars().all()
 
 
+async def has_prior_messages(session: AsyncSession, chat_id: int, before_message_id: int) -> bool:
+    """True if `chat_id` has any real (non-system) message with id strictly
+    less than `before_message_id`. Used by the agent trigger engine's
+    on_unknown_sender check (ADR 0046 decision 2) - "first message ever in
+    this private chat" - via `.exists()` so Postgres can stop at the first
+    matching row instead of counting the whole chat."""
+    stmt = select(
+        select(Message.id)
+        .where(
+            Message.chat_id == chat_id,
+            Message.id < before_message_id,
+            Message.sender_id.is_not(None),
+        )
+        .exists()
+    )
+    result = await session.execute(stmt)
+    return bool(result.scalar())
+
+
 async def count_unread_messages(session: AsyncSession, chat_id: int, last_read_message_id: Optional[int]) -> int:
     """
     How many of this chat's messages come after the caller's own

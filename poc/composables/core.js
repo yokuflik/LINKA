@@ -123,7 +123,9 @@ function useCore(ctx) {
       try {
         resp = await doFetch();
       } catch (err) {
-        logError('network error calling', path, err);
+        // console.warn, not logError: this fires on every disconnect/offline
+        // blip and auto-retries anyway, so it shouldn't read as a red error.
+        console.warn('[Linka] network error calling', path, err);
         err.isNetworkError = true; // consumed by friendlyError() for a graceful message
         if (!canRetry || cancelled()) throw err;
         if (onRetry) onRetry({ attempt, waitMs: RETRY_NETWORK_MS, reason: 'network' });

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from modules.agents.trigger_engine import evaluate_triggers
 from modules.messaging.crud import create_message
 from modules.chats.crud.crud_participant import get_chat_participants
 from modules.chats.crud.crud_participant import is_participant
@@ -120,6 +121,13 @@ async def process_outgoing(
         sender_id=message.sender_id,
         client_message_id=client_message_id,
     )
+
+    # AI agent Trigger Rule Engine (ADR 0045): fire-and-forget, parallel to
+    # fan-out above - never blocks or fails the send path even if it errors.
+    # Runs on its own DB session (this worker's `session` belongs to the
+    # caller and may be committed/closed before this task gets scheduled).
+    asyncio.create_task(evaluate_triggers(message))
+
     return message
 
 

@@ -7,6 +7,11 @@ from modules.messaging.errors import MessageTooLongError
 # System messages ("X joined the group", etc.) have no sender
 SYSTEM_MESSAGE_TYPE = 6
 
+# AI agent messages in the owner's own agent chat: sender_id is the owner
+# (the agent has no user_id of its own, ADR 0045), so this type is the only
+# way the frontend can tell "the agent replied" apart from "I sent this".
+AGENT_REPLY_MESSAGE_TYPE = 7
+
 
 def _check_content_length(content: Optional[str], max_length: Optional[int] = None) -> None:
     # ADR 0033: callers thread the cap in from their injected Limits object.

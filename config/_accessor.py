@@ -11,6 +11,7 @@ does `monkeypatch.setattr(config.app_settings, "X", ...)` is reflected here too.
 """
 
 from . import (
+    agent_settings,
     app_settings,
     auth_settings,
     redis_settings,
@@ -24,6 +25,7 @@ from . import (
 )
 
 _MODULES = (
+    agent_settings,
     app_settings,
     auth_settings,
     redis_settings,

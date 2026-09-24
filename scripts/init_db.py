@@ -27,6 +27,8 @@ from scripts.manage_partitions import ensure_partitions
 from modules.search.ddl import apply_search_ddl
 # Semantic vector search (ADR 0042): pgvector extension + embedding column.
 from modules.vector_search.ddl import apply_vector_ddl, ensure_vector_extension
+# Agent knowledge base FTS (ADR 0046 decision 4): content_tsv trigger + index.
+from modules.agents.knowledge_ddl import apply_knowledge_ddl
 # Registers every model on Base.metadata - importing database.connection alone
 # doesn't import the model modules themselves.
 from modules.chats.models import chat
@@ -38,6 +40,7 @@ from modules.chats.models import private_chat_pair
 from modules.auth import models as reserved_username
 from modules.users import models as user
 from modules.settings import models as user_settings
+from modules.agents import models as agent
 
 
 async def main(drop: bool) -> None:
@@ -181,6 +184,58 @@ async def main(drop: bool) -> None:
                 "  released_at TIMESTAMPTZ NOT NULL,"
                 "  expires_at TIMESTAMPTZ NOT NULL"
                 ")",
+                # BYOK Gemini key (ADR 0046 decision 5). Fernet ciphertext,
+                # NULL = use the shared settings.GEMINI_API_KEY.
+                "ALTER TABLE agents ADD COLUMN IF NOT EXISTS encrypted_gemini_api_key BYTEA",
+                # Trigger-shape drift safety net: a column's server_default is
+                # fixed at DDL time, so create_all never re-applies it after
+                # DEFAULT_AGENT_TRIGGERS gains new keys (on_unknown_sender -
+                # ADR 0046 decision 2, on_schedule - decision 3). Re-pins the
+                # default for future inserts AND backfills any existing row
+                # missing either key (JSONB merge - never touches a row that
+                # already has both keys, so per-agent customization survives).
+                "ALTER TABLE agents ALTER COLUMN triggers SET DEFAULT "
+                "'{\"on_time_window\": {\"enabled\": false, \"start\": \"09:00\", \"end\": \"22:00\"}, "
+                "\"on_specific_chats\": {}, \"on_unknown_sender\": {\"enabled\": false}, "
+                "\"on_schedule\": []}'::jsonb",
+                "UPDATE agents SET triggers = "
+                "'{\"on_unknown_sender\": {\"enabled\": false}, \"on_schedule\": []}'::jsonb || triggers "
+                "WHERE NOT (triggers ? 'on_unknown_sender') OR NOT (triggers ? 'on_schedule')",
+                # can_message_groups default flip (AGENT_DRAWER_UI_PLAN.md /
+                # ADR 0048, new agents only - user-confirmed 2026-09-23, no
+                # backfill of existing agents). Same server_default-is-fixed-
+                # at-DDL-time issue as triggers above: only re-pins the
+                # column default for future inserts, never UPDATEs existing
+                # rows.
+                "ALTER TABLE agents ALTER COLUMN restrictions SET DEFAULT "
+                "'{\"can_send_messages\": true, \"can_message_groups\": false, "
+                "\"can_message_private\": true, \"can_message_new_private_contacts\": true, "
+                "\"can_leave_groups\": true, \"blocked_read_chat_ids\": [], "
+                "\"max_messages_per_day\": null}'::jsonb",
+                # ADR 0047 decision 3: skill/persona in force for execution-
+                # mode turns. New column, existing rows backfilled to the
+                # same default new rows get (no per-agent customization to
+                # preserve yet, unlike the triggers backfill above).
+                "ALTER TABLE agents ADD COLUMN IF NOT EXISTS active_skill VARCHAR(32) "
+                "NOT NULL DEFAULT 'one_off_executor'",
+                # ADR 0047 decision 2: is_enabled default flips True -> False -
+                # every new agent starts dormant until the owner explicitly
+                # turns it on. New rows only, no backfill of existing agents
+                # (an already-enabled agent stays enabled).
+                "ALTER TABLE agents ALTER COLUMN is_enabled SET DEFAULT false",
+                # ADR 0047 decision 5: dynamic runtime pause state, written by
+                # the agent itself via pause_and_escalate. New column, existing
+                # rows backfilled to the empty default (no prior per-agent
+                # value to preserve).
+                "ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_chat_ids JSONB "
+                "NOT NULL DEFAULT '[]'::jsonb",
+                # ADR 0049: sub-state inside the config chat, written by the
+                # agent's own transfer_to_builder/transfer_to_help/
+                # finish_building_agent tools. New column, existing rows
+                # backfilled to the same default new rows get (no prior
+                # per-agent value to preserve, same as active_skill above).
+                "ALTER TABLE agents ADD COLUMN IF NOT EXISTS builder_state VARCHAR(32) "
+                "NOT NULL DEFAULT 'supervisor'",
             ):
                 await conn.execute(text(ddl))
             # Semantic vector search (ADR 0042): embedding column safety net
@@ -195,6 +250,10 @@ async def main(drop: bool) -> None:
             # deployed DB also needs `scripts/backfill_search_tsv.py` for
             # pre-existing rows.
             await apply_search_ddl(conn)
+            # Agent knowledge base FTS (ADR 0046 decision 4): content_tsv
+            # trigger + gin(agent_id, content_tsv) index on the new
+            # agent_knowledge_chunks table (created by create_all above).
+            await apply_knowledge_ddl(conn)
             # Real dated partitions on top of the DEFAULT safety net (ADR 0005).
             await ensure_partitions(conn)
             print(

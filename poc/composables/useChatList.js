@@ -11,14 +11,19 @@
 // Needs from ctx (call-time): apiFetch, log, logError, chats, chatsError,
 // activeChatId, sortChats, groupChatMembers, presetExpiryIso,
 // resolvePrivateChatTitle, resolveChatMemberPhones,
-// unreadCountByChatId, markAllChatsDelivered.
+// unreadCountByChatId, markAllChatsDelivered, myAgent.
 //
 // Global `useChatList(ctx)` factory.
 function useChatList(ctx) {
   async function loadChats() {
     ctx.chatsError.value = '';
     try {
-      ctx.chats.value = await ctx.apiFetch('/chats?limit=50');
+      const rawChats = await ctx.apiFetch('/chats?limit=50');
+      // The agent's own 1:1 owner chat is a real chat_id server-side, but it
+      // must never appear in the regular sidebar - it's only reachable via
+      // the AgentDrawer (see .claude_docs/ai_agent_frontend.md).
+      const agentChatId = ctx.myAgent && ctx.myAgent.value ? ctx.myAgent.value.owner_agent_chat_id : null;
+      ctx.chats.value = agentChatId ? rawChats.filter((c) => c.chat.id !== agentChatId) : rawChats;
       ctx.sortChats();
       ctx.log('loaded', ctx.chats.value.length, 'chat(s)');
       await Promise.all(
@@ -27,8 +32,14 @@ function useChatList(ctx) {
       // Re-pull members for any group whose list was already fetched, so a
       // participant's changed name/photo propagates to the sidebar and to the
       // open message pane (no server push exists for a profile edit).
+      // Restricted to chat ids still present in the fresh chat list - a stale
+      // entry left behind after being removed from / a deletion of that chat
+      // would otherwise 403 against /chats/{id}/members.
+      const liveChatIds = new Set(ctx.chats.value.map((c) => c.chat.id));
       await Promise.all(
-        Object.keys(ctx.groupChatMembers.value).map((id) => ctx.resolveChatMemberPhones(id))
+        Object.keys(ctx.groupChatMembers.value)
+          .filter((id) => liveChatIds.has(id))
+          .map((id) => ctx.resolveChatMemberPhones(id))
       );
 
       // Seed the unread badge from the server's real count - replaced

@@ -53,6 +53,9 @@ This file is a **router only**. It does NOT contain domain detail.
 | `.claude_docs/env_handoff.md` | **Transient handoff.** Tasks A (`.gitignore`) + B (CLAUDE.md ADR index) DONE. Remaining: ephemeral test DB in `conftest.py` (needs ADR 0032) + deferred bottleneck items 3 (CRUD→service) & 4 (test DI). Delete once drained. |
 | `.claude_docs/search.md` | Server-side message search (ADR 0040). `modules/search/` layout, the `messages.content_tsv` trigger + `btree_gin(chat_id, content_tsv)` partial index (`modules/search/ddl.py`, run by `init_db.py` + `conftest.py`), `build_tsquery` (prefix vs `websearch`), cursor codec, in-chat vs global (`participants` JOIN), `messages_around`, the SSE stream (`stream_search`, caps, per-user lock), the 4 endpoints, Caddy `flush_interval -1`, the `search_query`/`search_stream`/`search_ip` rate buckets, `scripts/backfill_search_tsv.py`. |
 | `.claude_docs/frontend.md` | PoC structure (`poc/index.html` + `components/*.js` + `composables/*.js`), running it, syntax-check-after-edit rule, `$emit` chaining rule, `useWsRouter.js` live-event handling, optimistic send flow. |
+| `.claude_docs/ai_agent.md` | Current state, schema, and rate limits for the per-user AI agent (Gemini tool calling, service account) - ADR 0045/0046/0047, **all decisions done**. `modules/agents/` (`Agent`/`AgentToolCallLog`/`AgentKnowledgeDocument`/`Chunk`), `restrictions`/`triggers`/`active_skill`/`paused_chat_ids` shapes, the full execution-mode (10 tools) vs config-mode (6 tools) registry split on the hard `chat_id`-keyed gate, `get_knowledge_index`+`fetch_chunk` Agentic RAG, `pause_and_escalate` + human-only resume endpoint. Detailed build history (ADR 0045 steps 1-5, ADR 0046 decisions 1-6) moved to `.claude_docs/ai_agent_history.md`; ADR 0047's own decision-5-7 implementation log lives in the ADR file itself. |
+| `.claude_docs/ai_agent_history.md` | AI agent build history (split out of `ai_agent.md` 2026-09-23): step-by-step log of ADR 0045 steps 1-5 (schema, trigger engine, worker, tool registry/Gemini client, config API) and ADR 0046 decisions 1-6 (pre-filter cache, `on_unknown_sender`, `on_schedule`, knowledge-base/RAG incl. vendored pdf.js, BYOK backend+frontend), plus the AGENT_DRAWER_UI_PLAN.md Wave 2 backend pieces (`agent_thinking`/`agent_config_changed` events, owner-chat direct-wake). |
+| `.claude_docs/ai_agent_frontend.md` | AI agent PoC frontend (split out of `ai_agent.md` 2026-09-23): the slide-in `AgentDrawer.js`/`AgentChatView.js`/`AgentSettingsView.js` (replaces the dead `AgentConfigModal.js`), `useAgentConfig.js`'s drawer-shaped API, why the agent's own chat is kept out of `LinkaChatStore`, the 3 new `useWsRouter.js` branches, BYOK frontend (masked key input). |
 
 # INDEX — `docs/adr/` (Architecture Decision Records)
 
@@ -107,6 +110,12 @@ Rows are one-liners; the ADR file holds the full rationale (this index is loaded
 | `0042-semantic-vector-search-gemini-ivfflat.md` | Semantic search: `messages.embedding vector(768)` (pgvector) + IVFFlat cosine index, built only after seed/backfill (empty-table centroids are useless); Gemini `gemini-embedding-001` over raw HTTPS, free-tier 100 req/min; flush-on-demand Redis queue (`vector_embed_queue`) off the send hot path; `db` image → `pgvector/pgvector:pg15` | Accepted |
 | `0043-local-dev-embedding-cache.md` | Local-dev embedding cache to avoid burning the Gemini free-tier quota on repeat `seed_vector_data.py` runs | Accepted |
 | `0042-semantic-vector-search-gemini-ivfflat.md` | Semantic search: `messages.embedding vector(768)` (pgvector) + Gemini `gemini-embedding-001` (raw httpx, no SDK) + IVFFlat cosine index (`lists=100`, built only after seed data exists — HNSW rejected as OOM risk on the 1GB host). Redis-list flush-on-demand queue (auto-flush at 50, or synchronous flush before a search); membership enforced via `participants` INNER JOIN like ADR 0040 | Accepted |
+| `0045-ai-agent-service-account-tool-calling.md` | Per-user autonomous AI agent (Gemini 1.5 Flash + Function Calling) acting as a messaging-only service account. Denylist `restrictions` JSONB (hard, server-enforced) + soft `system_prompt`; `triggers` JSONB Gatekeeper (time window + per-chat keyword wake, self-editable via `update_own_triggers`); dedicated 1:1 owner-agent chat; async worker pool in its own `agent_worker` container consuming `agent_invoke_stream`, not time-sliced; layered rate limits incl. 5 Gemini calls/min, 4 round-trips/turn, 20 activations/hour, and a new 1-hour/day active-processing-time budget | Accepted |
+| `0046-agent-schedules-knowledge-base-and-byok.md` | Extends ADR 0045 (not a replacement): reaffirms in-process worker→service calls (rejects HTTP/localhost); Redis pre-filter cache (`agent:enabled_owners` SET + `agent:trigger_cfg:{owner_user_id}`) so most messages skip Postgres in trigger eval; new `on_unknown_sender` trigger + per-sender daily quota; new `on_schedule` trigger (recurring/one-off via `agent_schedule_due` ZSET + poll loop in `agent_worker`, fires a full tool-calling turn from a free-text instruction, not a canned message); per-agent knowledge base (`agent_knowledge_documents`/`agent_knowledge_chunks`, GIN FTS, no pgvector) fed by server-side chunking for text/Markdown and fully client-side PDF parsing+chunking (vendored `pdf.js`); new `search_knowledge`/`search_messages` tools; BYOK Gemini key (Fernet-encrypted `Agent.encrypted_gemini_api_key`) | Accepted |
+| `0047-agent-skills-tool-mode-gate-and-escalation.md` | Extends ADR 0045/0046 for the paid-Gemini-tier move: raises `AGENT_GEMINI_CALLS_PER_MINUTE` 5→30 and round-trip cap 4→8 (cost ceiling, not quota protection; 20s turn timeout/semaphore unchanged); `is_enabled` defaults to `False`, provisioning stays lazy (no signup-path creation); `Agent.active_skill` skill/persona catalog (`agent_builder` config-mode vs `sales_agent`/`support_agent`/`summarizer`/`one_off_executor` execution-mode) with a **hard code-level tool-mode gate** keyed on triggering `chat_id` (never on persona/prompt text — prompt-injection-proof); `get_knowledge_index`+`fetch_chunk` Agentic RAG tools supersede ADR 0046's `search_knowledge`; `pause_and_escalate` tool + `Agent.paused_chat_ids` (human-only resume via `POST /agents/me/resume-chat/{id}`, reuses existing `realtime.notification_service.send_push`); 6 config-mode tools (`set_agent_persona`/`update_agent_rules`/`set_trigger`/`get_agent_status`/`estimate_api_usage`/`schedule_one_off_task`) fill the previously-empty config tool-mode gate; corrects ADR 0046's "always inject owner_agent_chat context" to config-mode/schedule-only (confirmed moot — never implemented in the first place) | Accepted |
+| `0048-agent-chat-drawer-ui.md` | Replaces the centered `AgentConfigModal.js` with a slide-in `AgentDrawer.js` (chat + settings); agent's own chat kept out of `LinkaChatStore` (separate `agentMessages`, REST-fetched); reuses `send_message` for talking to the agent; checkbox=immediate/text=Save-Cancel split; new `agent_thinking`/`agent_config_changed` personal-channel WS events (zero Rust `ws_gateway` changes needed); owner-chat direct-wake special case in the Trigger Rule Engine; masked BYOK key input; new-agent-only `can_message_groups` default flipped to `false` | Accepted |
+| `0049-agent-builder-supervisor-help-substates.md` | Extends ADR 0045/0046/0047/0048's config-chat handling: `Agent.builder_state` (`supervisor`\|`builder_agent`\|`help_agent`, default `supervisor`) branches config-mode turns three ways, each with its own system prompt and disjoint tool schema set; three new handoff tools (`transfer_to_builder`, `transfer_to_help`, `finish_building_agent`) dispatched through the existing `update_agent_config` write path; `finish_building_agent` also auto-enables the agent | Accepted |
+| `0050-agent-reset-to-default.md` | New `POST /agents/me/reset`: hard-purges every message in the owner-agent chat (not sender/soft-delete-scoped, unlike ADR 0021's `purge_message`), deletes the knowledge base, and resets all soft settings (`system_prompt`/`triggers`/`active_skill`/`builder_state`/`paused_chat_ids`/BYOK key) and hard settings (`restrictions`) to default; `is_enabled` and `owner_agent_chat_id` itself untouched; frontend confirms via `window.confirm` before calling | Accepted |
 
 ---
 
@@ -116,14 +125,26 @@ Rows are one-liners; the ADR file holds the full rationale (this index is loaded
 docker compose up -d                                    # test_db (5433), test_redis (6380), test_minio (9100 API / 9101 console)
 DATABASE_URL="postgresql+asyncpg://test_user:test_password@localhost:5433/test_db" python3 -m scripts.init_db
 python3 -m scripts.init_storage
-DATABASE_URL="..." REDIS_URL="redis://localhost:6380/0" SERVER_ID="linka-dev" uvicorn main:app --reload
-
-# /ws is the standalone Rust ws_gateway (ADR 0033/0038) - the Python app no
-# longer serves /ws. Run it alongside uvicorn for the PoC to connect:
-JWT_SECRET="dev-secret-change-me" REDIS_URL="redis://localhost:6380/0" \
-  APP_INTERNAL_URL="http://localhost:8000" WS_GATEWAY_BIND="127.0.0.1:8081" \
-  APP_SERVER_ID="linka-dev" CORS_ALLOW_ORIGINS="*" cargo run -p ws_gateway
+./run_dev.sh
 ```
+
+`run_dev.sh` (git-ignored, not committed) starts all three local processes together in
+one terminal: `uvicorn main:app --reload` (foreground), plus `agent_worker_main.py`
+(ADR 0045 step 3 - the `agent_invoke_stream` consumer; only wired into
+`docker-compose.prod.yml` as its own container otherwise, so without it locally AI
+agents never respond even though triggers enqueue fine) and the Rust `ws_gateway`
+(ADR 0033/0038 - the only `/ws`, the Python app no longer serves it) both backgrounded
+and killed automatically on Ctrl+C via an `EXIT` trap. `SERVER_ID` (app) and
+`APP_SERVER_ID` (gateway) are both hardcoded to `linka-dev` inside the script so they
+stay in sync - they key `app_worker_alive:{id}` (ADR 0041), the liveness signal the
+gateway checks before acking `send_message`/`mark_*`.
+
+If a previous run didn't shut down cleanly (crashed terminal, killed pane), stale
+`ws_gateway`/`agent_worker_main.py` processes can survive and silently eat messages
+sent while the new stack starts (the browser's WS then bootstraps with zero chat
+subscriptions) - check for stragglers with `ps aux | grep -E "ws_gateway|agent_worker_main"`
+and `lsof -nP -iTCP:8000,8081 -sTCP:LISTEN` before assuming a fresh `run_dev.sh` alone
+fixed a "the agent isn't responding" report.
 
 Open `poc/index.html` directly. OTP codes print to the server console — no real SMS/FCM.
 In the browser console once: `localStorage.setItem('linka_ws_base','ws://localhost:8081')` so the PoC's WebSocket points at the gateway instead of `<apiBase>/ws` (prod uses Caddy to proxy `/ws` same-origin). `JWT_SECRET` must equal the app's `JWT_SECRET_KEY`.

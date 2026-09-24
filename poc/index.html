@@ -70,6 +70,12 @@
 <script src="firebase-init.js?v=2026.09.11-2"></script>
 <script src="data/country-codes.js?v=2026.09.11-2"></script>
 <script src="vendor/thumbhash.js?v=2026.09.11-2"></script>
+<!-- Vendored pdf.js (ADR 0046 decision 4) - ES module only build, so this is
+     type=module rather than a plain classic script tag used everywhere else.
+     Requires serving the PoC over http://localhost (not file://) - see
+     .claude_docs/frontend.md "Running". useKnowledgeUpload.js checks
+     window.pdfjsLib before use and degrades gracefully if it never loads. -->
+<script type="module" src="vendor/pdfjs/pdfjs-loader.mjs?v=2026.09.23-1"></script>
 <!-- Structural split into child components (see CLAUDE.md) - plain
      Vue.defineComponent objects loaded as sibling scripts, since this PoC
      has no build step and can't use .vue SFCs. All business logic/state
@@ -91,6 +97,9 @@
 <script src="components/ChatProfileModal.js?v=2026.09.11-2"></script>
 <script src="components/ProfileEditModal.js?v=2026.09.11-2"></script>
 <script src="components/SettingsModal.js?v=2026.09.11-2"></script>
+<script src="components/AgentChatView.js?v=2026.09.23-2"></script>
+<script src="components/AgentSettingsView.js?v=2026.09.23-1"></script>
+<script src="components/AgentDrawer.js?v=2026.09.24-2"></script>
 <script src="components/SearchModal.js?v=2026.09.13-1"></script>
 <script src="components/NewChatModal.js?v=2026.09.11-2"></script>
 <script src="components/NewGroupModal.js?v=2026.09.11-2"></script>
@@ -101,7 +110,7 @@
 <!-- Composables: global use*(ctx) factories the root setup() stitches into ctx -->
 <script src="composables/core.js?v=2026.09.11-2"></script>
 <script src="composables/usePhoneInput.js?v=2026.09.11-2"></script>
-<script src="composables/useAuth.js?v=2026.09.11-2"></script>
+<script src="composables/useAuth.js?v=2026.09.24"></script>
 <script src="composables/useWebsocket.js?v=2026.09.11-2"></script>
 <script src="composables/usePresence.js?v=2026.09.11-2"></script>
 <script src="composables/useTyping.js?v=2026.09.11-2"></script>
@@ -127,6 +136,8 @@
 <script src="composables/useScheduleMessage.js?v=2026.09.11-2"></script>
 <script src="composables/useMediaPlaceholder.js?v=2026.09.11-2"></script>
 <script src="composables/useSettings.js?v=2026.09.11-2"></script>
+<script src="composables/useAgentConfig.js?v=2026.09.24"></script>
+<script src="composables/useKnowledgeUpload.js?v=2026.09.23-1"></script>
 <script src="composables/useProfileEdit.js?v=2026.09.11-2"></script>
 <script src="composables/useAvatarCache.js?v=2026.09.11-2"></script>
 <script src="composables/useAvatarLightbox.js?v=2026.09.11-2"></script>
@@ -271,7 +282,7 @@ const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick
 
 const app = createApp({
   components: {
-    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, ForwardModal, MessageDetailsModal, MembersModal, ChatProfileModal, ProfileEditModal, SettingsModal, SearchModal, NewChatModal, NewGroupModal, ScheduleMessageModal, ScheduleListModal, ToastList, AvatarLightbox,
+    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, ForwardModal, MessageDetailsModal, MembersModal, ChatProfileModal, ProfileEditModal, SettingsModal, AgentDrawer, AgentChatView, AgentSettingsView, SearchModal, NewChatModal, NewGroupModal, ScheduleMessageModal, ScheduleListModal, ToastList, AvatarLightbox,
   },
   setup() {
     // ---------------------------------------------------------------
@@ -305,6 +316,8 @@ const app = createApp({
     Object.assign(ctx, useScheduleMessage(ctx));
     Object.assign(ctx, useMediaPlaceholder(ctx));
     Object.assign(ctx, useSettings(ctx));
+    Object.assign(ctx, useAgentConfig(ctx));
+    Object.assign(ctx, useKnowledgeUpload(ctx));
     Object.assign(ctx, useProfileEdit(ctx));
     Object.assign(ctx, useAvatarCache(ctx));
     Object.assign(ctx, useAvatarLightbox(ctx));
@@ -326,7 +339,7 @@ const app = createApp({
       accessToken, currentUser,
       authStage, otpCode, authError,
       connectWebSocket, disconnectWebSocket, logout,
-      loadChats,
+      loadChats, loadMyAgent,
     } = ctx;
 
     // ---------------------------------------------------------------
@@ -348,6 +361,15 @@ const app = createApp({
           ctx.scheduleTokenRefresh();
           ctx.requestNotificationPermission();
           connectWebSocket();
+          // Load the agent first so loadChats() can filter its owner chat out
+          // of the sidebar (it's a real chat_id server-side, but must only
+          // ever surface via the AgentDrawer). Isolated from the session
+          // try/catch below - a failure here must never log the user out.
+          try {
+            await loadMyAgent();
+          } catch (err) {
+            logError('failed to load agent (non-fatal)', err);
+          }
           await loadChats();
         } catch (err) {
           logError('stored session is invalid, logging out:', err.message);
@@ -360,6 +382,14 @@ const app = createApp({
 
     // Leaving the OTP step: stop any in-flight auth connection-retry loop.
     ctx.onBackToPhone = () => { ctx.abandonAuthRetry(); authStage.value = 'phone'; };
+
+    // Picking a chat from the sidebar while the agent drawer is open should
+    // behave like navigating away from it - close the drawer first so the
+    // opened chat is visible underneath instead of staying hidden behind it.
+    ctx.selectChatFromSidebar = (chatId) => {
+      if (ctx.showAgentDrawer.value) ctx.closeAgentDrawer();
+      ctx.selectChat(chatId);
+    };
 
     // Every composable slice is already on `ctx` (each use*() returns ctx
     // itself), so the template can bind straight to it - nothing left to
@@ -385,8 +415,9 @@ const app = createApp({
     <div class="h-full flex flex-col" v-if="isAuthed && authStage !== 'welcome'">
       <AppHeader :wsStatus="wsStatus" :currentUser="currentUser" :avatarUrl="currentUserAvatarUrl"
         :avatarPreview="currentUserAvatarPreview"
+        :agentUnreadCount="myAgent ? (unreadCountByChatId[myAgent.owner_agent_chat_id] || 0) : 0"
         @logout="logout" @edit-profile="openProfileModal" @open-settings="openSettingsModal"
-        @open-search="openSearchModal" />
+        @open-search="openSearchModal" @open-agent="openAgentDrawer" />
 
       <AvatarLightbox :data="avatarLightbox" @close="closeAvatarLightbox" />
 
@@ -401,7 +432,7 @@ const app = createApp({
           :isChatMuted="isChatMuted"
           :chatFilters="CHAT_FILTERS" :chatFilter="chatFilter" :filteredChats="filteredChats"
           @open-new-chat="openNewChatModal"
-          @select-chat="selectChat"
+          @select-chat="selectChatFromSidebar"
           @chat-contextmenu="openChatContextMenu"
           @set-chat-filter="setChatFilter" />
 
@@ -568,6 +599,31 @@ const app = createApp({
       :busy="settingsBusy" :error="settingsError"
       @save="submitSettings" @close="showSettingsModal = false" />
 
+    <AgentDrawer
+      :open="showAgentDrawer" :view="agentDrawerView"
+      :agent="myAgent" :form="agentForm"
+      :busy="agentBusy" :error="agentError"
+      :currentUser="currentUser" :messages="agentMessages" :messagesLoading="agentMessagesLoading"
+      :messagesHasMore="agentHasMoreMessages" :messagesLoadingOlder="agentLoadingOlderMessages"
+      :thinkingStatus="agentThinkingStatus"
+      :promptDirty="promptDirty" :hardTextDirty="hardTextDirty" :chatKeywordsDirty="chatKeywordsDirty"
+      :knowledgeDocuments="knowledgeDocuments" :knowledgeUploadBusy="knowledgeUploadBusy" :knowledgeError="knowledgeError"
+      :byokDirty="byokDirty" :byokKeyInput="byokKeyInput"
+      :resetBusy="agentResetBusy"
+      @close="closeAgentDrawer" @activate="activateMyAgent" @toggle-enabled="toggleAgentEnabled"
+      @open-settings="openAgentSettings" @back-to-chat="backToAgentChat" @send-chat-message="sendAgentChatMessage"
+      @load-older-messages="loadOlderAgentMessages(myAgent && myAgent.owner_agent_chat_id)"
+      @prompt-input="onPromptInput" @save-prompt="saveSoftPrompt" @cancel-prompt="cancelSoftPromptEdit"
+      @set-restriction="setRestrictionCheckbox" @max-messages-input="onMaxMessagesInput"
+      @save-hard-text="saveHardTextFields" @cancel-hard-text="cancelHardTextEdit"
+      @add-chat-trigger="addAgentChatTrigger" @remove-chat-trigger="removeAgentChatTrigger"
+      @set-time-window="setTimeWindowField"
+      @chat-keywords-input="onChatTriggerKeywordsInput" @save-chat-keywords="saveChatTriggerKeywords"
+      @cancel-chat-keywords="cancelChatTriggerKeywordsEdit"
+      @upload-knowledge-file="uploadKnowledgeFile" @delete-knowledge-document="deleteKnowledgeDocument"
+      @byok-key-input="onByokKeyInput" @save-byok-key="saveByokKey" @cancel-byok-key="cancelByokKeyEdit"
+      @clear-byok-key="clearByokKey" @reset-agent="resetAgentToDefault" />
+
     <SearchModal v-if="showSearchModal"
       v-model:query="searchQuery"
       :tab="searchTab"
@@ -662,6 +718,12 @@ const app = createApp({
 app.component('Avatar', Avatar);
 app.component('VoiceMessage', VoiceMessage);
 app.component('InlineAlert', InlineAlert);
+// AgentDrawer.js's own template resolves these two by tag name - a root-level
+// `components: {...}` entry only resolves tags used directly in the root's
+// OWN template, never inside a child component's template (that needs
+// global registration, same reason Avatar/InlineAlert are registered here).
+app.component('AgentChatView', AgentChatView);
+app.component('AgentSettingsView', AgentSettingsView);
 app.mount('#app');
 
 // Non-caching kill-switch service worker (poc/sw.js): clears stale caches and

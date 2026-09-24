@@ -46,6 +46,10 @@ MAX_UPLOAD_BYTES_AUDIO = int(os.environ.get("MAX_UPLOAD_BYTES_AUDIO", str(5 * 10
 MAX_UPLOAD_BYTES_FILE = int(os.environ.get("MAX_UPLOAD_BYTES_FILE", str(20 * 1024 * 1024)))
 # Profile pictures (user + group avatars): 0.5 MB.
 MAX_UPLOAD_BYTES_AVATAR = int(os.environ.get("MAX_UPLOAD_BYTES_AVATAR", str(512 * 1024)))
+# Agent knowledge-base documents (ADR 0046 decision 4): text/Markdown/PDF.
+MAX_UPLOAD_BYTES_AGENT_KNOWLEDGE = int(
+    os.environ.get("MAX_UPLOAD_BYTES_AGENT_KNOWLEDGE", str(20 * 1024 * 1024))
+)
 
 # Allowed upload content types, per kind. A ticket request for a kind with a
 # mime outside its set is rejected before any URL is minted. Kept
@@ -62,6 +66,9 @@ ALLOWED_UPLOAD_MIME = {
     "file": set(),
     # Avatars must be images; reuse the image set.
     "avatar": {"image/jpeg", "image/png", "image/webp"},
+    # Agent knowledge documents (ADR 0046 decision 4): text/Markdown chunked
+    # server-side, PDF parsed+chunked client-side - see config/agent_settings.py.
+    "agent_knowledge": {"text/plain", "text/markdown", "application/pdf"},
 }
 
 # Maps an upload kind to its size ceiling. media_service reads this rather
@@ -72,6 +79,7 @@ MAX_UPLOAD_BYTES_BY_KIND = {
     "audio": MAX_UPLOAD_BYTES_AUDIO,
     "file": MAX_UPLOAD_BYTES_FILE,
     "avatar": MAX_UPLOAD_BYTES_AVATAR,
+    "agent_knowledge": MAX_UPLOAD_BYTES_AGENT_KNOWLEDGE,
 }
 
 # Smallest accepted upload per kind, in bytes. Guards against zero-byte /
@@ -83,6 +91,7 @@ MIN_UPLOAD_BYTES_BY_KIND = {
     "audio": 1,
     "file": 1,
     "avatar": 1,
+    "agent_knowledge": 1,
 }
 
 # Per-user hard storage quota, in bytes (ADR 0028). A media upload ticket is
@@ -117,6 +126,8 @@ UPLOAD_BUCKET_BY_KIND = {
     "audio": S3_BUCKET_MEDIA,
     "file": S3_BUCKET_MEDIA,
     "avatar": S3_BUCKET_AVATARS,
+    # Private, like message media - never public-read.
+    "agent_knowledge": S3_BUCKET_MEDIA,
 }
 
 __all__ = [
@@ -136,6 +147,7 @@ __all__ = [
     "MAX_UPLOAD_BYTES_AUDIO",
     "MAX_UPLOAD_BYTES_FILE",
     "MAX_UPLOAD_BYTES_AVATAR",
+    "MAX_UPLOAD_BYTES_AGENT_KNOWLEDGE",
     "ALLOWED_UPLOAD_MIME",
     "MAX_UPLOAD_BYTES_BY_KIND",
     "MIN_UPLOAD_BYTES_BY_KIND",

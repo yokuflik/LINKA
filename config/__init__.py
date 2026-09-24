@@ -19,6 +19,7 @@ the setting (`importlib.reload(config.app_settings)`), not this package.
 """
 
 from . import (  # noqa: F401
+    agent_settings,
     app_settings,
     auth_settings,
     redis_settings,

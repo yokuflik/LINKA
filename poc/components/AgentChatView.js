@@ -17,7 +17,7 @@ const AgentChatView = {
     loadingOlder: { type: Boolean, default: false },
     thinkingStatus: { default: null }, // { status, detail } | null
   },
-  emits: ['send', 'load-older'],
+  emits: ['send', 'load-older', 'pick-pdf'],
   data() {
     return { draft: '', pinnedToBottom: true, prependAdjust: null };
   },
@@ -52,7 +52,12 @@ const AgentChatView = {
       }
       const out = [];
       let lastKey = null;
-      const list = this.messages;
+      // Purged/soft-deleted rows (deleted_at set) survive in the DB as
+      // content=null tombstones so a live in-place delete can render
+      // (ADR 0021) and so purge keeps the partition key (ADR 0050's
+      // chat-wide reset) - but this view has no "message deleted" bubble
+      // like MessageList.js does, so just drop them from what's shown.
+      const list = this.messages.filter(m => !m.deleted_at);
       for (let i = 0; i < list.length; i++) {
         const m = list[i];
         if (!m.created_at) {
@@ -99,6 +104,9 @@ const AgentChatView = {
     // owner's own sends) renders like "mine" - same rule AgentChatView has
     // always used, kept here for the tick/side logic below.
     isMine(m) { return m.type !== 7; },
+    // Global function from composables/messageFormat.js (shared with
+    // MessageList.js): WhatsApp-style *bold* + "- " bullet-list rendering.
+    formatMessageContent,
     formatTime(iso) {
       return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     },
@@ -135,6 +143,14 @@ const AgentChatView = {
       el.style.height = 'auto';
       el.style.height = Math.min(el.scrollHeight, 144) + 'px';
     },
+    openPdfPicker() {
+      this.$refs.pdfFileInput.value = '';
+      this.$refs.pdfFileInput.click();
+    },
+    onPdfFileChosen(event) {
+      const file = event.target.files && event.target.files[0];
+      if (file) this.$emit('pick-pdf', file);
+    },
   },
   template: `
     <div class="flex flex-col h-full min-h-0">
@@ -160,7 +176,7 @@ const AgentChatView = {
                        : (row.groupEnd
                            ? 'px-3 py-2 rounded-2xl bubble-tail bg-white border border-slate-200 rounded-bl-none bubble-tail-theirs'
                            : 'px-3 py-2 rounded-2xl bg-white border border-slate-200')">
-                  <span v-if="row.m.content">{{ row.m.content }}</span>
+                  <span v-if="row.m.content" v-html="formatMessageContent(row.m.content)"></span>
                 </div>
                 <div v-if="row.groupEnd || row.m.send_failed || row.m.pending"
                      class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
@@ -181,6 +197,10 @@ const AgentChatView = {
         </div>
       </div>
       <div class="shrink-0 border-t border-slate-200 p-2 flex items-center gap-2">
+        <button type="button" @click="openPdfPicker"
+                class="w-9 h-9 shrink-0 self-end rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 text-xl leading-none flex items-center justify-center"
+                title="Attach PDF">+</button>
+        <input ref="pdfFileInput" type="file" class="hidden" accept="application/pdf" @change="onPdfFileChosen" />
         <textarea ref="draftEl" v-model="draft" @keydown.enter="onEnter" @input="resizeDraft"
                   rows="1" placeholder="Message your agent…" dir="auto"
                   class="flex-1 min-w-0 px-3 py-1.5 text-sm border border-slate-300 rounded-2xl resize-none leading-normal max-h-36 overflow-y-auto"></textarea>

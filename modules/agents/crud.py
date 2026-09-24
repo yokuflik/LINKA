@@ -22,6 +22,32 @@ def _check_schedule_quota(triggers_patch: dict) -> None:
         )
 
 
+def _merge_triggers(current: dict, patch: dict) -> dict:
+    """Merges a triggers patch into `current`. on_time_window/on_unknown_sender/
+    on_any_message are merged one level deeper (not replaced outright) so a
+    partial caller patch like {"on_time_window": {"enabled": false}} keeps the
+    existing start/end instead of dropping them - AgentOut requires both
+    fields, and a top-level-only shallow merge previously let a partial patch
+    corrupt the row (missing start/end -> 500 on GET /agents/me). on_specific_chats
+    is merged per chat_id for the same reason (each entry has its own
+    sub-shape); on_schedule is replaced wholesale by design (see
+    update_own_triggers)."""
+    merged = {**current, **patch}
+    if "on_time_window" in patch:
+        merged["on_time_window"] = {**current.get("on_time_window", {}), **patch["on_time_window"]}
+    if "on_unknown_sender" in patch:
+        merged["on_unknown_sender"] = {**current.get("on_unknown_sender", {}), **patch["on_unknown_sender"]}
+    if "on_any_message" in patch:
+        merged["on_any_message"] = {**current.get("on_any_message", {}), **patch["on_any_message"]}
+    if "on_specific_chats" in patch:
+        existing_chats = current.get("on_specific_chats", {})
+        merged["on_specific_chats"] = {
+            chat_id: {**existing_chats.get(chat_id, {}), **chat_patch}
+            for chat_id, chat_patch in patch["on_specific_chats"].items()
+        }
+    return merged
+
+
 async def get_agent_by_id(session: AsyncSession, agent_id: int) -> Optional[Agent]:
     """Used by the agent_worker consumer to re-check is_enabled at dequeue
     time (defense in depth for the enqueue-to-dequeue window, ADR 0045)."""
@@ -55,7 +81,7 @@ async def update_agent_config(session: AsyncSession, agent: Agent, patch: dict) 
         agent.restrictions = {**agent.restrictions, **patch["restrictions"]}
     if "triggers" in patch:
         _check_schedule_quota(patch["triggers"])
-        agent.triggers = {**agent.triggers, **patch["triggers"]}
+        agent.triggers = _merge_triggers(agent.triggers, patch["triggers"])
     await session.flush()
     return agent
 
@@ -69,7 +95,7 @@ async def update_agent_triggers(session: AsyncSession, agent_id: int, patch: dic
     cannot schedule its way past the cap."""
     _check_schedule_quota(patch)
     agent = await session.get(Agent, agent_id)
-    agent.triggers = {**agent.triggers, **patch}
+    agent.triggers = _merge_triggers(agent.triggers, patch)
     await session.flush()
     return agent
 

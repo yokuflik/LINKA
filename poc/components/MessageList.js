@@ -317,6 +317,9 @@ const MessageList = {
       return f == null ? '' : Math.round(f * 100) + '%';
     }
 
+    // formatMessageContent is defined globally in composables/messageFormat.js
+    // (shared with AgentChatView.js).
+
     return {
       messages,
       RING_CIRCUMFERENCE,
@@ -327,6 +330,7 @@ const MessageList = {
       isMediaOpened, openMedia, mediaBoxStyle, blurUrl,
       formatBytes, downloadMedia, mediaDownloading, mediaSrc,
       quotedReplyThumb, jumpToQuoted, highlightedId,
+      formatMessageContent,
     };
   },
   expose: ['messagesEl'],
@@ -545,7 +549,7 @@ const MessageList = {
           <div v-else-if="m.type >= 2 && m.type <= 5" class="mb-1 text-xs italic opacity-70">
             [attachment unavailable]
           </div>
-          <span v-if="m.content">{{ m.content }}</span>
+          <span v-if="m.content" v-html="formatMessageContent(m.content)"></span>
           <span v-if="m.is_edited" class="text-[10px] opacity-60">{{ m.edited_at
             ? ' (edited ' + new Date(m.edited_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ')'
             : ' (edited)' }}</span>

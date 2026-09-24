@@ -80,6 +80,7 @@
      Vue.defineComponent objects loaded as sibling scripts, since this PoC
      has no build step and can't use .vue SFCs. All business logic/state
      stays in the root app below; these only own template markup. -->
+<script src="composables/messageFormat.js?v=2026.09.25-1"></script>
 <script src="components/Avatar.js?v=2026.09.11-2"></script>
 <script src="components/AvatarLightbox.js?v=2026.09.11-2"></script>
 <script src="components/AuthScreen.js?v=2026.09.11-2"></script>
@@ -603,7 +604,8 @@ const app = createApp({
       :open="showAgentDrawer" :view="agentDrawerView"
       :agent="myAgent" :form="agentForm"
       :busy="agentBusy" :error="agentError"
-      :currentUser="currentUser" :messages="agentMessages" :messagesLoading="agentMessagesLoading"
+      :currentUser="currentUser" :chats="chats" :chatDisplayName="chatDisplayName"
+      :messages="agentMessages" :messagesLoading="agentMessagesLoading"
       :messagesHasMore="agentHasMoreMessages" :messagesLoadingOlder="agentLoadingOlderMessages"
       :thinkingStatus="agentThinkingStatus"
       :promptDirty="promptDirty" :hardTextDirty="hardTextDirty" :chatKeywordsDirty="chatKeywordsDirty"
@@ -613,11 +615,12 @@ const app = createApp({
       @close="closeAgentDrawer" @activate="activateMyAgent" @toggle-enabled="toggleAgentEnabled"
       @open-settings="openAgentSettings" @back-to-chat="backToAgentChat" @send-chat-message="sendAgentChatMessage"
       @load-older-messages="loadOlderAgentMessages(myAgent && myAgent.owner_agent_chat_id)"
+      @pick-pdf="onAgentPdfPicked"
       @prompt-input="onPromptInput" @save-prompt="saveSoftPrompt" @cancel-prompt="cancelSoftPromptEdit"
       @set-restriction="setRestrictionCheckbox" @max-messages-input="onMaxMessagesInput"
       @save-hard-text="saveHardTextFields" @cancel-hard-text="cancelHardTextEdit"
       @add-chat-trigger="addAgentChatTrigger" @remove-chat-trigger="removeAgentChatTrigger"
-      @set-time-window="setTimeWindowField"
+      @set-time-window="setTimeWindowField" @set-any-message="setAnyMessageEnabled"
       @chat-keywords-input="onChatTriggerKeywordsInput" @save-chat-keywords="saveChatTriggerKeywords"
       @cancel-chat-keywords="cancelChatTriggerKeywordsEdit"
       @upload-knowledge-file="uploadKnowledgeFile" @delete-knowledge-document="deleteKnowledgeDocument"

@@ -122,6 +122,11 @@ async def _publish_agent_thinking(owner_user_id: int, status: str, detail: str |
 # "typing" continuously instead of flickering off between updates.
 _PEER_TYPING_REFRESH_SECONDS = 3.0
 
+# Tools whose execution posts a message into the triggering chat - once one of
+# these lands, the peer-visible typing loop must stop immediately (see its
+# cancellation right after execute_tool_call below).
+_MESSAGE_SENDING_TOOL_NAMES = frozenset({"send_message", "reply_message"})
+
 
 async def _publish_peer_typing_loop(chat_id: int, sender_id: int) -> None:
     """Real `typing` event fanned out to the chat's other participants (same
@@ -133,8 +138,17 @@ async def _publish_peer_typing_loop(chat_id: int, sender_id: int) -> None:
     agent drawer and is never seen by other chat members."""
     try:
         while True:
+            # user_id must be a string, matching every other id in every
+            # other event on the wire (Snowflake-id-as-string convention,
+            # .claude_docs/database_schema.md) - the Rust ws_gateway forwards
+            # this payload byte-for-byte from Redis with no reserialization
+            # (crates/ws_gateway/src/fanin.rs), so a raw Python int here
+            # reaches the browser as a JSON number while every real `typing`
+            # frame's user_id is `.to_string()`'d (handlers.rs). The frontend
+            # compares ids with strict `===` throughout, so this one event
+            # type silently failed every identity check downstream.
             await realtime_service.publish_event(
-                chat_id, {"event": "typing", "user_id": sender_id, "kind": "typing"}
+                chat_id, {"event": "typing", "user_id": str(sender_id), "kind": "typing"}
             )
             await asyncio.sleep(_PEER_TYPING_REFRESH_SECONDS)
     except asyncio.CancelledError:
@@ -341,6 +355,17 @@ async def _run_turn(
                     )
                 tool_result = await execute_tool_call(session, agent, call["name"], call["args"], chat_id=chat_id)
                 await session.commit()
+                # The reply just landed (new_message clears the indicator
+                # client-side) - stop the loop right here instead of waiting
+                # for the turn's finally, or a tick still in flight can
+                # re-publish `typing` after the message already arrived and
+                # leave a phantom indicator with nothing left to clear it
+                # (the turn may keep going for more round-trips after this).
+                if call["name"] in _MESSAGE_SENDING_TOOL_NAMES and peer_typing_task is not None:
+                    peer_typing_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await peer_typing_task
+                    peer_typing_task = None
                 contents.append({"role": "user", "parts": [function_response_part(call["name"], tool_result)]})
             else:
                 # Loop exhausted without an explicit return (shouldn't happen

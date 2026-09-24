@@ -3,7 +3,7 @@
 // (bundle size, no build step) - the regex + a per-country length hint is
 // enough to stop typos, not to be authoritative.
 //
-// Dev whitelist: a raw input of exactly "1".."5" is a non-real test number that
+// Dev whitelist: a raw input of exactly "1".."10" is a non-real test number that
 // bypasses validation and routes through the legacy OTP stub. Everything else
 // must be a valid E.164 number and goes through Firebase SMS.
 function usePhoneInput(ctx) {
@@ -11,7 +11,7 @@ function usePhoneInput(ctx) {
 
   const COUNTRIES = window.COUNTRY_CODES || [];
   const NSN_LEN = window.COUNTRY_NSN_LEN || {};
-  const DEV_WHITELIST = new Set(['1', '2', '3', '4', '5']);
+  const DEV_WHITELIST = new Set(['1', '2', '3', '4', '5', '6', '7', '8', '9', '10']);
 
   function guessCountry() {
     const region = (navigator.language || '').split('-')[1];
@@ -43,7 +43,7 @@ function usePhoneInput(ctx) {
     return nsn.length >= 6 && nsn.length <= 14;
   });
 
-  // What the rest of the app treats as "the phone number": the raw 1..5 token
+  // What the rest of the app treats as "the phone number": the raw 1..10 token
   // for whitelisted entries, otherwise the resolved E.164 string.
   const resolvedPhone = computed(() => (isWhitelisted.value ? rawInput.value.trim() : e164.value));
 

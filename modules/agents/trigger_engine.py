@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from infra.db.connection import session_scope
 from infra.ratelimit.service import check_and_increment
+from infra.redis.client import redis_client
 from modules.agents.cache import (
     get_cached_trigger_cfg,
     is_owner_cached_enabled,
@@ -40,6 +41,33 @@ from modules.messaging.crud import has_prior_messages
 from modules.messaging.models import Message
 
 logger = logging.getLogger(__name__)
+
+_ACTIVATION_QUOTA_NOTICE = (
+    "Your agent hit its hourly activation limit and won't respond to new "
+    "messages until it resets. It'll pick back up automatically."
+)
+
+
+async def _notify_activation_quota_exceeded(session: AsyncSession, owner_agent_chat_id: int) -> None:
+    """Posts one system-message notice per activation-quota window into the
+    owner's own agent chat, so a silently-dropped trigger doesn't look like
+    the agent went dark for no reason. Gated by a SET NX cooldown key (own
+    TTL, independent of the ratelimit counter) so a burst of dropped triggers
+    within the same window produces exactly one notice, not one per message."""
+    cooldown_key = f"agent_quota_notice_sent:{owner_agent_chat_id}"
+    try:
+        acquired = await redis_client.set(
+            cooldown_key, "1", nx=True, ex=settings.AGENT_ACTIVATION_QUOTA_WINDOW_SECONDS
+        )
+        if not acquired:
+            return
+        # Imported here, not at module level, to avoid a circular import:
+        # modules.messaging.send imports evaluate_triggers from this module.
+        from modules.messaging.send import send_system_message
+
+        await send_system_message(session, owner_agent_chat_id, _ACTIVATION_QUOTA_NOTICE)
+    except Exception:
+        logger.exception("failed to notify owner of agent activation quota for chat %s", owner_agent_chat_id)
 
 
 def _within_time_window(window: dict, now: datetime) -> bool:
@@ -93,6 +121,23 @@ async def _matches_unknown_sender(
     if chat is None or chat.is_group:
         return False
     return not await has_prior_messages(session, message.chat_id, message.id)
+
+
+async def _matches_any_message(
+    session: AsyncSession, triggers: dict, message: Message
+) -> bool:
+    """ADR 0052: fires on every message in every private (non-group) chat -
+    a broader, stateless catch-all, unlike on_unknown_sender (first-message-
+    only, mutates on_specific_chats on match). Still gated by on_time_window
+    (checked by the caller via _matches_trigger_config's fallback path) -
+    here we only decide chat scope. Needs the same DB round trip as
+    _matches_unknown_sender for chat.is_group."""
+    if not triggers.get("on_any_message", {}).get("enabled"):
+        return False
+    chat = await get_chat_by_id(session, message.chat_id)
+    if chat is None or chat.is_group:
+        return False
+    return _within_time_window(triggers.get("on_time_window", {}), datetime.now(timezone.utc))
 
 
 async def _load_trigger_cfg(session: AsyncSession, owner_user_id: int) -> Optional[dict]:
@@ -164,6 +209,8 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
                 await enqueue_invocation(
                     agent_id=owner_agent.id, chat_id=message.chat_id, message_id=message.id
                 )
+            else:
+                await _notify_activation_quota_exceeded(session, owner_agent.owner_agent_chat_id)
         return
 
     participants = await get_chat_participants(session, message.chat_id)
@@ -185,7 +232,12 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
             continue
 
         matched_unknown_sender = await _matches_unknown_sender(session, cfg["triggers"], message)
-        if not matched_unknown_sender and not _matches_trigger_config(cfg["triggers"], message):
+        matched = (
+            matched_unknown_sender
+            or _matches_trigger_config(cfg["triggers"], message)
+            or await _matches_any_message(session, cfg["triggers"], message)
+        )
+        if not matched:
             continue
 
         agent_id = int(cfg["id"])
@@ -211,8 +263,10 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
             settings.AGENT_ACTIVATION_QUOTA_WINDOW_SECONDS,
         )
         if not allowed:
-            # Hourly quota exceeded - drop silently (message still delivered
-            # normally); no backlog/queueing of missed triggers per ADR 0045.
+            # Hourly quota exceeded - drop the trigger (message still
+            # delivered normally; no backlog/queueing of missed triggers per
+            # ADR 0045), but let the owner know via their own agent chat.
+            await _notify_activation_quota_exceeded(session, agent.owner_agent_chat_id)
             continue
 
         if matched_unknown_sender:

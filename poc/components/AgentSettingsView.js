@@ -8,6 +8,10 @@ const AgentSettingsView = {
     form: { type: Object, required: true }, // agentForm - never null while this view is shown
     busy: { type: Boolean, required: true },
     error: { type: String, default: '' },
+    // Chat picker for on_specific_chats (never a raw-chat_id free-text field -
+    // CLAUDE.md rule 5). Same shape/helper the sidebar and forward-modal use.
+    chats: { type: Array, required: true },
+    chatDisplayName: { type: Function, required: true },
     promptDirty: { type: Boolean, required: true },
     hardTextDirty: { type: Boolean, required: true },
     chatKeywordsDirty: { type: Object, required: true }, // chat_id -> bool
@@ -24,7 +28,7 @@ const AgentSettingsView = {
   emits: [
     'prompt-input', 'save-prompt', 'cancel-prompt',
     'set-restriction', 'max-messages-input', 'save-hard-text', 'cancel-hard-text',
-    'add-chat-trigger', 'remove-chat-trigger', 'set-time-window',
+    'add-chat-trigger', 'remove-chat-trigger', 'set-time-window', 'set-any-message',
     'chat-keywords-input', 'save-chat-keywords', 'cancel-chat-keywords',
     'upload-knowledge-file', 'delete-knowledge-document',
     'byok-key-input', 'save-byok-key', 'cancel-byok-key', 'clear-byok-key',
@@ -32,12 +36,31 @@ const AgentSettingsView = {
   data() {
     return { newTriggerChatId: '' };
   },
+  computed: {
+    // Chats not already watched, excluding the agent's own owner chat (a
+    // message there is always a deliberate wake, per trigger_engine - it can
+    // never be matched via on_specific_chats). Sorted by display name so the
+    // picker isn't sidebar-order-dependent.
+    availableTriggerChats() {
+      const watched = this.form.triggers.on_specific_chats || {};
+      const ownerChatId = this.form.owner_agent_chat_id;
+      return this.chats
+        .map((item) => item.chat)
+        .filter((chat) => chat.id !== ownerChatId && !(String(chat.id) in watched))
+        .map((chat) => ({ id: chat.id, name: this.chatDisplayName(chat) || `Chat ${chat.id}` }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    },
+  },
   methods: {
     submitNewTrigger() {
-      const chatId = this.newTriggerChatId.trim();
+      const chatId = this.newTriggerChatId;
       if (!chatId) return;
       this.$emit('add-chat-trigger', chatId);
       this.newTriggerChatId = '';
+    },
+    watchedChatName(chatId) {
+      const chat = this.chats.find((item) => String(item.chat.id) === String(chatId));
+      return chat ? this.chatDisplayName(chat.chat) : `Chat ${chatId}`;
     },
     onKnowledgeFilePicked(event) {
       const file = event.target.files && event.target.files[0];
@@ -59,7 +82,7 @@ const AgentSettingsView = {
           below for anything that must actually be blocked.
         </p>
         <textarea :value="form.system_prompt" @input="$emit('prompt-input', $event.target.value)"
-                  rows="3" placeholder="e.g. Be friendly and brief. Don't discuss politics."
+                  rows="3" placeholder="e.g. Be friendly and brief. Don't discuss politics." dir="auto"
                   class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg"></textarea>
         <div v-if="promptDirty" class="flex gap-2 mt-2">
           <button @click="$emit('save-prompt')" :disabled="busy"
@@ -141,13 +164,22 @@ const AgentSettingsView = {
           </div>
         </div>
 
+        <div class="mt-2">
+          <label class="flex items-center gap-2 text-sm">
+            <input type="checkbox" :checked="form.triggers.on_any_message.enabled"
+                   @change="$emit('set-any-message', $event.target.checked)" />
+            Reply to every new private message
+          </label>
+          <p class="text-xs text-slate-400 ml-6">Covers every 1:1 chat, no per-chat setup needed. Groups are never included.</p>
+        </div>
+
         <div class="mt-3">
           <p class="text-xs text-slate-500 mb-1">
             Specific chats to watch (leave keywords empty to wake on any message):
           </p>
           <div v-for="(cfg, chatId) in form.triggers.on_specific_chats" :key="chatId" class="mb-1.5">
             <div class="flex items-center gap-2">
-              <span class="text-xs text-slate-500 shrink-0 w-24 truncate" :title="chatId">Chat {{ chatId }}</span>
+              <span class="text-xs text-slate-500 shrink-0 w-24 truncate" :title="watchedChatName(chatId)">{{ watchedChatName(chatId) }}</span>
               <input type="text" :value="(cfg.keywords || []).join(', ')"
                      @input="$emit('chat-keywords-input', chatId, $event.target.value)"
                      placeholder="keywords, comma-separated"
@@ -163,10 +195,13 @@ const AgentSettingsView = {
             </div>
           </div>
           <div class="flex items-center gap-2 mt-1">
-            <input type="text" v-model="newTriggerChatId" placeholder="Chat ID to add"
-                   class="flex-1 min-w-0 px-2 py-1 text-xs border border-slate-300 rounded-lg" />
-            <button @click="submitNewTrigger"
-                    class="px-2 py-1 text-xs border border-slate-300 rounded-lg">Add</button>
+            <select v-model="newTriggerChatId"
+                    class="flex-1 min-w-0 px-2 py-1 text-xs border border-slate-300 rounded-lg bg-white">
+              <option value="" disabled>{{ availableTriggerChats.length ? 'Pick a chat…' : 'No more chats to add' }}</option>
+              <option v-for="c in availableTriggerChats" :key="c.id" :value="c.id">{{ c.name }}</option>
+            </select>
+            <button @click="submitNewTrigger" :disabled="!newTriggerChatId"
+                    class="px-2 py-1 text-xs border border-slate-300 rounded-lg disabled:opacity-50">Add</button>
           </div>
         </div>
       </div>

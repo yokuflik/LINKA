@@ -8,7 +8,7 @@
 //
 // The [+] button opens a small WhatsApp-style attach menu: "Photos & Videos"
 // (native picker filtered to image/video types -> pick-media) and "Documents"
-// (picker restricted to PDF only for now -> pick-document).
+// (unfiltered picker, any file type -> pick-document).
 const MessageInput = {
   emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'cancel-edit', 'pick-media', 'pick-document', 'start-recording', 'stop-recording', 'clear-attach-error', 'open-schedule'],
   props: {
@@ -203,7 +203,7 @@ const MessageInput = {
             </button>
             <button type="button" @click="openDocumentPicker"
                     class="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
-              <span>📄</span><span>Document (PDF)</span>
+              <span>📄</span><span>Documents</span>
             </button>
             <button type="button" @click="openSchedule"
                     class="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center gap-2">
@@ -272,7 +272,6 @@ const MessageInput = {
                accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
                @change="onMediaFileChosen" />
         <input ref="documentFileInput" type="file" class="hidden"
-               accept="application/pdf"
                @change="onDocumentFileChosen" />
         <!-- Not display:none: iOS Safari won't open the camera for a
              display:none file input triggered via .click(). Kept off-screen. -->

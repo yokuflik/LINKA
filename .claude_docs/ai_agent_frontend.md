@@ -65,7 +65,17 @@ there, styled by that chat's own sender_id logic.
   backend side of both. Checkboxes commit immediately on `@change`; every
   text field (`system_prompt`, `max_messages_per_day`, per-chat keyword
   lists, the BYOK key input) uses a local dirty flag + Save/Cancel buttons
-  that appear only while dirty.
+  that appear only while dirty. Takes two new props (`chats`, `chatDisplayName`,
+  threaded through `AgentDrawer.js` from `index.html`'s existing `ctx.chats`/
+  `ctx.chatDisplayName`): the `on_specific_chats` "Chat ID to add" free-text
+  box (2026-09-24 bug - stored a typed contact name as a bogus key that could
+  never match a real `chat_id`, silently breaking that trigger) is now a
+  `<select>` of the owner's actual private chats (excludes chats already
+  watched and the agent's own owner-agent chat), and watched entries show
+  the resolved `chatDisplayName` instead of a raw `Chat {id}` label. A new
+  "Reply to every new private message" checkbox (ADR 0052, `on_any_message`)
+  sits right below the time-window block, same immediate-commit pattern as
+  the time-window toggle.
 - **`poc/composables/useAgentConfig.js`** - public API is now drawer-shaped:
   `openAgentDrawer`/`closeAgentDrawer`/`showAgentDrawer`/`agentDrawerView`
   (`'chat'|'settings'`)/`openAgentSettings`/`backToAgentChat`/
@@ -225,12 +235,15 @@ itself is untouched (`MessageList.js` still uses it normally).
 
 ## Typing indicator never shows an unresolved identity (2026-09-25)
 
-Two-part fix, both in-scope bug fixes (no ADR) after the user reported the
-customer side of an agent conversation briefly saw a bare number instead of
-the owner's name in the "typing…" indicator - note `_publish_peer_typing_loop`
-(see `ai_agent.md`) already sent the *correct* identity (`user_id:
-owner_user_id`, never an agent id); the bug was entirely client-side
-resolution timing, not a wrong id being sent:
+**Root cause was backend, not frontend**: `_publish_peer_typing_loop`
+(`modules/agents/invoke_worker.py`) sent `user_id` as a raw Python int
+instead of a string, the one event on the wire not following this
+codebase's Snowflake-id-as-string convention - broke every strict `===` id
+check in the frontend for this event type, including the `userById` lookup
+below. Fixed with `str(sender_id)` - see `ai_agent.md` for the full trace.
+The two frontend hardenings below were real, defensible fixes (Rule 5
+compliance, avoiding a resolve/render race) but were NOT what caused the
+reported "Someone is typing" symptom - keeping them as defense-in-depth:
 
 - `useWsRouter.js`'s `typing` handler used to call `noteUserTyping`
   immediately and only *lazily* kick off `resolveChatMemberPhones` alongside
@@ -255,8 +268,6 @@ resolution timing, not a wrong id being sent:
   for this chat yet).
 - Tool-call log UI (`AgentToolCallLog` has no read endpoint yet either -
   backend follow-up too).
-- A real chat picker for `on_specific_chats` - currently raw chat-id text
-  entry (no "list my chat ids" UI surface exists in the PoC).
 - Frontend UI for `on_unknown_sender` toggle (ADR 0046 decision 2) and
   `on_schedule` entries (decision 3, add/edit/remove) - both backend-only so
   far, no `AgentSettingsView.js` section yet.

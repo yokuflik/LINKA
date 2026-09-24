@@ -10,9 +10,10 @@ AGENT_INVOKE_STREAM_KEY = os.environ.get("AGENT_INVOKE_STREAM_KEY", "agent_invok
 AGENT_INVOKE_STREAM_MAXLEN = int(os.environ.get("AGENT_INVOKE_STREAM_MAXLEN", "100000"))
 
 # Hourly activation quota - fixed-window counter via infra.ratelimit
-# (agent:{agent_id}:activations). Exceeding it silently drops the trigger
-# (the message is still delivered normally; the agent just doesn't respond).
-AGENT_ACTIVATION_QUOTA_PER_HOUR = int(os.environ.get("AGENT_ACTIVATION_QUOTA_PER_HOUR", "20"))
+# (agent:{agent_id}:activations). Exceeding it drops the trigger (the message
+# is still delivered normally) and posts one system-message notice per window
+# into the owner's agent chat (see trigger_engine._notify_activation_quota_exceeded).
+AGENT_ACTIVATION_QUOTA_PER_HOUR = int(os.environ.get("AGENT_ACTIVATION_QUOTA_PER_HOUR", "100"))
 AGENT_ACTIVATION_QUOTA_WINDOW_SECONDS = int(
     os.environ.get("AGENT_ACTIVATION_QUOTA_WINDOW_SECONDS", "3600")
 )

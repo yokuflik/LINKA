@@ -59,6 +59,14 @@ class AgentUnknownSenderIn(BaseModel):
     enabled: bool
 
 
+class AgentAnyMessageOut(BaseModel):
+    enabled: bool
+
+
+class AgentAnyMessageIn(BaseModel):
+    enabled: bool
+
+
 class AgentScheduleEntryOut(BaseModel):
     id: str
     kind: str  # "recurring" | "once"
@@ -83,6 +91,7 @@ class AgentTriggersOut(BaseModel):
     on_time_window: AgentTimeWindowOut
     on_specific_chats: Dict[str, AgentSpecificChatOut]
     on_unknown_sender: AgentUnknownSenderOut
+    on_any_message: AgentAnyMessageOut
     on_schedule: List[AgentScheduleEntryOut]
 
 
@@ -95,6 +104,7 @@ class AgentTriggersIn(BaseModel):
     on_time_window: Optional[AgentTimeWindowIn] = None
     on_specific_chats: Optional[Dict[str, AgentSpecificChatIn]] = None
     on_unknown_sender: Optional[AgentUnknownSenderIn] = None
+    on_any_message: Optional[AgentAnyMessageIn] = None
     on_schedule: Optional[List[AgentScheduleEntryIn]] = None
 
 

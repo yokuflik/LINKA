@@ -484,6 +484,16 @@ function useAgentConfig(ctx) {
     await patchTriggersImmediate(nextTriggers);
   }
 
+  async function setAnyMessageEnabled(enabled) {
+    if (!agentForm.value) return;
+    const nextTriggers = {
+      ...agentForm.value.triggers,
+      on_any_message: { ...agentForm.value.triggers.on_any_message, enabled },
+    };
+    agentForm.value = { ...agentForm.value, triggers: nextTriggers };
+    await patchTriggersImmediate(nextTriggers);
+  }
+
   // --- Sending a message into the agent's own chat (wakes it directly via
   // trigger_engine.py's owner-chat special case) ---
 
@@ -505,6 +515,13 @@ function useAgentConfig(ctx) {
       created_at: new Date().toISOString(),
       status: 'SENT', pending: true, send_failed: false,
     });
+  }
+
+  // Placeholder only - the PDF picker in the agent chat's [+] button is
+  // wired up (file selection + type restriction) but nothing is done with
+  // the picked file yet (no upload/parsing), per explicit instruction.
+  function onAgentPdfPicked(file) {
+    ctx.showToast('PDF picked: ' + file.name + ' (not sent yet)');
   }
 
   // --- Reset to default (ADR 0050): irreversibly wipes the owner-agent
@@ -610,9 +627,10 @@ function useAgentConfig(ctx) {
     promptDirty, onPromptInput, saveSoftPrompt, cancelSoftPromptEdit,
     hardTextDirty, setRestrictionCheckbox, onMaxMessagesInput, saveHardTextFields, cancelHardTextEdit,
     byokDirty, byokKeyInput, onByokKeyInput, saveByokKey, cancelByokKeyEdit, clearByokKey,
-    addAgentChatTrigger, removeAgentChatTrigger, setTimeWindowField,
+    addAgentChatTrigger, removeAgentChatTrigger, setTimeWindowField, setAnyMessageEnabled,
     chatKeywordsDirty, onChatTriggerKeywordsInput, saveChatTriggerKeywords, cancelChatTriggerKeywordsEdit,
     sendAgentChatMessage,
+    onAgentPdfPicked,
     resetAgentConfig,
     agentResetBusy, resetAgentToDefault,
   };

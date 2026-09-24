@@ -31,6 +31,9 @@ DEFAULT_AGENT_RESTRICTIONS = {
 # (case-insensitive) match required.
 # on_unknown_sender (ADR 0046 decision 2): fires on the first-ever message in
 # a private (non-group) chat, independent of on_specific_chats/on_time_window.
+# on_any_message (ADR 0052): fires on every message in every private chat -
+# a broader, stateless catch-all (unlike on_unknown_sender, never mutates
+# on_specific_chats). Groups excluded, same scope as on_unknown_sender.
 # on_schedule (ADR 0046 decision 3): a list of recurring/one-off entries that
 # run a full agent turn at a given time (not a canned message - see
 # modules/agents/schedule.py). Capped at AGENT_MAX_SCHEDULE_ENTRIES.
@@ -38,6 +41,7 @@ DEFAULT_AGENT_TRIGGERS = {
     "on_time_window": {"enabled": False, "start": "09:00", "end": "22:00"},
     "on_specific_chats": {},
     "on_unknown_sender": {"enabled": False},
+    "on_any_message": {"enabled": False},
     "on_schedule": [],
 }
 

@@ -11,6 +11,8 @@ const AgentDrawer = {
     busy: { type: Boolean, required: true },
     error: { type: String, default: '' },
     currentUser: { type: Object, required: true },
+    chats: { type: Array, required: true },
+    chatDisplayName: { type: Function, required: true },
     messages: { type: Array, required: true },
     messagesLoading: { type: Boolean, default: false },
     messagesHasMore: { type: Boolean, default: false },
@@ -30,10 +32,10 @@ const AgentDrawer = {
     resetBusy: { type: Boolean, default: false },
   },
   emits: [
-    'close', 'activate', 'toggle-enabled', 'open-settings', 'back-to-chat', 'send-chat-message', 'load-older-messages',
+    'close', 'activate', 'toggle-enabled', 'open-settings', 'back-to-chat', 'send-chat-message', 'load-older-messages', 'pick-pdf',
     'prompt-input', 'save-prompt', 'cancel-prompt',
     'set-restriction', 'max-messages-input', 'save-hard-text', 'cancel-hard-text',
-    'add-chat-trigger', 'remove-chat-trigger', 'set-time-window',
+    'add-chat-trigger', 'remove-chat-trigger', 'set-time-window', 'set-any-message',
     'chat-keywords-input', 'save-chat-keywords', 'cancel-chat-keywords',
     'upload-knowledge-file', 'delete-knowledge-document',
     'byok-key-input', 'save-byok-key', 'cancel-byok-key', 'clear-byok-key',
@@ -109,9 +111,11 @@ const AgentDrawer = {
                            :hasMore="messagesHasMore" :loadingOlder="messagesLoadingOlder"
                            :thinkingStatus="thinkingStatus"
                            @send="(text) => $emit('send-chat-message', text)"
-                           @load-older="$emit('load-older-messages')" />
+                           @load-older="$emit('load-older-messages')"
+                           @pick-pdf="(file) => $emit('pick-pdf', file)" />
             <AgentSettingsView v-else
                                :form="form" :busy="busy" :error="error"
+                               :chats="chats" :chatDisplayName="chatDisplayName"
                                :promptDirty="promptDirty" :hardTextDirty="hardTextDirty"
                                :chatKeywordsDirty="chatKeywordsDirty"
                                :knowledgeDocuments="knowledgeDocuments" :knowledgeUploadBusy="knowledgeUploadBusy"
@@ -125,6 +129,7 @@ const AgentDrawer = {
                                @add-chat-trigger="(id) => $emit('add-chat-trigger', id)"
                                @remove-chat-trigger="(id) => $emit('remove-chat-trigger', id)"
                                @set-time-window="(k, v) => $emit('set-time-window', k, v)"
+                               @set-any-message="(v) => $emit('set-any-message', v)"
                                @chat-keywords-input="(id, v) => $emit('chat-keywords-input', id, v)"
                                @save-chat-keywords="(id) => $emit('save-chat-keywords', id)"
                                @cancel-chat-keywords="(id) => $emit('cancel-chat-keywords', id)"

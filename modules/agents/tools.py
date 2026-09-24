@@ -604,7 +604,7 @@ TOOL_SCHEMAS = [
             "properties": {
                 "triggers": {
                     "type": "object",
-                    "description": "Partial or full triggers object: {on_time_window: {enabled, start, end}, on_specific_chats: {chat_id: {keywords: [...]}}}",
+                    "description": "Partial or full triggers object: {on_time_window: {enabled, start, end}, on_specific_chats: {chat_id: {keywords: [...]}}, on_any_message: {enabled}}",
                 }
             },
             "required": ["triggers"],
@@ -668,13 +668,13 @@ CONFIG_TOOL_SCHEMAS = [
     },
     {
         "name": "set_trigger",
-        "description": "Modify the agent's wake-up trigger configuration (time window / per-chat keywords / unknown-sender / schedule entries).",
+        "description": "Modify the agent's wake-up trigger configuration (time window / per-chat keywords / unknown-sender / any-message / schedule entries).",
         "parameters": {
             "type": "object",
             "properties": {
                 "triggers": {
                     "type": "object",
-                    "description": "Partial triggers object: {on_time_window: {...}, on_specific_chats: {...}, on_unknown_sender: {...}, on_schedule: [...]}",
+                    "description": "Partial triggers object: {on_time_window: {...}, on_specific_chats: {...}, on_unknown_sender: {...}, on_any_message: {enabled}, on_schedule: [...]}",
                 }
             },
             "required": ["triggers"],

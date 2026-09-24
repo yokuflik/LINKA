@@ -54,15 +54,41 @@ unaffected and remains the correct signal for execution-mode turns. No
 schema/API change, import-smoke-tested only (same gap as every prior
 agents-module step).
 
-**Peer-visible typing indicator could momentarily show an unresolved
-identity instead of the owner's name (2026-09-25, frontend-only fix, no
-ADR)**: `_publish_peer_typing_loop` already sent the correct identity
-(`user_id: owner_user_id`, never an agent id - the agent has no `user_id` of
-its own, ADR 0045) - the bug was purely client-side resolution timing. Fixed
-so the indicator never renders until the sender's identity is fully
-resolved (deferred instead of racing), with a raw-id-safe fallback for the
-remaining rare-error case. Full detail in
-`.claude_docs/ai_agent_frontend.md`.
+**Peer-visible typing indicator's `user_id` was an unserialized int, breaking
+every strict identity check downstream (2026-09-25, real bug, no ADR)**:
+`_publish_peer_typing_loop` sent `"user_id": sender_id` as a raw Python
+`int`. Every other id on the wire in this codebase is a string (Snowflake-
+id-as-string convention, `.claude_docs/database_schema.md`) - e.g. a genuine
+user's `typing` frame is stringified in Rust
+(`crates/ws_gateway/src/handlers.rs`: `user_id.to_string()`), and
+`new_message`'s `sender_id` is `str(...)`'d in `modules/messaging/send.py`.
+The Rust gateway forwards a Python-originated `instance_inbox` payload
+byte-for-byte with no reserialization (`crates/ws_gateway/src/fanin.rs`), so
+this one event type alone reached the browser with a JSON *number* instead
+of a string. The PoC frontend compares ids with strict `===` throughout
+(`poc/composables/useWsRouter.js`), so this single-field type mismatch
+silently broke both of the below - fixed with one `str(sender_id)` in
+`_publish_peer_typing_loop`:
+- The customer-visible indicator never resolved to the owner's real name
+  (fell through to `userLabelById`'s no-user-cached fallback every time) -
+  this is the actual root cause of what looked like a frontend name-
+  resolution bug; that earlier `useWsRouter.js`/`userLabelById` hardening
+  (below) was real defense-in-depth but not what was causing the reported
+  symptom.
+- The indicator could outlive the reply and get stuck: `new_message`'s
+  `clearUserTyping(chat_id, sender_id)` (string) never matched the
+  number-keyed entry `noteUserTyping` had stored, so the entry only ever
+  cleared via its own 5s client-side expiry instead of immediately.
+
+Also hardened the stop timing itself: the peer-typing loop is now cancelled
+right after `execute_tool_call` returns for `send_message`/`reply_message`
+(new `_MESSAGE_SENDING_TOOL_NAMES` check), not only in the turn's outer
+`finally` - previously a 3s-interval tick still in flight could re-publish
+`typing` after the reply had already landed (the turn may run more
+round-trips afterward), re-arming a phantom indicator with nothing left to
+clear it early.
+
+Full detail in `.claude_docs/ai_agent_frontend.md`.
 
 **ADR 0049 DONE 2026-09-24**: config-mode turns (`chat_id ==
 owner_agent_chat_id`) no longer always run the single `agent_builder`
@@ -356,6 +382,40 @@ error). Schema column, `PATCH /agents/me`'s `gemini_api_key` write path, and
 `crypto.py` are untouched - re-enabling is just restoring the decrypt call in
 `invoke_worker.py` and un-hiding the settings section.
 
+**All 7 agent prompts rewritten for conversational tone + language matching
+(2026-09-25, no ADR - prompt-only UX change, requested by the user)**: every
+system prompt the agents can run under - `builder_flow.py`'s `SUPERVISOR_PROMPT`/
+`BUILDER_PROMPT`/`HELP_PROMPT` and `personas.py`'s `PERSONA_SYSTEM_PROMPTS`
+(`sales_agent`/`support_agent`/`summarizer`/`one_off_executor`; `agent_builder`
+untouched - it's dead code, never actually selected since ADR 0049 moved
+config-mode fully onto `builder_flow.py`) - now carries an explicit style
+block instructing the model to write like a person texting (short sentences,
+natural line breaks, no markdown headers/bullet dumps, at most one emoji per
+message, one focused question at a time, acknowledge briefly instead of
+echoing back what the user said at length) plus a language-matching rule
+(reply in whichever language the other party is writing in; default to
+English if ambiguous). `builder_flow.py` defines a shared `STYLE_RULES`
+string appended (via `.format`) to all three config-chat prompts;
+`personas.py` defines a parallel `CHAT_STYLE_RULES` string appended to the
+four storable execution personas (`summarizer` inlines its own short
+formatting note instead, since its format is a recap not a chat, but carries
+the same language-matching sentence). Two pre-existing spots in
+`BUILDER_PROMPT` that contradicted the new no-echo/no-bullets rule were fixed
+in the same pass: the "narrate every save" example changed from `"Saved: the
+agent will now reply automatically to messages containing 'refund'..."` to a
+natural `"Got it, saved 📝 - it'll jump in automatically on refund
+questions..."`, and the final finish-summary instruction changed from
+"structure this as ... a bullet list per trigger" to natural line breaks: the
+checklist's own internal `##`/numbered-list structure is explicitly flagged
+as for the model's own tracking only, never to be reproduced verbatim in
+chat. Scope confirmed with the user: applies to all 7 prompts (both
+config-mode and execution-mode), not just the config chat. No schema/tool/
+architecture change - text-only, no ADR. No new tests (same gap as every
+prior agents-module step) - import-smoke-tested only. Per the standing
+obligation logged above, `HELP_PROMPT`'s own content did not need a factual
+update from this change (it doesn't describe prompt tone anywhere), only the
+style-block append.
+
 ## Current tool registry
 
 **Execution mode** (any chat except `owner_agent_chat_id`, or a
@@ -437,6 +497,7 @@ class AgentKnowledgeChunk(Base):
   "on_time_window": {"enabled": false, "start": "09:00", "end": "22:00"},
   "on_specific_chats": {},
   "on_unknown_sender": {"enabled": false},
+  "on_any_message": {"enabled": false},
   "on_schedule": []
 }
 ```
@@ -447,14 +508,33 @@ class AgentKnowledgeChunk(Base):
 - `on_unknown_sender.enabled` (ADR 0046 decision 2): fires once, on the
   first-ever message in a private (non-group) chat; own per-sender daily
   quota (20/day) on top of the hourly activation quota.
+- `on_any_message.enabled` (ADR 0052, 2026-09-25): fires on **every**
+  message in **every** private (non-group) chat - a broader, stateless
+  catch-all (unlike `on_unknown_sender`, never mutates `on_specific_chats`).
+  Groups excluded, same scope as `on_unknown_sender`. Still gated by
+  `on_time_window` + `blocked_read_chat_ids` + `paused_chat_ids`; reuses the
+  plain hourly `agent_activation` quota, no separate budget. Matched in
+  `trigger_engine._matches_any_message` (own DB round-trip for
+  `chat.is_group`, parallel to `_matches_unknown_sender`). Settings UI:
+  one checkbox, "Reply to every new private message", commits immediately
+  (`AgentSettingsView.js` / `useAgentConfig.js::setAnyMessageEnabled`).
 - `on_schedule` (ADR 0046 decision 3): list of `{id, kind: "recurring"|
   "once", time|at, instruction, chat_id?, enabled}` entries, driven by the
   `agent_schedule_due` Redis ZSET + a poll loop in `agent_worker`. Capped
   at `AGENT_MAX_SCHEDULE_ENTRIES` (10).
 - `update_own_triggers` (execution-mode tool) and `set_trigger`
   (config-mode tool) both write here via `modules/agents/crud.py::
-  update_agent_triggers` - hard-scoped to the caller's own `agent_id`,
-  never touches `restrictions`.
+  update_agent_triggers` / `update_agent_config` - hard-scoped to the
+  caller's own `agent_id`, never touches `restrictions`. Both merge
+  `on_time_window`/`on_unknown_sender`/`on_any_message` one level deep
+  (`crud.py::_merge_triggers`) rather than replacing the sub-object
+  outright - a 2026-09-24 incident (`AgentOut` 500 on `GET /agents/me`)
+  found a partial `{"on_time_window": {"enabled": false}}` patch dropping
+  `start`/`end` under the old top-level-only shallow merge; `on_specific_chats`
+  is merged per-`chat_id` for the same reason, but the key-set itself still
+  follows the patch (a key absent from the patch is dropped from the
+  result), so the frontend's "always send the full current map" convention
+  still deletes entries correctly.
 
 `Agent.paused_chat_ids` (ADR 0047 decision 5): list of chat ids the agent
 escalated via `pause_and_escalate` - skipped entirely at trigger-evaluation
@@ -466,7 +546,7 @@ time until a human calls `POST /agents/me/resume-chat/{chat_id}`.
 |---|---|---|
 | Gemini API calls | 30/min per-agent (ADR 0047 decision 1; skipped when BYOK key present) | `agent_gemini_calls:{agent_id}` |
 | Function-call recursion | 8 round-trips/turn (ADR 0047 decision 1) | in-process cap |
-| Trigger activation quota | 20/hour per-agent | `ratelimit:agent_activation:{agent_id}`, Redis fixed-window |
+| Trigger activation quota | 100/hour per-agent | `ratelimit:agent_activation:{agent_id}`, Redis fixed-window |
 | Unknown-sender daily quota | 20/day per-sender (ADR 0046 decision 2) | `ratelimit:agent_unknown_sender:{agent_id}:{sender_user_id}` |
 | Daily active-time budget | 1 hour/day per-agent, counts actual processing wall-clock (Gemini + tool exec) | `ratelimit:agent_active_seconds:{agent_id}`, Redis fixed-window, seconds-based |
 | Knowledge base | 20 documents / 2000 chunks per-agent (ADR 0046 decision 4) | Postgres count check at upload |
@@ -476,3 +556,17 @@ time until a human calls `POST /agents/me/resume-chat/{chat_id}`.
 When the daily time budget is exhausted: finish the in-flight turn, then go
 dormant until the daily window resets (no announcement message is
 currently sent - a known gap, not yet built).
+
+**Activation quota exceeded -> owner notice (2026-09-25, no ADR)**: unlike the
+daily time budget above, exceeding the hourly activation quota does post a
+generic system message ("Your agent hit its hourly activation limit and
+won't respond to new messages until it resets...") into the owner's own
+agent chat (`Agent.owner_agent_chat_id`), from both call sites in
+`trigger_engine.py` (owner-chat direct-wake and the normal per-participant
+trigger path). Gated by a `SET NX` cooldown key
+(`agent_quota_notice_sent:{owner_agent_chat_id}`, TTL = the activation
+window) so a burst of dropped triggers within the same hour produces exactly
+one notice, not one per message. `send_system_message` is imported lazily
+inside the notifier function, not at module top, to avoid a circular import
+(`modules.messaging.send` already imports `evaluate_triggers` from this
+module).

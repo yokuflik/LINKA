@@ -42,11 +42,37 @@ from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
 from modules.messaging.read_api import get_message_history
 from modules.search import service as search_service
 from modules.search.errors import SearchQueryTooShortError
+from modules.users.crud import get_users_by_ids
 from realtime.notification_service import send_push
 
 logger = logging.getLogger(__name__)
 
 _SECONDS_PER_DAY = 86400
+
+
+async def _resolve_sender_labels(session: AsyncSession, sender_ids: list) -> dict:
+    """Hard, server-side identity mask (never a prompt instruction): every
+    tool result handed to Gemini must carry a human-readable label instead of
+    a raw internal id, matching the CLAUDE.md frontend rule (user_id is
+    strictly for backend logic, never surfaced to an end user) applied here
+    to agent output instead of the UI. Returns {user_id_str: {"name": ...,
+    "phone_number": ...}}; "name" falls back display_name -> username ->
+    phone_number, same convention as ADR 0024.
+
+    sender_ids may be int (ORM rows, e.g. get_message_history) or str
+    (Pydantic IdStr-typed search results, per the Snowflake-id-as-string
+    convention) - normalized to int for the users.id (BigInteger) lookup,
+    keyed back by the original string form for str-agnostic caller lookups.
+    """
+    ids = {int(sid) for sid in sender_ids if sid is not None}
+    users = await get_users_by_ids(session, list(ids))
+    return {
+        str(uid): {
+            "name": user.display_name or user.username or user.phone_number,
+            "phone_number": user.phone_number,
+        }
+        for uid, user in users.items()
+    }
 
 
 async def _check_daily_send_quota(agent: Agent) -> None:
@@ -199,13 +225,16 @@ async def _tool_read_history(session: AsyncSession, agent: Agent, arguments: dic
         raise ToolDeniedError("chat_id is in blocked_read_chat_ids")
 
     messages = await get_message_history(session, agent.owner_user_id, chat_id, limit=20)
+    labels = await _resolve_sender_labels(session, [m.sender_id for m in messages])
     # Structured, not raw text: sender + timestamp let Gemini reason about
     # who said what and when, which matters in group chats where several
-    # senders' lines would otherwise be indistinguishable.
+    # senders' lines would otherwise be indistinguishable. Never sender_id or
+    # chat_id themselves - see _resolve_sender_labels.
     return {
         "messages": [
             {
-                "sender_id": str(m.sender_id) if m.sender_id is not None else None,
+                "sender_name": labels.get(str(m.sender_id), {}).get("name") if m.sender_id is not None else None,
+                "sender_phone_number": labels.get(str(m.sender_id), {}).get("phone_number") if m.sender_id is not None else None,
                 "timestamp": m.created_at.isoformat(),
                 "content": m.content,
             }
@@ -257,12 +286,19 @@ async def _tool_search_messages(session: AsyncSession, agent: Agent, arguments: 
     except SearchQueryTooShortError as exc:
         raise ToolDeniedError(str(exc))
 
+    labels = await _resolve_sender_labels(session, [r.sender_id for r in result.results])
+    # No message_id/sender_id in the output handed to Gemini - see
+    # _resolve_sender_labels. chat_id is the one internal id deliberately
+    # kept here: it's the sole handle the model has to target a follow-up
+    # read_history(chat_id=...) call on a specific hit - never text it would
+    # reproduce to a person, only an argument it passes back into another
+    # tool call.
     return {
         "results": [
             {
-                "message_id": str(r.id),
                 "chat_id": str(r.chat_id),
-                "sender_id": str(r.sender_id) if r.sender_id is not None else None,
+                "sender_name": labels.get(str(r.sender_id), {}).get("name") if r.sender_id is not None else None,
+                "sender_phone_number": labels.get(str(r.sender_id), {}).get("phone_number") if r.sender_id is not None else None,
                 "snippet": r.snippet or r.content,
                 "created_at": r.created_at.isoformat(),
             }
@@ -315,6 +351,8 @@ async def _tool_pause_and_escalate(session: AsyncSession, agent: Agent, argument
     await sync_agent_cache(updated)
 
     reason = str(arguments.get("reason") or "The agent needs your input to continue.")
+    counterpart = await _describe_escalation_counterpart(session, chat_id, agent.owner_user_id)
+
     try:
         await send_push(
             agent.owner_user_id,
@@ -325,7 +363,50 @@ async def _tool_pause_and_escalate(session: AsyncSession, agent: Agent, argument
     except Exception:
         logger.exception("agent %s: send_push failed for pause_and_escalate on chat %s", agent.id, chat_id)
 
+    try:
+        from modules.messaging.send import send_system_message
+
+        # reason is written by the model itself, in whatever language it's
+        # been conversing with the owner in (CHAT_STYLE_RULES instructs it to
+        # write the full notice, not a fill-in-the-blank fragment). The only
+        # fixed part is the counterpart line - deliberately label-free (👤
+        # rather than an English word like "With:") since it's built
+        # server-side with no language context to translate a label into.
+        # *bold* renders in the PoC (poc/composables/messageFormat.js),
+        # matching the WhatsApp-style formatting CHAT_STYLE_RULES already
+        # teaches the model to use in its own replies - the counterpart name
+        # is the one part worth making visually stand out (bold), not a
+        # dash/bullet list.
+        notice = f"🤝 {reason}\n👤 *{counterpart}*"
+        await send_system_message(session, agent.owner_agent_chat_id, notice)
+    except Exception:
+        logger.exception("agent %s: failed to post handoff system message for chat %s", agent.id, chat_id)
+
     return {"paused_chat_id": str(chat_id)}
+
+
+async def _describe_escalation_counterpart(session: AsyncSession, chat_id: int, owner_user_id: int) -> str:
+    """Human-readable label for who the paused chat is with, for the owner's
+    handoff notice - name + phone number for a 1:1, or the group title (never
+    a raw chat_id/user_id, per the identity-masking rule elsewhere in this
+    module)."""
+    from modules.chats.crud.crud_chat import get_chat_by_id
+    from modules.chats.crud.crud_participant import get_chat_participants_with_users
+
+    chat = await get_chat_by_id(session, chat_id)
+    if chat is not None and chat.is_group:
+        return f'the group "{chat.title}"' if chat.title else "a group chat"
+
+    participants = await get_chat_participants_with_users(session, chat_id)
+    for participant in participants:
+        user = participant.user
+        if user is None or user.id == owner_user_id:
+            continue
+        name = user.display_name or user.username or user.phone_number
+        if name != user.phone_number:
+            return f"{name} ({user.phone_number})"
+        return user.phone_number
+    return "a customer"
 
 
 async def _chat_is_group(session: AsyncSession, chat_id: int) -> bool:
@@ -637,10 +718,10 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "pause_and_escalate",
-        "description": "Freeze yourself for this specific chat and notify the human owner that you need their input. Use this when you're stuck, unsure, or asked to do something outside your restrictions - you will not be woken again in this chat until the owner resumes it.",
+        "description": "Freeze yourself for this specific chat and notify the human owner that you need their input. Use this when you're stuck, unsure, or asked to do something outside your restrictions - and ALWAYS when the other person explicitly asks to speak with a human/real person/representative/the owner, or is ready to close a deal and needs a human to finalize it. You will not be woken again in this chat until the owner resumes it. Before or immediately after calling this, also tell the other person in the chat (via send_message/reply_message) that you're connecting them with a real person now, in their own language.",
         "parameters": {
             "type": "object",
-            "properties": {"reason": {"type": "string", "description": "Short explanation for the owner of why you're escalating"}},
+            "properties": {"reason": {"type": "string", "description": "The actual notification message for the owner, written naturally in the same language you've been using with the owner (not a template or a short label) - explain what happened and why you're handing off, the way you'd tell them in a normal message."}},
         },
     },
 ]

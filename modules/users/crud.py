@@ -36,6 +36,16 @@ async def get_user_by_phone(session: AsyncSession, phone_number: str) -> Optiona
     return result.scalar_one_or_none()
 
 
+async def get_users_by_ids(session: AsyncSession, user_ids: list[int]) -> dict[int, User]:
+    """Batch lookup keyed by id, for callers resolving several senders at
+    once (e.g. rendering a message list) without an N+1 query per row."""
+    if not user_ids:
+        return {}
+    stmt = select(User).where(User.id.in_(set(user_ids)))
+    result = await session.execute(stmt)
+    return {u.id: u for u in result.scalars().all()}
+
+
 async def get_user_by_username(session: AsyncSession, username: str) -> Optional[User]:
     """
     Fetch a user by their exact (case-insensitive) username - a single point

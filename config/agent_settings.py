@@ -152,6 +152,39 @@ AGENT_HISTORY_TRANSCRIPT_MAX_CHARS = int(
     os.environ.get("AGENT_HISTORY_TRANSCRIPT_MAX_CHARS", "4000")
 )
 
+# --- LLM Judge / Semantic Router gate (ADR 0053) ---
+# Separate, cheaper model than GEMINI_CHAT_MODEL - own constant so a future
+# vendor rename/deprecation of the judge model doesn't touch the main turn
+# model (gemini_client.py::GEMINI_CHAT_MODEL) or vice versa.
+AGENT_JUDGE_MODEL = os.environ.get("AGENT_JUDGE_MODEL", "gemini-flash-lite-latest")
+
+# Own rate bucket (agent_judge_calls:{agent_id}), never shared with
+# agent_gemini_calls (ADR 0047 decision 1) - a judge call consuming from the
+# main budget would let hostile/off-topic traffic starve real turns, defeating
+# the denial-of-wallet protection this gate exists for. Sized generously since
+# each call is cheap/fast - this bucket exists for cost ceiling, not scarcity.
+AGENT_JUDGE_CALLS_PER_MINUTE = int(os.environ.get("AGENT_JUDGE_CALLS_PER_MINUTE", "60"))
+AGENT_JUDGE_CALLS_WINDOW_SECONDS = int(os.environ.get("AGENT_JUDGE_CALLS_WINDOW_SECONDS", "60"))
+
+# Length cap on the agent.system_prompt prefix folded into the judge's domain
+# description - an oversized owner-authored prompt must not turn the judge
+# itself into a second injection surface.
+AGENT_JUDGE_SYSTEM_PROMPT_PREVIEW_CHARS = int(
+    os.environ.get("AGENT_JUDGE_SYSTEM_PROMPT_PREVIEW_CHARS", "500")
+)
+
+# "Pronoun problem" fix (ADR 0053 section 3): a chat counts as an active
+# conversation - and short/generic follow-ups get approved by instruction -
+# if the agent's last reply in it lands within this many seconds.
+AGENT_JUDGE_FOLLOW_UP_WINDOW_SECONDS = int(
+    os.environ.get("AGENT_JUDGE_FOLLOW_UP_WINDOW_SECONDS", str(5 * 60))
+)
+# ...or is within the last N agent messages, whichever check is cheaper to
+# run first short-circuits (recent-timestamp check before this row count).
+AGENT_JUDGE_FOLLOW_UP_RECENT_MESSAGES = int(
+    os.environ.get("AGENT_JUDGE_FOLLOW_UP_RECENT_MESSAGES", "2")
+)
+
 # --- BYOK: bring your own Gemini key (ADR 0046, decision 5) ---
 # Fernet key used to encrypt Agent.encrypted_gemini_api_key at rest. Only
 # required if any owner actually sets a custom key - modules/agents/crypto.py
@@ -193,4 +226,10 @@ __all__ = [
     "AGENT_KNOWLEDGE_SERVER_CHUNKED_MIME",
     "AGENT_KNOWLEDGE_MAX_UPLOAD_BYTES",
     "AGENT_BYOK_ENCRYPTION_KEY",
+    "AGENT_JUDGE_MODEL",
+    "AGENT_JUDGE_CALLS_PER_MINUTE",
+    "AGENT_JUDGE_CALLS_WINDOW_SECONDS",
+    "AGENT_JUDGE_SYSTEM_PROMPT_PREVIEW_CHARS",
+    "AGENT_JUDGE_FOLLOW_UP_WINDOW_SECONDS",
+    "AGENT_JUDGE_FOLLOW_UP_RECENT_MESSAGES",
 ]

@@ -38,6 +38,7 @@ from modules.agents.gemini_client import (
     function_response_part,
     generate_turn,
 )
+from modules.agents.judge import evaluate_message, local_redirect_text
 from modules.agents.models import Agent
 from modules.agents.personas import get_persona_system_prompt
 from modules.agents.schedule import due_members, remove_due_member, reschedule_recurring
@@ -45,6 +46,7 @@ from modules.agents.time_budget import has_budget_remaining, record_active_secon
 from modules.agents.tools import execute_tool_call, get_tool_schemas_for_chat, is_config_mode
 from modules.messaging import service as message_service
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
+from modules.messaging.crud import get_message_by_id
 from modules.messaging.read_api import get_message_history
 from realtime import realtime_service
 from realtime.fanout.base_worker import BaseStreamConsumer
@@ -257,6 +259,35 @@ async def _run_turn(
         if chat_id is not None and not is_config_mode(agent, chat_id):
             peer_typing_task = asyncio.create_task(_publish_peer_typing_loop(chat_id, owner_user_id))
         try:
+            # LLM Judge gate (ADR 0053) - execution-mode, message-fired turns
+            # only (on_specific_chats/on_unknown_sender/on_any_message alike,
+            # no trigger-type carve-out). Never runs for config-mode turns
+            # (the owner's own drawer chat - not an untrusted party) or
+            # schedule-fired turns (chat_id is None, the "message" is the
+            # agent's own instruction, not external input). A rejected
+            # message skips the main model entirely and gets a short, locally
+            # -templated redirect instead - no second Gemini call.
+            if message_id is not None and not config_mode_turn:
+                message = await get_message_by_id(session, chat_id, message_id)
+                verdict = await evaluate_message(session, agent, chat_id, message_id, message.content if message else None)
+                await session.commit()
+                if not verdict.is_approved:
+                    logger.info(
+                        "agent_worker: judge rejected agent %s chat %s message %s: %s",
+                        agent_id, chat_id, message_id, verdict.reason,
+                    )
+                    await message_service.process_outgoing(
+                        session,
+                        sender_id=agent.owner_user_id,
+                        chat_id=chat_id,
+                        client_message_id=f"agent-{uuid.uuid4().hex}",
+                        content=verdict.redirect_message or local_redirect_text(agent),
+                        type=AGENT_REPLY_MESSAGE_TYPE,
+                    )
+                    await session.commit()
+                    ended_status = "done"
+                    return
+
             if schedule_instruction is not None:
                 contents = await _build_schedule_contents(session, agent, schedule_instruction, chat_id)
             else:

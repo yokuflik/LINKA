@@ -1,4 +1,4 @@
-# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051
+# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051 / ADR 0053
 
 Full design rationale: `docs/adr/0045-ai-agent-service-account-tool-calling.md`
 (base design), `docs/adr/0046-agent-schedules-knowledge-base-and-byok.md`
@@ -8,17 +8,20 @@ replace it), `docs/adr/0047-agent-skills-tool-mode-gate-and-escalation.md`
 escalation - extends 0045/0046; all 7 decisions implemented),
 `docs/adr/0049-agent-builder-supervisor-help-substates.md` (Supervisor/
 Builder/Help sub-states inside the config chat - extends 0047 decision 4,
-does not replace it), and `docs/adr/0051-unknown-sender-auto-registration.md`
+does not replace it), `docs/adr/0051-unknown-sender-auto-registration.md`
 (auto-registers a chat into `on_specific_chats` after `on_unknown_sender`
 fires, so the agent keeps replying to that same person - extends 0046
-decision 2). This file tracks current implementation state, schema,
-and rate limits/budgets - the detailed step-by-step build log (ADR 0045
-steps 1-5, ADR 0046 decisions 1-6) moved to `.claude_docs/ai_agent_history.md`
-on 2026-09-23 once this file passed the ~300-line split threshold again;
-frontend detail (drawer UI, knowledge upload, BYOK UI) lives in
-`.claude_docs/ai_agent_frontend.md`. ADR 0047's own implementation log for
-decisions 5-7 lives in the ADR file itself, per the user's explicit request
-to keep it alongside the ADR.
+decision 2), and `docs/adr/0053-llm-judge-message-gate.md` (LLM Judge
+pre-filter gate in front of execution-mode message-fired turns - extends
+0045/0046/0047/0049/0051, does not replace any of them). This file tracks
+current implementation state, schema, and rate limits/budgets - the detailed
+step-by-step build log (ADR 0045 steps 1-5, ADR 0046 decisions 1-6) moved to
+`.claude_docs/ai_agent_history.md` on 2026-09-23 once this file passed the
+~300-line split threshold again; frontend detail (drawer UI, knowledge
+upload, BYOK UI) lives in `.claude_docs/ai_agent_frontend.md`. ADR 0047's own
+implementation log for decisions 5-7, and ADR 0053's full implementation log,
+both live in their respective ADR files, per the user's explicit request to
+keep implementation detail alongside the ADR once it's substantial.
 
 **Real peer-visible typing indicator DONE 2026-09-25** (no ADR - in-scope UX
 fix, not a new architectural decision): `invoke_worker.py::_run_turn` now
@@ -416,6 +419,201 @@ obligation logged above, `HELP_PROMPT`'s own content did not need a factual
 update from this change (it doesn't describe prompt tone anywhere), only the
 style-block append.
 
+**`pause_and_escalate` now explicitly fires on "talk to a human" requests
+(2026-09-25, no ADR - real bug, prompt-only fix)**: reported by the user -
+handoff to the human owner worked when the agent decided *on its own* the
+conversation had reached a close (e.g. a sale), but a customer explicitly
+asking for a human/representative mid-conversation was frequently ignored -
+the model would just keep replying itself instead of calling
+`pause_and_escalate`. Root cause: neither the tool's Gemini function-schema
+`description` (`modules/agents/tools.py`) nor any of the four storable
+persona prompts (`modules/agents/personas.py::PERSONA_SYSTEM_PROMPTS`) ever
+named "the other party explicitly asks for a human" as a case that must
+trigger the tool - the description only said "stuck, unsure, or asked to do
+something outside your restrictions," which a plain "let me talk to a
+person" request doesn't obviously match, and the personas never mentioned
+the tool at all. Fixed by adding an explicit, language-agnostic instruction
+to two places: `CHAT_STYLE_RULES` in `personas.py` (shared by
+`sales_agent`/`support_agent`/`one_off_executor` - `summarizer` doesn't use
+it, being passive/non-conversational) now tells the model it MUST call
+`pause_and_escalate` immediately when the other party asks for a human/real
+person/representative/the owner (examples given in English and Hebrew) or is
+clearly ready to close/buy and needs a human to finalize - and warns it not
+to just say "I'll get someone" in text without actually calling the tool.
+The tool's own schema `description` was sharpened the same way ("and ALWAYS
+when the other person explicitly asks to speak with a human/real
+person/representative/the owner, or is ready to close a deal..."), so both
+the persona-level instruction and the tool-level contract agree. No
+schema/architecture change - text-only, same class of fix as the other
+prompt-tuning entries in this file. `builder_flow.py`'s `BUILDER_PROMPT`
+already told the Builder to establish concrete `pause_and_escalate` rules
+with the owner during setup (checklist item 3) - unchanged, this fix is
+about the *default* behavior baked into the four personas themselves, not
+the interview flow. No new tests (same gap as every prior agents-module
+step) - import-smoke-tested only.
+
+**Internal ids hard-masked out of every tool result handed to Gemini
+(2026-09-25, no ADR - real bug/security fix, requested by the user)**:
+`read_history` and `search_messages` used to return raw `sender_id` (both)
+and `chat_id` (search only) to the model as plain strings - the same class
+of leak the CLAUDE.md frontend rule (`user_id` is strictly for backend
+logic, never shown to an end user) already forbids in the PoC UI, just
+reached here through the agent's own text output instead of a Vue
+component. New `modules/agents/tools.py::_resolve_sender_labels` (batch
+`modules.users.crud.get_users_by_ids`, new) resolves a list of sender ids to
+`{name, phone_number}` in one query (name = `display_name || username ||
+phone_number`, ADR 0024's convention) - `read_history` now returns
+`sender_name`/`sender_phone_number` instead of `sender_id`;
+`search_messages` returns the same plus keeps `chat_id` (the one exception -
+it's the sole handle the model has to target a follow-up
+`read_history(chat_id=...)` call on a specific hit, an argument the model
+passes back into another tool call, never text it would reproduce to a
+person) but drops `message_id`/`sender_id`. This is enforced unconditionally
+server-side, not behind any `Agent.restrictions` toggle or the owner's
+`system_prompt` - the user explicitly asked for hard enforcement over a
+setting, same reasoning as every other restriction in this file being
+server-side-only. Defense-in-depth: `CHAT_STYLE_RULES` in `personas.py` also
+now tells the model never to mention or invent any internal id to anyone.
+`pause_and_escalate`'s push notification was checked and left as-is -
+`chat_id` only appears in the push `data` payload (client-side deep-link
+target, never rendered as text) and `title`/`body` never contained a raw id.
+No schema/architecture change. No new tests (same gap as every prior
+agents-module step) - import-smoke-tested only.
+
+**`pause_and_escalate` now also posts a formatted in-chat handoff notice with
+the counterpart's phone number (2026-09-25, no ADR - UX request)**:
+previously the only owner-visible signal for an escalation was the push
+notification (`title`/`body`, plain text, no formatting - OS notification
+trays don't support it). The user asked for something more readable, with
+the phone number of whoever the agent was talking to. `_tool_pause_and_
+escalate` now also calls `modules.messaging.send.send_system_message` into
+`agent.owner_agent_chat_id` (same call the hourly-activation-quota notice in
+`trigger_engine.py` already uses) with a WhatsApp-style formatted message
+(`*bold*` header + `- ` bullet lines - the PoC already renders both,
+`poc/composables/messageFormat.js`, same convention `CHAT_STYLE_RULES`
+teaches the model to use in its own replies):
+
+```
+🤝 *Handoff requested*
+- With: <name> (<phone_number>)
+- Reason: <the model's escalation reason>
+The agent has paused here until you resume it.
+```
+
+New `_describe_escalation_counterpart` (`tools.py`) resolves who the paused
+chat is with: for a 1:1, the other participant's `display_name || username`
+plus their raw `phone_number` in parens (falls back to phone alone if no
+name is set) via `get_chat_participants_with_users`; for a group, the group
+title (`'the group "X"'`) - never a raw `chat_id`/`user_id`, consistent with
+the identity-masking fix above. Both notification paths (push + system
+message) are independently try/excepted so a failure in one never blocks the
+other or the tool call itself. No schema/architecture change - reuses the
+existing `send_system_message` call and the identity-resolution pattern
+introduced by the id-masking fix above. No new tests (same gap as every
+prior agents-module step) - import-smoke-tested only.
+
+## LLM Judge gate (ADR 0053, DONE 2026-09-25)
+
+`docs/adr/0053-llm-judge-message-gate.md` - lightweight pre-filter gate
+between the Trigger Rule Engine and the main agent turn, for execution-mode
+message-fired turns only (any chat except `owner_agent_chat_id`, not
+schedule-fired; `on_specific_chats`/`on_unknown_sender`/`on_any_message`
+alike, no trigger-type carve-out). New `modules/agents/judge.py::
+evaluate_message` calls a separate, cheaper Gemini model
+(`AGENT_JUDGE_MODEL = "gemini-flash-lite-latest"`, own
+`agent_judge_calls:{agent_id}` rate bucket, 60/min - never shares
+`agent_gemini_calls`) via a new `gemini_client.py::generate_structured`
+(structured JSON output, no `tools` key, always the shared
+`GEMINI_API_KEY` - never BYOK) with **only** the single latest message + a
+domain system prompt (from `active_skill` + an
+`AGENT_JUDGE_SYSTEM_PROMPT_PREVIEW_CHARS`-capped `system_prompt` prefix) +
+fixed security rules - never chat history, never tool schemas.
+
+Pronoun-problem fix: `_is_follow_up_in_active_conversation` (Python-computed
+bool, metadata only) is true if the chat has an `AGENT_REPLY_MESSAGE_TYPE`
+message within the last `AGENT_JUDGE_FOLLOW_UP_WINDOW_SECONDS` (300s) OR is
+among the last `AGENT_JUDGE_FOLLOW_UP_RECENT_MESSAGES` (2) agent messages
+(cheap row-count check short-circuits before the timestamp comparison) - the
+judge never sees the actual prior message content, so short follow-ups like
+"how much?" get approved by instruction rather than needing real history.
+
+Fail-open confirmed as built: a `GeminiChatError` (or malformed response)
+from `generate_structured` logs `ERROR` and returns an approved verdict; the
+judge's own rate limit being exceeded fails open the same way (logged
+`WARNING`). A message with no text content (e.g. media-only) is approved
+without calling the judge at all - nothing to evaluate. On
+`is_approved=False`, `invoke_worker.py::_run_turn` returns before
+`_build_initial_contents`/`generate_turn` is ever called (zero main-model
+calls on the rejected path) and posts a redirect reply via
+`message_service.process_outgoing` directly (same call shape
+`_tool_send_message`/`_post_config_reply` use).
+
+**2026-09-25 follow-up:** the redirect text is now generated by the judge
+itself, same-language as the customer's message - `_JUDGE_RESPONSE_SCHEMA`
+gained a required `redirect_message` field, and `_JUDGE_SECURITY_RULES`
+instructs the judge to write it in the customer's own language when
+rejecting (empty string when approved). Still zero extra Gemini calls - it
+rides the one judge call that already ran. `JudgeVerdict` gained a 4th field
+`redirect_message: str = ""`; `invoke_worker.py` now sends
+`verdict.redirect_message or judge.local_redirect_text(agent)` - the old
+English-only templated dict (keyed on `active_skill`) is now a fallback used
+only on the fail-open path (judge call failed/rate-limited, so no
+`redirect_message` was ever generated) or if the judge returns an empty
+string. Every verdict (approved,
+rejected, no-content, or either fail-open path) writes one row to the new
+unpartitioned `AgentJudgeLog` (`modules/agents/models.py`) for tuning - a
+brand-new table, so no `ALTER TABLE` safety net was needed in
+`scripts/init_db.py`; `Base.metadata.create_all` picks it up automatically
+(confirmed against both the dev-DB script and `tests/conftest.py`'s
+ephemeral test DB).
+
+Insertion point: `invoke_worker.py::_run_turn`, right after the existing
+`config_mode_turn` computation, gated on `message_id is not None and not
+config_mode_turn`, before `_build_initial_contents`/`_build_schedule_
+contents`. Fetches the triggering message via the existing
+`modules.messaging.crud.get_message_by_id`. No schema change to `Agent`
+itself. No new tests (same gap as every prior agents-module step) - full
+suite run (430/430) against the ephemeral test DB after landing. Full
+implementation log lives in the ADR file (per this project's convention of
+keeping implementation detail with the ADR once it's substantial).
+
+**Handoff notice de-templated + customer now gets a transfer reply
+(2026-09-25, no ADR - UX request)**: the owner-facing system message from the
+step above was itself a fixed English template ("🤝 *Handoff requested* /
+- With: ... / - Reason: ...") - not language-adaptive, and the user pointed
+out it read as generic/robotic rather than a normal message from their own
+agent. Fixed two things:
+- `pause_and_escalate`'s `reason` argument is no longer "a short label" - its
+  schema `description` and `CHAT_STYLE_RULES` (`personas.py`) now both
+  instruct the model to write the *entire* owner notification as a natural
+  sentence or two, in whichever language it's been conversing with the owner
+  in - no fixed English wrapper words. `_tool_pause_and_escalate` (`tools.py`)
+  now posts `f"🤝 {reason}\n👤 *{counterpart}*"` - the emoji, 👤 line, and
+  *bold* wrapping around the resolved counterpart name/phone (server-side
+  data the model doesn't have) are the only fixed parts; everything else is
+  the model's own words. Iterated once more after the user flagged the first
+  version as reading unpolished in practice (a real Hebrew example: reason
+  text ran together with an English "(counterpart)" parenthetical) - the
+  counterpart line is now its own line, bolded for visual weight, with a
+  language-neutral 👤 glyph instead of an English label like "With:" (there's
+  no language signal available server-side to translate a label into). Also
+  clarified with the user that "bullet" in their feedback meant bold/emphasis
+  (Hebrew "בולט"), not a dash/list-marker bullet - no `- ` list formatting
+  used here.
+- The customer/other party previously got nothing when the agent escalated -
+  it just froze silently from their side. `CHAT_STYLE_RULES` and the
+  `pause_and_escalate` tool description now both instruct the model to also
+  send that person a reply (via `send_message`/`reply_message`, either right
+  before or right after the escalate call) telling them in their own
+  language that they're being connected with a real person - in the
+  persona's normal conversational style, not a canned line. This is a prompt
+  instruction, not a code-enforced sequence (no tool couples the two calls) -
+  same trust model as the rest of the tool registry, consistent with
+  `execute_tool_call`'s existing server-side enforcement staying limited to
+  `Agent.restrictions`, never to prompt-level conversational behavior.
+No schema/architecture change. No new tests (same gap as every prior
+agents-module step) - import-smoke-tested only.
+
 ## Current tool registry
 
 **Execution mode** (any chat except `owner_agent_chat_id`, or a
@@ -545,6 +743,7 @@ time until a human calls `POST /agents/me/resume-chat/{chat_id}`.
 | Limit | Scope | Mechanism |
 |---|---|---|
 | Gemini API calls | 30/min per-agent (ADR 0047 decision 1; skipped when BYOK key present) | `agent_gemini_calls:{agent_id}` |
+| LLM Judge calls | 60/min per-agent (ADR 0053, own bucket, never shares the Gemini API calls budget above) | `ratelimit:agent_judge_calls:{agent_id}` |
 | Function-call recursion | 8 round-trips/turn (ADR 0047 decision 1) | in-process cap |
 | Trigger activation quota | 100/hour per-agent | `ratelimit:agent_activation:{agent_id}`, Redis fixed-window |
 | Unknown-sender daily quota | 20/day per-sender (ADR 0046 decision 2) | `ratelimit:agent_unknown_sender:{agent_id}:{sender_user_id}` |

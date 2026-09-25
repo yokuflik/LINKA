@@ -215,29 +215,47 @@ function useCore(ctx) {
   // De-dupes concurrent refreshes (a burst of 401s, or a 401 racing the
   // proactive timer) onto one in-flight /auth/refresh call.
   let refreshInFlight = null;
+  const REFRESH_RETRY_MS = 3000;
 
+  // Only a genuine auth rejection (the server responded, and said no) should
+  // log the user out. A server-unreachable / offline condition must retry
+  // forever instead - otherwise a network blip during the proactive refresh
+  // (or a 4401 WS reconnect racing it) wrongly bounces the user to the login
+  // screen even though their session is still valid.
   async function tryRefresh() {
     if (refreshInFlight) return refreshInFlight;
     refreshInFlight = (async () => {
       try {
-        const resp = await fetch(`${apiBase.value}/auth/refresh`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ refresh_token: ctx.refreshToken.value }),
-        });
-        if (!resp.ok) throw new Error(`refresh rejected (${resp.status})`);
-        const body = await resp.json();
-        ctx.accessToken.value = body.access_token;
-        ctx.refreshToken.value = body.refresh_token;
-        localStorage.setItem('linka_access_token', ctx.accessToken.value);
-        localStorage.setItem('linka_refresh_token', ctx.refreshToken.value);
-        log('access token refreshed');
-        scheduleTokenRefresh(); // re-arm the proactive timer off the new exp
-        return true;
-      } catch (err) {
-        logError('refresh failed, logging out:', err.message);
-        ctx.logout();
-        return false;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          let resp;
+          try {
+            resp = await fetch(`${apiBase.value}/auth/refresh`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ refresh_token: ctx.refreshToken.value }),
+            });
+          } catch (err) {
+            // Network failure / server unreachable - not a rejection. Retry
+            // forever until the server comes back.
+            console.warn('[Linka] refresh: network error, retrying', err);
+            await sleep(REFRESH_RETRY_MS);
+            continue;
+          }
+          if (!resp.ok) {
+            logError('refresh rejected, logging out:', resp.status);
+            ctx.logout();
+            return false;
+          }
+          const body = await resp.json();
+          ctx.accessToken.value = body.access_token;
+          ctx.refreshToken.value = body.refresh_token;
+          localStorage.setItem('linka_access_token', ctx.accessToken.value);
+          localStorage.setItem('linka_refresh_token', ctx.refreshToken.value);
+          log('access token refreshed');
+          scheduleTokenRefresh(); // re-arm the proactive timer off the new exp
+          return true;
+        }
       } finally {
         refreshInFlight = null;
       }

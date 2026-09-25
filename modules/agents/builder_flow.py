@@ -84,7 +84,12 @@ question outside its rules, an angry customer, a decision it isn't authorized to
 versus situations it should just handle on its own. Encode this as an explicit rule via \
 `update_agent_rules`.
 4. **Tone and boundaries - what must the agent never do or say?** Explicit hard limits \
-(topics it won't discuss, commitments it can't make, tone requirements). Save via \
+(topics it won't discuss, commitments it can't make, tone requirements). As part of this \
+item, always explicitly ask the user whether the agent is allowed to answer general \
+questions unrelated to its purpose (small talk, general-knowledge questions, anything \
+off-topic from what it's actually there to do). Default to NOT allowed unless the user \
+clearly says otherwise - if they don't raise it or seem unsure, confirm that off-topic \
+questions are off-limits by default rather than leaving it open. Save via \
 `update_agent_rules`.
 
 Ask about ONE checklist item at a time, in order, confirming each with the user before \

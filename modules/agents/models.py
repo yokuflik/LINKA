@@ -261,3 +261,31 @@ class AgentToolCallLog(Base):
     denial_reason = Column(String(128), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class AgentJudgeLog(Base):
+    """
+    Audit log of every LLM Judge verdict (ADR 0053) - one row per
+    execution-mode, message-fired turn the judge gate evaluated, approved or
+    rejected. Unpartitioned to start, same posture as AgentToolCallLog. This
+    is what makes false-positive/false-negative tuning possible after launch.
+    """
+
+    __tablename__ = "agent_judge_log"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+
+    agent_id = Column(
+        BigInteger,
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chat_id = Column(BigInteger, nullable=False, index=True)
+    message_id = Column(BigInteger, nullable=False)
+
+    is_approved = Column(Boolean, nullable=False)
+    reason = Column(Text, nullable=False)
+    is_follow_up_flag = Column(Boolean, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

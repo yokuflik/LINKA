@@ -10,6 +10,7 @@ Per-agent rate limit (5 calls/minute, ADR 0045) is enforced by the caller
 (invoke_worker.py) via infra.ratelimit.service, not in here - this module is
 a thin, stateless transport.
 """
+import json
 import logging
 from typing import Any, Optional
 
@@ -108,3 +109,57 @@ def extract_text(content: dict) -> str:
 
 def function_response_part(name: str, response: dict) -> dict:
     return {"functionResponse": {"name": name, "response": _to_gemini_value(response)}}
+
+
+async def generate_structured(
+    *,
+    model: str,
+    system_prompt: str,
+    user_text: str,
+    response_schema: dict,
+) -> dict:
+    """One generateContent call for a single, isolated, tool-free
+    classification response (ADR 0053's LLM Judge). Deliberately a separate
+    function from generate_turn rather than a mode flag on it: no `contents`
+    history, no `tools`/function-calling, structured output only via
+    `responseMimeType: application/json` + `responseSchema`. Always uses the
+    shared settings.GEMINI_API_KEY (the judge never runs under BYOK - it's a
+    platform-level cost/safety gate, not a per-owner turn).
+
+    Returns the parsed JSON object. Raises GeminiChatError on any HTTP/shape
+    failure, exactly like generate_turn - callers decide their own failure
+    posture (the judge gate fails open, per the ADR).
+    """
+    api_key = _require_api_key(None)
+    url = f"{settings.GEMINI_API_BASE}/v1beta/models/{model}:generateContent"
+    body: dict = {
+        "contents": [{"role": "user", "parts": [{"text": user_text}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": response_schema,
+        },
+    }
+    if system_prompt:
+        body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+
+    try:
+        async with httpx.AsyncClient(timeout=settings.GEMINI_HTTP_TIMEOUT_SECONDS) as client:
+            resp = await client.post(url, params={"key": api_key}, json=body)
+        if resp.status_code == 429:
+            raise GeminiChatError("Gemini rate limit / quota exceeded (429)")
+        if resp.status_code >= 400:
+            logger.warning("Gemini structured generateContent %s body: %s", resp.status_code, resp.text)
+        resp.raise_for_status()
+        data = resp.json()
+        candidates = data.get("candidates") or []
+        if not candidates:
+            reason = data.get("promptFeedback", {}).get("blockReason", "no candidates")
+            raise GeminiChatError(f"Gemini returned no candidates: {reason}")
+        content = candidates[0]["content"]
+        text = extract_text(content)
+        if not text:
+            raise GeminiChatError("Gemini structured response had no text part")
+        return json.loads(text)
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        logger.warning("Gemini structured generateContent failed: %s", exc)
+        raise GeminiChatError(str(exc)) from exc

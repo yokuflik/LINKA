@@ -51,6 +51,17 @@ async def check_and_increment(identifier: Union[int, str], action: str, max_per_
     return current_count <= max_per_window
 
 
+async def peek_fixed_window(identifier: Union[int, str], action: str) -> int:
+    """Read-only: current count for a fixed-window bucket, without
+    incrementing it. Returns 0 if the window hasn't started (key absent).
+    For introspection/reporting call sites (e.g. the agent capacity-status
+    tool) that must never themselves consume a slot of the limit they're
+    describing."""
+    key = f"{_KEY_PREFIX}{action}:{identifier}"
+    value = await redis_client.get(key)
+    return int(value) if value else 0
+
+
 # Sorted-set-log sliding window. One atomic round trip:
 #   1. drop entries older than (now - window)
 #   2. ZCARD the survivors
@@ -123,6 +134,23 @@ async def check_sliding_window(
         args=[now_ms, window_ms, max_per_window, _next_member(now_ms)],
     )
     return bool(allowed)
+
+
+async def peek_sliding_window(
+    identifier: Union[int, str],
+    action: str,
+    window_seconds: Union[int, float],
+) -> int:
+    """Read-only: current hit count for a sliding-window bucket (trailing
+    `window_seconds`), without recording a new hit. For introspection call
+    sites (e.g. the agent capacity-status tool) that must never themselves
+    consume a slot of the limit they're describing."""
+    now_ms = int(time.time() * 1000)
+    window_ms = int(window_seconds * 1000)
+    key = f"{_SLIDING_KEY_PREFIX}{action}:{identifier}"
+
+    await redis_client.zremrangebyscore(key, "-inf", now_ms - window_ms)
+    return await redis_client.zcard(key)
 
 
 async def enforce_sliding_window(

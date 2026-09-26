@@ -231,10 +231,12 @@ const MessageInput = {
         <template v-else>
           <textarea ref="textInput" :value="messageInput" @input="onInput" @focus="closeAttachMenu"
                  @keydown.enter="onEnterKeydown" placeholder="Message…" dir="auto" rows="1"
-                 class="flex-1 min-w-0 px-3 py-2 border border-slate-300 rounded-lg resize-none leading-normal"
+                 class="flex-1 min-w-0 px-3 py-1.5 text-sm border border-slate-300 rounded-2xl resize-none leading-normal"
                  style="max-height:150px; overflow-y:auto;"></textarea>
           <button v-if="messageInput.trim()" @click="$emit('send-message')"
-                  class="shrink-0 px-4 py-2 bg-teal-700 text-white rounded-lg font-medium">Send</button>
+                  class="shrink-0 w-9 h-9 flex items-center justify-center rounded-full bg-teal-700 text-white">
+            <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M3 20l18-8L3 4v6l12 2-12 2z"/></svg>
+          </button>
         </template>
         <!-- Camera: plain black line-art icon (matches the mic), opens the
              device camera and sends the photo through the image pipeline. -->

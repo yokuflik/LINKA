@@ -260,6 +260,55 @@ reported "Someone is typing" symptom - keeping them as defense-in-depth:
   fix this path is now a rare-error-only fallback (e.g. `resolveChatMember
   Phones`'s fetch itself fails), not the common case.
 
+## Usage indicator: ring + popover, not an always-visible bar (ADR 0059, 2026-09-26)
+
+`poc/components/UsageProgressBar.js` is a self-contained widget - a small
+circular ring button (SVG `stroke-dasharray`/`stroke-dashoffset`, filled by
+the 5h window's percentage only, colored teal/amber/rose by percent/blocked)
+that lives in `AgentDrawer.js`'s header row (both chat and settings views,
+next to the Reset/toggle buttons - not scoped to `view === 'chat'` like the
+composer is). Clicking it toggles a small popover (own `popoverOpen` local
+state, closed on any outside click via a `document` click listener added in
+`mounted`/removed in `beforeUnmount`) containing both linear progress bars
+("Session (5h)" / "Weekly (7d)"), each with a percentage and a live "Resets
+in HH:MM:SS" countdown. **This popover is the only place either window's
+percentage/bar is shown, per explicit user requirement** - the ring itself
+never surfaces a number, and the 7d window is never shown anywhere else. The
+countdown ticks client-side off a `now` timer (`setInterval`, 1s, cleared in
+`beforeUnmount`) anchored to `_fetchedAtMs` (a non-server field stamped onto
+the response by `loadAgentUsage` at fetch time) so it stays accurate between
+polls without extra network traffic.
+
+**Frozen-state banner shows an exact clock time, not a countdown**:
+`AgentChatView.js` (which already disables the composer while
+`usageBlocked`) now also takes a `usage` prop and computes `freezeEndsAt` -
+whichever blocked window resets furthest in the future (the one actually
+still gating the composer) converted to an absolute `Date`, ticked by the
+same 1s-interval pattern. The inline note above the composer reads "Usage
+limit reached - frozen until HH:MM" (or "D Mon, HH:MM" if the reset falls on
+a different day) instead of a vague "try again later" - this is the one
+exception to the popover-only rule above, since it's a single derived
+instant, not the percentage/bar detail itself.
+
+`useAgentConfig.js`: new `agentUsage` ref (`{window_5h, window_7d} | null`)
+and `agentUsageBlocked` computed (true if either window's `is_blocked`).
+`loadAgentUsage()` fetches `GET /agents/me/usage`; `startAgentUsagePolling`/
+`stopAgentUsagePolling` wrap it in a 30s `setInterval`, following the
+closure-variable-timer idiom already used by `useWebsocket.js`'s
+`heartbeatTimer`/`useMediaUpload.js`'s `recordingTimer` (store the timer id,
+clear it explicitly) rather than `useChatStore.js`'s fire-once-never-cleared
+`setInterval` - this one is scoped to the drawer being open, not the app's
+whole lifetime. Started in `openAgentDrawer`, stopped in `closeAgentDrawer`
+and `resetAgentConfig` (logout teardown). This is the first "poll a REST
+endpoint on an interval" pattern in `poc/` - usage isn't pushed over WS from
+any single call site the way `agent_thinking`/`agent_config_changed` are, so
+polling was the more direct route.
+
+When `agentUsageBlocked` is true, `AgentChatView.js` disables the textarea,
+the `+` attachment button, and the send button (`:disabled`, greyed out) and
+shows a short inline note. UX convenience only - the real enforcement is
+`invoke_worker.py`'s server-side pre-flight gate (see `ai_agent.md`).
+
 ## Known follow-ups (frontend)
 
 - Owner-agent-chat avatar showing the agent's picture in its chat header/

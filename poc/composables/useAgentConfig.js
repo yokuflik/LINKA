@@ -134,6 +134,51 @@ function useAgentConfig(ctx) {
   const agentThinkingStatus = ref(null);
   let thinkingClearTimer = null;
 
+  // --- Token usage windows (ADR 0059) ---
+  // Polled via GET /agents/me/usage while the drawer is open - unlike
+  // agent_thinking/agent_config_changed (pushed over WS from the worker),
+  // usage isn't event-driven from any single call site the frontend could
+  // subscribe to, so this establishes a small REST-poll loop instead (no
+  // existing "poll a REST endpoint on an interval" convention in poc/ prior
+  // to this - the closest analogs, useWebsocket.js's heartbeatTimer and
+  // useMediaUpload.js's recordingTimer, both store the timer id in a closure
+  // variable and clear it explicitly, which this follows).
+  const agentUsage = ref(null); // null = not loaded yet. Shape: {window_5h, window_7d}
+  let usagePollTimer = null;
+  const AGENT_USAGE_POLL_INTERVAL_MS = 30000;
+
+  async function loadAgentUsage() {
+    try {
+      const data = await ctx.apiFetch('/agents/me/usage');
+      // _fetchedAtMs anchors UsageProgressBar.js's client-side countdown
+      // ticker between polls - not part of the server response shape.
+      data._fetchedAtMs = Date.now();
+      agentUsage.value = data;
+    } catch (err) {
+      ctx.logError && ctx.logError('failed to load agent usage', err);
+    }
+  }
+
+  function startAgentUsagePolling() {
+    stopAgentUsagePolling();
+    loadAgentUsage();
+    usagePollTimer = setInterval(loadAgentUsage, AGENT_USAGE_POLL_INTERVAL_MS);
+  }
+
+  function stopAgentUsagePolling() {
+    if (usagePollTimer) { clearInterval(usagePollTimer); usagePollTimer = null; }
+  }
+
+  // Any window at/over its cap disables the composer (chat input, +, send) -
+  // the real enforcement is server-side (modules/agents/invoke_worker.py's
+  // pre-flight gate); this is a UX convenience so the owner isn't left
+  // typing into a box that will just silently fail to get a reply.
+  const agentUsageBlocked = Vue.computed(() => {
+    const u = agentUsage.value;
+    if (!u) return false;
+    return !!(u.window_5h && u.window_5h.is_blocked) || !!(u.window_7d && u.window_7d.is_blocked);
+  });
+
   function applyAgentThinking(payload) {
     if (thinkingClearTimer) { clearTimeout(thinkingClearTimer); thinkingClearTimer = null; }
     if (!payload || payload.status === 'done' || payload.status === 'error') {
@@ -200,12 +245,14 @@ function useAgentConfig(ctx) {
     if (myAgent.value) {
       ctx.clearUnreadCount(myAgent.value.owner_agent_chat_id);
       if (!agentMessagesLoaded.value) await loadAgentMessages(myAgent.value.owner_agent_chat_id);
+      startAgentUsagePolling();
     }
   }
 
   function closeAgentDrawer() {
     showAgentDrawer.value = false;
     agentDrawerView.value = 'chat';
+    stopAgentUsagePolling();
   }
 
   function openAgentSettings() {
@@ -612,6 +659,8 @@ function useAgentConfig(ctx) {
     byokDirty.value = false;
     byokKeyInput.value = '';
     chatKeywordsDirty.value = {};
+    stopAgentUsagePolling();
+    agentUsage.value = null;
   }
 
   return {
@@ -621,6 +670,7 @@ function useAgentConfig(ctx) {
     loadAgentMessages, loadOlderAgentMessages, onAgentChatMessage, onAgentChatMessageFailed,
     showAgentDrawer, agentDrawerView, agentForm, agentBusy, agentError,
     agentThinkingStatus, applyAgentThinking, applyAgentConfigChanged,
+    agentUsage, agentUsageBlocked, loadAgentUsage,
     loadMyAgent, activateMyAgent,
     openAgentDrawer, closeAgentDrawer, openAgentSettings, backToAgentChat,
     toggleAgentEnabled,

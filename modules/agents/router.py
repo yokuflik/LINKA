@@ -27,7 +27,8 @@ from modules.agents.schemas import (
     AgentKnowledgeUploadTicketIn,
     AgentKnowledgeUploadTicketOut,
 )
-from modules.agents.schemas import AgentOut
+from modules.agents.schemas import AgentOut, AgentTokenWindowOut, AgentUsageOut
+from modules.agents.token_budget import peek_usage
 from modules.chats.crud.crud_chat import create_chat
 from modules.chats.crud.crud_participant import add_participant_to_chat
 from modules.chats.common import ROLE_MEMBER
@@ -206,6 +207,34 @@ async def reset_my_agent(
         {"event": "agent_config_changed", "agent": out.model_dump(mode="json")},
     )
     return out
+
+
+# --- Token usage (ADR 0059) --------------------------------------------------
+
+@router.get("/me/usage", response_model=AgentUsageOut)
+async def get_my_agent_usage(
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """Read-only, no side effect - feeds the drawer's usage progress bars."""
+    agent = await _get_my_agent_or_404(session, user_id)
+    usage = await peek_usage(agent.id)
+    return AgentUsageOut(
+        window_5h=AgentTokenWindowOut(
+            used=usage["5h"].used,
+            limit=usage["5h"].limit,
+            percent=usage["5h"].percent,
+            resets_in_seconds=usage["5h"].resets_in_seconds,
+            is_blocked=usage["5h"].is_blocked,
+        ),
+        window_7d=AgentTokenWindowOut(
+            used=usage["7d"].used,
+            limit=usage["7d"].limit,
+            percent=usage["7d"].percent,
+            resets_in_seconds=usage["7d"].resets_in_seconds,
+            is_blocked=usage["7d"].is_blocked,
+        ),
+    )
 
 
 # --- Knowledge base (ADR 0046 decision 4) ------------------------------------

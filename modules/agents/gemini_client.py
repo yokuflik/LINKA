@@ -12,6 +12,7 @@ a thin, stateless transport.
 """
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import httpx
@@ -21,6 +22,25 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 GEMINI_CHAT_MODEL = "gemini-flash-latest"
+
+
+@dataclass
+class TurnUsage:
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+@dataclass
+class TurnResult:
+    """generate_turn's return shape (ADR 0059) - was a bare `content` dict
+    before this ADR; now also carries usageMetadata (for the token-budget
+    counters, modules/agents/token_budget.py) and finishReason (so the caller
+    can detect a MAX_TOKENS cutoff and stop the turn immediately)."""
+
+    content: dict
+    finish_reason: Optional[str]
+    usage: Optional[TurnUsage]
 
 
 class GeminiChatError(Exception):
@@ -54,15 +74,23 @@ async def generate_turn(
     contents: list[dict],
     tool_schemas: list[dict],
     api_key: Optional[str] = None,
-) -> dict:
+    max_output_tokens: Optional[int] = None,
+) -> TurnResult:
     """One generateContent call. `contents` is the running conversation in
     Gemini's {role, parts} shape (role is "user" or "model" only - a
     functionResponse part is still sent with role "user", not "function").
-    Returns the raw `candidates[0].content` dict - the caller inspects
-    `parts` for a `functionCall` vs. a plain `text` part.
+    Returns a TurnResult: `.content` is the raw `candidates[0].content` dict
+    (the caller inspects `parts` for a `functionCall` vs. a plain `text`
+    part), `.finish_reason` is Gemini's `candidates[0].finishReason` (e.g.
+    "STOP", "MAX_TOKENS"), `.usage` is the parsed `usageMetadata` (ADR 0059 -
+    fed into modules/agents/token_budget.py's counters).
 
     `api_key` overrides the shared settings.GEMINI_API_KEY - used for BYOK
     owners (ADR 0046 decision 5); omit to use the shared key.
+
+    `max_output_tokens` caps generationConfig.maxOutputTokens (ADR 0059) so a
+    single completion can't exceed the caller's remaining token budget; omit
+    to leave Gemini's own default cap in place.
     """
     api_key = _require_api_key(api_key)
     url = f"{settings.GEMINI_API_BASE}/v1beta/models/{GEMINI_CHAT_MODEL}:generateContent"
@@ -72,6 +100,8 @@ async def generate_turn(
     }
     if system_prompt:
         body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+    if max_output_tokens is not None:
+        body["generationConfig"] = {"maxOutputTokens": max_output_tokens}
 
     try:
         async with httpx.AsyncClient(timeout=settings.GEMINI_HTTP_TIMEOUT_SECONDS) as client:
@@ -87,7 +117,19 @@ async def generate_turn(
             # Most commonly a prompt/safety block - no candidate at all.
             reason = data.get("promptFeedback", {}).get("blockReason", "no candidates")
             raise GeminiChatError(f"Gemini returned no candidates: {reason}")
-        return candidates[0]["content"]
+        usage_raw = data.get("usageMetadata")
+        usage = None
+        if usage_raw:
+            usage = TurnUsage(
+                prompt_tokens=int(usage_raw.get("promptTokenCount", 0)),
+                completion_tokens=int(usage_raw.get("candidatesTokenCount", 0)),
+                total_tokens=int(usage_raw.get("totalTokenCount", 0)),
+            )
+        return TurnResult(
+            content=candidates[0]["content"],
+            finish_reason=candidates[0].get("finishReason"),
+            usage=usage,
+        )
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.warning("Gemini generateContent failed: %s", exc)
         raise GeminiChatError(str(exc)) from exc

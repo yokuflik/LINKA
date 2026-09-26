@@ -56,6 +56,34 @@ async def test_enforce_raises_ratelimited_with_a_retry_hint(redis_db):
     assert 1 <= exc_info.value.retry_after <= 5
 
 
+async def test_peek_sliding_window_does_not_consume_a_slot(redis_db):
+    for _ in range(3):
+        assert await rate_limit_service.check_sliding_window(1, "send", 5, 10) is True
+
+    # Reading it back repeatedly must never itself count as a hit.
+    assert await rate_limit_service.peek_sliding_window(1, "send", 10) == 3
+    assert await rate_limit_service.peek_sliding_window(1, "send", 10) == 3
+
+    # The bucket still has exactly 2 real slots left, not fewer.
+    assert await rate_limit_service.check_sliding_window(1, "send", 5, 10) is True
+    assert await rate_limit_service.check_sliding_window(1, "send", 5, 10) is True
+    assert await rate_limit_service.check_sliding_window(1, "send", 5, 10) is False
+
+
+async def test_peek_sliding_window_ages_out_old_hits(redis_db):
+    for _ in range(3):
+        await rate_limit_service.check_sliding_window(1, "send", 10, 1)
+    assert await rate_limit_service.peek_sliding_window(1, "send", 1) == 3
+
+    await asyncio.sleep(1.1)
+
+    assert await rate_limit_service.peek_sliding_window(1, "send", 1) == 0
+
+
+async def test_peek_sliding_window_absent_key_is_zero(redis_db):
+    assert await rate_limit_service.peek_sliding_window("nobody", "send", 10) == 0
+
+
 async def test_lua_script_is_cached_and_reused_across_calls(redis_db):
     # register_script() hands back a single Script object with a stable SHA;
     # every call is a one-round-trip EVALSHA against that cached script, never

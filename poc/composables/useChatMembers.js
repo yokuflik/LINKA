@@ -61,7 +61,7 @@ function useChatMembers(ctx) {
   function chatDisplayName(chat) {
     if (chat.is_group) return chat.title || 'Untitled group';
     const name = ctx.privateChatTitles.value[chat.id];
-    return name ? `Chat with ${name}` : `Private chat #${chat.id}`;
+    return name || `Private chat #${chat.id}`;
   }
 
   // "@username" for a 1:1 chat whose peer has a display_name (ADR 0024), else ''.

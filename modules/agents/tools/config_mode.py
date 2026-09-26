@@ -11,9 +11,13 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
+from infra.ratelimit.service import peek_fixed_window, peek_sliding_window
 from modules.agents.cache import sync_agent_cache
 from modules.agents.crud import (
     ScheduleQuotaExceededError,
+    count_knowledge_chunks,
+    count_knowledge_documents,
     is_chat_actively_paused,
     resume_agent_chat,
     update_agent_config,
@@ -161,6 +165,86 @@ async def _tool_estimate_api_usage(session: AsyncSession, agent: Agent, argument
     return {"action": action, "estimate": estimate}
 
 
+async def _tool_get_capacity_status(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """Read-only introspection (ADR 0057), Builder-state only: every rate
+    limit relevant to this agent, its configured max alongside current
+    usage read live from Redis/Postgres, plus a rough capacity_estimate
+    doing the one calculation an owner actually wants ("roughly how many
+    conversations/hour before it needs to catch up"). Never increments or
+    enforces anything - peek_fixed_window is a bare Redis GET."""
+    activation_used = await peek_fixed_window(agent.id, "agent_activation")
+    gemini_used = await peek_fixed_window(agent.id, "agent_gemini_calls")
+    active_seconds_used = await peek_fixed_window(agent.id, "agent_active_seconds")
+    # ADR 0058: the agent impersonates its owner on every send, so this is
+    # the OWNER's own WS send_message budget, not a separate agent bucket -
+    # shared with whatever the owner's own client is doing right now.
+    send_rate_used = await peek_sliding_window(
+        agent.owner_user_id, "send_message", settings.WS_SEND_MESSAGE_RATE_WINDOW_SECONDS,
+    )
+    send_burst_used = await peek_sliding_window(
+        agent.owner_user_id, "send_message_burst", settings.WS_SEND_MESSAGE_BURST_WINDOW_SECONDS,
+    )
+    doc_count = await count_knowledge_documents(session, agent.id)
+    chunk_count = await count_knowledge_chunks(session, agent.id)
+    schedule_used = len(agent.triggers.get("on_schedule", []))
+    auto_chats_used = sum(
+        1 for entry in agent.triggers.get("on_specific_chats", {}).values()
+        if isinstance(entry, dict) and "_auto_added_at" in entry
+    )
+
+    activation_max = settings.AGENT_ACTIVATION_QUOTA_PER_HOUR
+    activation_window = settings.AGENT_ACTIVATION_QUOTA_WINDOW_SECONDS
+    gemini_max = settings.AGENT_GEMINI_CALLS_PER_MINUTE
+    gemini_window = settings.AGENT_GEMINI_CALLS_WINDOW_SECONDS
+    daily_seconds_max = settings.AGENT_DAILY_ACTIVE_SECONDS_BUDGET
+
+    # Approximation only - a real turn's Gemini-call count and duration vary
+    # with tool use (e.g. Agentic RAG round-trips). Never used for real
+    # enforcement, purely to give the owner a ballpark during setup.
+    hourly_cap_by_activation = activation_max
+    hourly_cap_by_gemini = gemini_max * (activation_window / gemini_window)
+    hourly_cap_by_time_budget = daily_seconds_max / settings.AGENT_ESTIMATED_SECONDS_PER_TURN
+    conversations_per_hour_estimate = max(
+        0,
+        int(min(hourly_cap_by_activation, hourly_cap_by_gemini, hourly_cap_by_time_budget))
+        - activation_used,
+    )
+
+    return {
+        "activation_quota": {
+            "used": activation_used, "max": activation_max, "window_seconds": activation_window,
+        },
+        "gemini_calls": {
+            "used": gemini_used, "max": gemini_max, "window_seconds": gemini_window,
+            "note": "not enforced (unlimited) when the owner has set their own Gemini API key" if agent.encrypted_gemini_api_key else None,
+        },
+        "daily_active_seconds": {"used": active_seconds_used, "max": daily_seconds_max},
+        "unknown_sender_daily_quota": {
+            "max": settings.AGENT_UNKNOWN_SENDER_QUOTA_PER_DAY,
+            "window_seconds": settings.AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS,
+            "note": "per individual sender, not agent-wide",
+        },
+        "max_messages_per_day": agent.restrictions.get("max_messages_per_day"),
+        "send_message_quota": {
+            "used": send_rate_used, "max": settings.WS_SEND_MESSAGE_RATE_MAX,
+            "window_seconds": settings.WS_SEND_MESSAGE_RATE_WINDOW_SECONDS,
+            "burst_used": send_burst_used, "burst_max": settings.WS_SEND_MESSAGE_BURST_MAX,
+            "burst_window_seconds": settings.WS_SEND_MESSAGE_BURST_WINDOW_SECONDS,
+            "note": "shared with the owner's own manual messages - the agent sends as the owner, not as a separate identity",
+        },
+        "knowledge_base": {
+            "documents_used": doc_count, "documents_max": settings.AGENT_KNOWLEDGE_MAX_DOCUMENTS_PER_AGENT,
+            "chunks_used": chunk_count, "chunks_max": settings.AGENT_KNOWLEDGE_MAX_CHUNKS_PER_AGENT,
+        },
+        "schedule_entries": {"used": schedule_used, "max": settings.AGENT_MAX_SCHEDULE_ENTRIES},
+        "auto_registered_chats": {"used": auto_chats_used, "max": settings.AGENT_MAX_AUTO_CHATS},
+        "capacity_estimate": {
+            "approx_new_conversations_per_hour": conversations_per_hour_estimate,
+            "disclaimer": "Rough estimate only - actual capacity varies with how much work each conversation needs.",
+        },
+    }
+
+
 async def _tool_schedule_one_off_task(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
     """Reuses the on_schedule mechanism directly (ADR 0046 decision 3) -
     kind: "once", not a new scheduling path."""
@@ -193,4 +277,5 @@ CONFIG_TOOL_HANDLERS = {
     "schedule_one_off_task": _tool_schedule_one_off_task,
     "resolve_user": _tool_resolve_user,
     "resume_paused_chat": _tool_resume_paused_chat,
+    "get_capacity_status": _tool_get_capacity_status,
 }

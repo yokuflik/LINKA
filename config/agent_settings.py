@@ -60,6 +60,19 @@ AGENT_TURN_MAX_TOOL_ROUNDTRIPS = int(os.environ.get("AGENT_TURN_MAX_TOOL_ROUNDTR
 # cleanly instead of holding a worker slot indefinitely.
 AGENT_TURN_TIMEOUT_SECONDS = float(os.environ.get("AGENT_TURN_TIMEOUT_SECONDS", "90"))
 
+# --- Shared owner send_message budget (ADR 0058) ---
+# The agent impersonates its owner (sender_id=agent.owner_user_id on every
+# send - see modules/agents/tools/execution.py), so it must draw from the
+# SAME per-user WS send_message sliding-window budget the owner's own client
+# consumes (config/security_settings.py's WS_SEND_MESSAGE_RATE_MAX/_BURST_MAX
+# - the agent worker checks those exact Redis keys directly, bypassing the WS
+# gateway only as a transport, never as a limit). On rejection the agent
+# retries with backoff instead of failing the tool call - these two constants
+# size that backoff, independent of the frontend's useOutbox.js equivalents
+# (RATE_LIMIT_BACKOFF_MS/cap) so either side can be tuned separately.
+AGENT_SEND_RATE_LIMIT_BACKOFF_MS = int(os.environ.get("AGENT_SEND_RATE_LIMIT_BACKOFF_MS", "1500"))
+AGENT_SEND_RATE_LIMIT_BACKOFF_MAX_MS = int(os.environ.get("AGENT_SEND_RATE_LIMIT_BACKOFF_MAX_MS", "20000"))
+
 # --- Trigger pre-filter cache (ADR 0046, decision 1) ---
 # SET of owner_user_ids with Agent.is_enabled=true - SISMEMBER lets
 # evaluate_triggers skip Postgres entirely for the common case (no agent in
@@ -193,6 +206,43 @@ AGENT_JUDGE_FOLLOW_UP_RECENT_MESSAGES = int(
     os.environ.get("AGENT_JUDGE_FOLLOW_UP_RECENT_MESSAGES", "2")
 )
 
+# --- Capacity estimation (ADR 0057) ---
+# Rough single-turn wall-clock cost used ONLY to project "roughly how many
+# conversations/hour" for the Builder's get_capacity_status tool - never
+# used in any real enforcement (a real turn's cost varies with tool calls,
+# e.g. Agentic RAG round-trips). Sized from the existing 90s turn timeout
+# and typical single-tool-call turns being much faster than the worst case.
+AGENT_ESTIMATED_SECONDS_PER_TURN = int(os.environ.get("AGENT_ESTIMATED_SECONDS_PER_TURN", "8"))
+
+# --- Token usage windows (ADR 0059) ---
+# Combined input+output token budgets, tracked as two independent Redis
+# fixed-window counters (own module, modules/agents/token_budget.py - same
+# INCRBY-on-a-weighted-amount shape as AGENT_DAILY_ACTIVE_SECONDS_BUDGET's
+# time_budget.py, since infra.ratelimit.service.check_and_increment always
+# adds exactly 1 and can't be reused for a weighted counter). Independent of
+# AGENT_GEMINI_CALLS_PER_MINUTE/AGENT_DAILY_ACTIVE_SECONDS_BUDGET - those
+# gate call count/wall-clock time, this gates token volume.
+AGENT_TOKEN_BUDGET_5H = int(os.environ.get("AGENT_TOKEN_BUDGET_5H", "500000"))
+AGENT_TOKEN_BUDGET_5H_WINDOW_SECONDS = int(
+    os.environ.get("AGENT_TOKEN_BUDGET_5H_WINDOW_SECONDS", str(5 * 60 * 60))
+)
+AGENT_TOKEN_BUDGET_7D = int(os.environ.get("AGENT_TOKEN_BUDGET_7D", "3000000"))
+AGENT_TOKEN_BUDGET_7D_WINDOW_SECONDS = int(
+    os.environ.get("AGENT_TOKEN_BUDGET_7D_WINDOW_SECONDS", str(7 * 24 * 60 * 60))
+)
+
+# Pre-flight gate: if the remaining budget in either window is below this
+# many tokens, skip the Gemini call entirely rather than spend an API call
+# that's very likely to fail/truncate to nothing - a turn's fixed overhead
+# (system prompt + tool schemas + at least some transcript) realistically
+# starts around 1,500-2,500 input tokens alone.
+AGENT_TOKEN_MIN_VIABLE_BUDGET = int(os.environ.get("AGENT_TOKEN_MIN_VIABLE_BUDGET", "2000"))
+
+# Technical ceiling on generationConfig.maxOutputTokens, independent of the
+# user's remaining budget - never ask Gemini for an absurdly large completion
+# just because a window happens to be nearly full.
+AGENT_MAX_OUTPUT_TOKENS_CEILING = int(os.environ.get("AGENT_MAX_OUTPUT_TOKENS_CEILING", "8192"))
+
 # --- BYOK: bring your own Gemini key (ADR 0046, decision 5) ---
 # Fernet key used to encrypt Agent.encrypted_gemini_api_key at rest. Only
 # required if any owner actually sets a custom key - modules/agents/crypto.py
@@ -216,6 +266,8 @@ __all__ = [
     "AGENT_GEMINI_CALLS_WINDOW_SECONDS",
     "AGENT_TURN_MAX_TOOL_ROUNDTRIPS",
     "AGENT_TURN_TIMEOUT_SECONDS",
+    "AGENT_SEND_RATE_LIMIT_BACKOFF_MS",
+    "AGENT_SEND_RATE_LIMIT_BACKOFF_MAX_MS",
     "AGENT_ENABLED_OWNERS_SET_KEY",
     "AGENT_TRIGGER_CFG_KEY_PREFIX",
     "AGENT_UNKNOWN_SENDER_QUOTA_PER_DAY",
@@ -234,6 +286,7 @@ __all__ = [
     "AGENT_KNOWLEDGE_ALLOWED_MIME",
     "AGENT_KNOWLEDGE_SERVER_CHUNKED_MIME",
     "AGENT_KNOWLEDGE_MAX_UPLOAD_BYTES",
+    "AGENT_ESTIMATED_SECONDS_PER_TURN",
     "AGENT_BYOK_ENCRYPTION_KEY",
     "AGENT_JUDGE_MODEL",
     "AGENT_JUDGE_CALLS_PER_MINUTE",
@@ -241,4 +294,10 @@ __all__ = [
     "AGENT_JUDGE_SYSTEM_PROMPT_PREVIEW_CHARS",
     "AGENT_JUDGE_FOLLOW_UP_WINDOW_SECONDS",
     "AGENT_JUDGE_FOLLOW_UP_RECENT_MESSAGES",
+    "AGENT_TOKEN_BUDGET_5H",
+    "AGENT_TOKEN_BUDGET_5H_WINDOW_SECONDS",
+    "AGENT_TOKEN_BUDGET_7D",
+    "AGENT_TOKEN_BUDGET_7D_WINDOW_SECONDS",
+    "AGENT_TOKEN_MIN_VIABLE_BUDGET",
+    "AGENT_MAX_OUTPUT_TOKENS_CEILING",
 ]

@@ -101,6 +101,7 @@
 <script src="components/AgentChatView.js?v=2026.09.23-2"></script>
 <script src="components/AgentSettingsView.js?v=2026.09.23-1"></script>
 <script src="components/AgentDrawer.js?v=2026.09.24-2"></script>
+<script src="components/UsageProgressBar.js?v=2026.09.26-2"></script>
 <script src="components/SearchModal.js?v=2026.09.13-1"></script>
 <script src="components/NewChatModal.js?v=2026.09.11-2"></script>
 <script src="components/NewGroupModal.js?v=2026.09.11-2"></script>
@@ -283,7 +284,7 @@ const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, nextTick
 
 const app = createApp({
   components: {
-    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, ForwardModal, MessageDetailsModal, MembersModal, ChatProfileModal, ProfileEditModal, SettingsModal, AgentDrawer, AgentChatView, AgentSettingsView, SearchModal, NewChatModal, NewGroupModal, ScheduleMessageModal, ScheduleListModal, ToastList, AvatarLightbox,
+    AuthScreen, AppHeader, ChatSidebar, ChatContextMenu, ChatHeader, MessageList, MessageInput, MessageContextMenu, ForwardModal, MessageDetailsModal, MembersModal, ChatProfileModal, ProfileEditModal, SettingsModal, AgentDrawer, SearchModal, NewChatModal, NewGroupModal, ScheduleMessageModal, ScheduleListModal, ToastList, AvatarLightbox,
   },
   setup() {
     // ---------------------------------------------------------------
@@ -416,9 +417,8 @@ const app = createApp({
     <div class="h-full flex flex-col" v-if="isAuthed && authStage !== 'welcome'">
       <AppHeader :wsStatus="wsStatus" :currentUser="currentUser" :avatarUrl="currentUserAvatarUrl"
         :avatarPreview="currentUserAvatarPreview"
-        :agentUnreadCount="myAgent ? (unreadCountByChatId[myAgent.owner_agent_chat_id] || 0) : 0"
         @logout="logout" @edit-profile="openProfileModal" @open-settings="openSettingsModal"
-        @open-search="openSearchModal" @open-agent="openAgentDrawer" />
+        @open-search="openSearchModal" />
 
       <AvatarLightbox :data="avatarLightbox" @close="closeAvatarLightbox" />
 
@@ -432,10 +432,13 @@ const app = createApp({
           :typingLabelForChat="typingLabelForChat" :unreadCountByChatId="unreadCountByChatId"
           :isChatMuted="isChatMuted"
           :chatFilters="CHAT_FILTERS" :chatFilter="chatFilter" :filteredChats="filteredChats"
+          :myAgent="myAgent" :agentActive="showAgentDrawer"
+          :agentUnreadCount="myAgent ? (unreadCountByChatId[myAgent.owner_agent_chat_id] || 0) : 0"
           @open-new-chat="openNewChatModal"
           @select-chat="selectChatFromSidebar"
           @chat-contextmenu="openChatContextMenu"
-          @set-chat-filter="setChatFilter" />
+          @set-chat-filter="setChatFilter"
+          @open-agent="openAgentDrawer" />
 
         <ChatContextMenu v-if="chatMenuItem"
           :position="chatMenuPosition"
@@ -608,6 +611,7 @@ const app = createApp({
       :messages="agentMessages" :messagesLoading="agentMessagesLoading"
       :messagesHasMore="agentHasMoreMessages" :messagesLoadingOlder="agentLoadingOlderMessages"
       :thinkingStatus="agentThinkingStatus"
+      :usage="agentUsage" :usageBlocked="agentUsageBlocked"
       :promptDirty="promptDirty" :hardTextDirty="hardTextDirty" :chatKeywordsDirty="chatKeywordsDirty"
       :knowledgeDocuments="knowledgeDocuments" :knowledgeUploadBusy="knowledgeUploadBusy" :knowledgeError="knowledgeError"
       :byokDirty="byokDirty" :byokKeyInput="byokKeyInput"
@@ -727,6 +731,7 @@ app.component('InlineAlert', InlineAlert);
 // global registration, same reason Avatar/InlineAlert are registered here).
 app.component('AgentChatView', AgentChatView);
 app.component('AgentSettingsView', AgentSettingsView);
+app.component('UsageProgressBar', UsageProgressBar);
 app.mount('#app');
 
 // Non-caching kill-switch service worker (poc/sw.js): clears stale caches and

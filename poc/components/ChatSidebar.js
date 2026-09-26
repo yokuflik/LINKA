@@ -21,8 +21,13 @@ const ChatSidebar = {
     chatFilters: { type: Array, required: true },
     chatFilter: { type: String, required: true },
     filteredChats: { type: Array, required: true },
+    // Linka Agent, shown as a pinned-style row at the top of the list (moved
+    // out of the top bar). Null while the agent hasn't been provisioned yet.
+    myAgent: { default: null },
+    agentActive: { type: Boolean, default: false },
+    agentUnreadCount: { type: Number, default: 0 },
   },
-  emits: ['open-new-chat', 'select-chat', 'chat-contextmenu', 'set-chat-filter'],
+  emits: ['open-new-chat', 'select-chat', 'chat-contextmenu', 'set-chat-filter', 'open-agent'],
   template: `
     <aside class="w-full md:w-72 shrink-0 flex flex-col border-r border-slate-200 bg-white">
       <div class="p-3 border-b border-slate-200">
@@ -49,10 +54,40 @@ const ChatSidebar = {
       </div>
 
       <div class="flex-1 overflow-y-auto">
+        <!-- Linka Agent: pinned-style entry, always first, own chat & unread
+             badge but not part of filteredChats (it isn't a real chat row). -->
+        <div v-if="myAgent" @click="$emit('open-agent')"
+             class="relative w-full text-left px-3 py-2.5 border-b border-slate-100 flex items-center gap-3 cursor-pointer transition-colors"
+             :class="agentActive ? 'bg-teal-50 hover:bg-teal-50' : 'hover:bg-slate-50'">
+          <span v-if="agentActive" class="absolute inset-y-0 start-0 w-1 bg-teal-600 rounded-e"></span>
+          <span class="relative w-10 h-10 rounded-full overflow-hidden shrink-0">
+            <img src="assets/AI-agent-profile.jpeg" alt="Linka Agent" class="w-full h-full object-cover" draggable="false" />
+          </span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-baseline gap-2">
+              <span class="flex-1 min-w-0 text-sm font-medium truncate">Linka Agent</span>
+              <svg viewBox="0 0 24 24" class="shrink-0 w-3.5 h-3.5 text-slate-600"
+                   fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <title>Pinned</title>
+                <path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5z" />
+                <line x1="12" y1="17" x2="12" y2="21" />
+              </svg>
+            </div>
+            <div class="flex items-center gap-2">
+              <div class="flex-1 min-w-0 text-xs text-slate-500 truncate">Your personal AI assistant</div>
+              <span v-if="agentUnreadCount"
+                    class="shrink-0 min-w-[1.25rem] h-5 px-1.5 rounded-full text-white text-[11px] font-semibold flex items-center justify-center bg-teal-600">
+                {{ agentUnreadCount }}
+              </span>
+            </div>
+          </div>
+        </div>
         <div v-for="item in filteredChats" :key="item.chat.id" @click="$emit('select-chat', item.chat.id)"
                 @contextmenu.prevent="$emit('chat-contextmenu', { chatId: item.chat.id, event: $event })"
-                class="w-full text-left px-3 py-2.5 border-b border-slate-100 hover:bg-slate-50 flex items-center gap-3 cursor-pointer"
-                :class="{ 'bg-teal-50': item.chat.id === activeChatId }">
+                class="relative w-full text-left px-3 py-2.5 border-b border-slate-100 flex items-center gap-3 cursor-pointer transition-colors"
+                :class="item.chat.id === activeChatId ? 'bg-teal-50 hover:bg-teal-50' : 'hover:bg-slate-50'">
+          <span v-if="item.chat.id === activeChatId"
+                class="absolute inset-y-0 start-0 w-1 bg-teal-600 rounded-e"></span>
           <Avatar :url="chatAvatarUrl(item.chat)" :preview="chatAvatarPreview(item.chat)" :name="chatAvatarName(item.chat)"
                   :colorKey="chatAvatarColorKey(item.chat)" :enlargeable="false" sizeClass="w-10 h-10 text-base" />
           <div class="flex-1 min-w-0">

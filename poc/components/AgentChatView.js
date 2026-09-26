@@ -16,12 +16,50 @@ const AgentChatView = {
     hasMore: { type: Boolean, default: false },
     loadingOlder: { type: Boolean, default: false },
     thinkingStatus: { default: null }, // { status, detail } | null
+    // ADR 0059 - true once either token-usage window is exhausted; disables
+    // the composer (input, +, send) until the window resets. Server-side is
+    // the real enforcement (invoke_worker.py's pre-flight gate) - this is a
+    // UX convenience only.
+    usageBlocked: { type: Boolean, default: false },
+    // {window_5h, window_7d} | null - used only to compute the exact
+    // "frozen until HH:MM" clock time shown above the composer while blocked
+    // (UsageProgressBar's popover is the only place the percentages/bars
+    // themselves are shown, per explicit user requirement).
+    usage: { type: Object, default: null },
   },
   emits: ['send', 'load-older', 'pick-pdf'],
   data() {
-    return { draft: '', pinnedToBottom: true, prependAdjust: null };
+    return { draft: '', pinnedToBottom: true, prependAdjust: null, now: Date.now() };
+  },
+  mounted() {
+    this.scrollToBottom();
+    this._tickTimer = setInterval(() => { this.now = Date.now(); }, 1000);
+  },
+  beforeUnmount() {
+    if (this._tickTimer) clearInterval(this._tickTimer);
   },
   computed: {
+    // Whichever blocked window resets furthest in the future is the one
+    // actually still gating the composer (usageBlocked is true if ANY
+    // window is blocked).
+    freezeEndsAt() {
+      if (!this.usage) return null;
+      const candidates = ['window_5h', 'window_7d']
+        .map((k) => this.usage[k])
+        .filter((w) => w && w.is_blocked);
+      if (!candidates.length) return null;
+      const elapsedMs = this.now - (this.usage._fetchedAtMs || this.now);
+      const latest = candidates.reduce((a, b) => (b.resets_in_seconds > a.resets_in_seconds ? b : a));
+      const remainingMs = Math.max(0, latest.resets_in_seconds * 1000 - elapsedMs);
+      return new Date(this.now + remainingMs);
+    },
+    freezeEndsAtLabel() {
+      const d = this.freezeEndsAt;
+      if (!d) return '';
+      const sameDay = d.toDateString() === new Date(this.now).toDateString();
+      const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return sameDay ? time : `${d.toLocaleDateString([], { day: 'numeric', month: 'short' })}, ${time}`;
+    },
     // Same day-grouping + WhatsApp-style clustering as MessageList.js's `rows`
     // computed - a message from the same sender within GROUP_WINDOW_MS of the
     // previous one is visually clustered (tight gap, one timestamp at the end).
@@ -96,9 +134,6 @@ const AgentChatView = {
     }
     if (this.pinnedToBottom) this.scrollToBottom();
   },
-  mounted() {
-    this.scrollToBottom();
-  },
   methods: {
     // Agent replies (type 7) and system messages (type 6, e.g. the
     // pause_and_escalate handoff notice, sender_id=null) render like
@@ -125,6 +160,7 @@ const AgentChatView = {
       }
     },
     submit() {
+      if (this.usageBlocked) return;
       const text = this.draft.trim();
       if (!text) return;
       this.pinnedToBottom = true;
@@ -197,16 +233,19 @@ const AgentChatView = {
           </div>
         </div>
       </div>
+      <p v-if="usageBlocked" class="shrink-0 px-3 py-1 text-[11px] text-rose-600 bg-rose-50 border-t border-rose-100 text-center">
+        Usage limit reached - frozen until {{ freezeEndsAtLabel }}
+      </p>
       <div class="shrink-0 border-t border-slate-200 p-2 flex items-center gap-2">
-        <button type="button" @click="openPdfPicker"
-                class="w-9 h-9 shrink-0 self-end rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 text-xl leading-none flex items-center justify-center"
+        <button type="button" @click="openPdfPicker" :disabled="usageBlocked"
+                class="w-9 h-9 shrink-0 self-end rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 text-xl leading-none flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
                 title="Attach PDF">+</button>
         <input ref="pdfFileInput" type="file" class="hidden" accept="application/pdf" @change="onPdfFileChosen" />
-        <textarea ref="draftEl" v-model="draft" @keydown.enter="onEnter" @input="resizeDraft"
+        <textarea ref="draftEl" v-model="draft" @keydown.enter="onEnter" @input="resizeDraft" :disabled="usageBlocked"
                   rows="1" placeholder="Message your agent…" dir="auto"
-                  class="flex-1 min-w-0 px-3 py-1.5 text-sm border border-slate-300 rounded-2xl resize-none leading-normal max-h-36 overflow-y-auto"></textarea>
-        <button @click="submit" :disabled="!draft.trim()"
-                class="w-9 h-9 shrink-0 self-end flex items-center justify-center rounded-full bg-teal-700 text-white disabled:opacity-40">
+                  class="flex-1 min-w-0 px-3 py-1.5 text-sm border border-slate-300 rounded-2xl resize-none leading-normal max-h-36 overflow-y-auto disabled:bg-slate-100 disabled:cursor-not-allowed"></textarea>
+        <button @click="submit" :disabled="!draft.trim() || usageBlocked"
+                class="w-9 h-9 shrink-0 self-end flex items-center justify-center rounded-full bg-teal-700 text-white disabled:opacity-40 disabled:cursor-not-allowed">
           <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M3 20l18-8L3 4v6l12 2-12 2z"/></svg>
         </button>
       </div>

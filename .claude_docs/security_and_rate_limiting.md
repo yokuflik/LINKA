@@ -54,7 +54,7 @@ App container **locked to 1 CPU** (`cpus: 1.0`) — multi-worker-safe, bump late
 
 | Limit | Bucket key | Window | Enforced | Status |
 |---|---|---|---|---|
-| `send_message` | `rlsw:send_message:{user_id}` + `rlsw:send_message_burst:{user_id}` | 3 / 1 s **and** 40 / 60 s (both must pass) | gateway `send_message` handler (two-tier) | **DONE (step 6)** |
+| `send_message` | `rlsw:send_message:{user_id}` + `rlsw:send_message_burst:{user_id}` | 3 / 1 s **and** 40 / 60 s (both must pass) | gateway `send_message` handler (two-tier); **also** `modules/agents/tools/common.py::_consume_owner_send_budget` on the agent's in-process send path, keyed on `agent.owner_user_id` (ADR 0058 - same keys, two call sites, retry+backoff instead of a hard reject on that side) | **DONE (step 6)** |
 | WS inbound frame rate | `rlsw:ws_frame:{connection_id}` | 30 / 10 s | receive loop, **before dispatch**; over → `rate_limited` + drop frame (no close); `WS_FRAME_FLOOD_STRIKES`=60 consecutive over-limit frames → close `4429` | **DONE (step 6)** |
 | `mark_delivered`/`read`/`played` (combined) | `rlsw:ws_receipts:{user_id}` | 60 / 10 s | gateway dispatch, pre-handler | **DONE (step 6)** |
 | `subscribe_presence` | `rlsw:ws_sub_presence:{user_id}` | 20 / 10 s | gateway dispatch | **DONE (step 6)** |
@@ -244,6 +244,13 @@ defaults are generous, retune-knob table + WS close codes in `deploy/README.md`.
   `SEARCH_STREAM_MAX_SECONDS` (20). Client debounces the box ≥ 400 ms.
 - The stream route is kept out of the `_per_ip_backstop` BaseHTTPMiddleware
   (long-lived `text/event-stream`); it still has its own per-user + per-IP gates.
+
+## Agent token usage windows (ADR 0059, `.claude_docs/ai_agent.md`)
+- Two Redis fixed-window token-weighted counters, not part of Phase 1 (this
+  file's `infra/ratelimit/service.py` engine is call-count-only) - own
+  module `modules/agents/token_budget.py`. 500k tokens/5h and 3M tokens/7d
+  per-agent, combined input+output. Full detail in `ai_agent.md`'s "Token
+  usage windows" section.
 
 ## Deferred (own ADRs, not Phase 1)
 

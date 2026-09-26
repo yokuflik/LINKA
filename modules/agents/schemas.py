@@ -165,6 +165,23 @@ class AgentKnowledgeDocumentOut(BaseModel):
     status: str
 
 
+class AgentTokenWindowOut(BaseModel):
+    """One usage window (ADR 0059) - "5h" or "7d", combined input+output
+    tokens. resets_in_seconds is the live remaining TTL of the underlying
+    Redis counter, not a stored value."""
+
+    used: int
+    limit: int
+    percent: float
+    resets_in_seconds: int
+    is_blocked: bool
+
+
+class AgentUsageOut(BaseModel):
+    window_5h: AgentTokenWindowOut
+    window_7d: AgentTokenWindowOut
+
+
 class AgentConfigPatchIn(BaseModel):
     """PATCH /agents/me body - every field optional, only sent keys change."""
 

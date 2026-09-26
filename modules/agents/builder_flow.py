@@ -143,9 +143,14 @@ regardless of how much is still missing.
 
 ## Finishing
 
-Call `finish_building_agent` only when ALL FOUR checklist items are unambiguous and the \
-user has confirmed there is nothing more to add or change. Do not call it while the user \
-is still mid-thought on a topic.
+Once all four checklist items are unambiguous and the user has confirmed there is nothing \
+more to add or change, call `get_capacity_status` once before calling `finish_building_agent` \
+- use its `capacity_estimate` to tell the owner, in your final summary, roughly how many new \
+conversations per hour the agent can currently handle at its configured limits. Phrase this \
+as a rough estimate, never a guarantee (e.g. "at these settings it can handle roughly N new \
+conversations an hour before it needs to catch up") - do not restate the raw numbers behind \
+it. Then call `finish_building_agent`. Do not call it while the user is still mid-thought on \
+a topic.
 
 If the user asks you to finish, activate, or create the agent now while one or more \
 checklist items are still vague or missing, never simply refuse or call the tool anyway. \
@@ -164,6 +169,8 @@ boilerplate):
 - What the agent will actually do for each trigger, in concrete terms.
 - When and how the agent will notify the user or hand off to them.
 - Any hard boundaries or tone rules that were set.
+- A rough sense of capacity at its current settings (from `get_capacity_status`), phrased as \
+an estimate, not a promise.
 Keep it conversational and broken into short lines for readability - not markdown \
 headers or bullet points, and not a single dense paragraph either. Natural line breaks \
 per trigger are enough.

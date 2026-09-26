@@ -3,13 +3,15 @@
 Identity masking, the daily-send quota check, and AgentToolCallLog writes -
 used by both execution.py and config_mode.py.
 """
+import asyncio
 import logging
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from infra.ids.client import next_id
-from infra.ratelimit.service import check_and_increment
+from infra.ratelimit.service import check_and_increment, check_sliding_window
 from modules.agents.models import Agent, AgentToolCallLog
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,35 @@ async def _check_daily_send_quota(agent: Agent) -> None:
     allowed = await check_and_increment(agent.id, "agent_messages_per_day", int(limit), _SECONDS_PER_DAY)
     if not allowed:
         raise ToolDeniedError("max_messages_per_day exceeded")
+
+
+async def _consume_owner_send_budget(agent: Agent) -> None:
+    """ADR 0058: the agent impersonates its owner on every send
+    (sender_id=agent.owner_user_id in execution.py), so it must draw from the
+    SAME per-user WS send_message sliding-window budget the owner's own
+    client consumes - never a separate or nonexistent one. Checks the exact
+    Redis keys the Rust ws_gateway writes (rlsw:send_message:{owner_user_id}
+    + rlsw:send_message_burst:{owner_user_id}), bypassing the gateway only as
+    a transport, never as a limit.
+
+    Retries with exponential backoff instead of failing the tool call - the
+    outer per-turn asyncio.wait_for(AGENT_TURN_TIMEOUT_SECONDS) in
+    invoke_worker.py is the real ceiling, so this loop has no independent
+    deadline of its own; it just keeps trying until that wait_for cancels it.
+    """
+    owner_id = agent.owner_user_id
+    backoff_ms = settings.AGENT_SEND_RATE_LIMIT_BACKOFF_MS
+    while True:
+        allowed_rate = await check_sliding_window(
+            owner_id, "send_message", settings.WS_SEND_MESSAGE_RATE_MAX, settings.WS_SEND_MESSAGE_RATE_WINDOW_SECONDS,
+        )
+        allowed_burst = await check_sliding_window(
+            owner_id, "send_message_burst", settings.WS_SEND_MESSAGE_BURST_MAX, settings.WS_SEND_MESSAGE_BURST_WINDOW_SECONDS,
+        )
+        if allowed_rate and allowed_burst:
+            return
+        await asyncio.sleep(backoff_ms / 1000)
+        backoff_ms = min(backoff_ms * 2, settings.AGENT_SEND_RATE_LIMIT_BACKOFF_MAX_MS)
 
 
 async def _log_call(

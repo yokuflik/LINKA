@@ -360,7 +360,7 @@ const MessageList = {
         </div>
       <div v-else-if="m.sender_id != null" data-row="msg"
            :data-mid="m.id"
-           class="max-w-md w-fit flex items-end gap-2 rounded-2xl transition-colors duration-500"
+           class="max-w-[65%] md:max-w-[70%] w-fit flex items-end gap-2 rounded-2xl transition-colors duration-500"
            :class="[m.sender_id === currentUser.id ? 'ml-auto text-right' : '', highlightedId && m.id === highlightedId ? 'bg-amber-200/70' : '']">
         <template v-if="m.sender_id !== currentUser.id">
           <Avatar v-if="row.groupEnd"
@@ -370,8 +370,8 @@ const MessageList = {
           <!-- Keep bubbles aligned when the avatar is hidden mid-cluster. -->
           <div v-else class="w-7 shrink-0"></div>
         </template>
-        <div class="min-w-0">
-        <div dir="auto" class="inline-block text-sm cursor-pointer"
+        <div class="min-w-0 flex-1">
+        <div dir="auto" class="inline-block text-sm cursor-pointer max-w-full"
              :class="[
                isBareMedia(m)
                  ? 'p-0 bg-transparent rounded-lg'
@@ -556,8 +556,9 @@ const MessageList = {
           </template>
         </div>
         <div v-if="row.groupEnd || m.send_failed || m.pending"
-             class="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1"
-             :class="m.sender_id === currentUser.id ? 'justify-end' : ''">
+             dir="auto"
+             class="text-[10px] text-slate-400 mt-1 px-0.5 flex items-center gap-1"
+             :class="m.sender_id === currentUser.id ? 'justify-end' : 'justify-start'">
           <span>{{ new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }}</span>
           <span v-if="m.send_failed" @click="$emit('retry-message', m)" role="button"
                 class="text-sm font-bold leading-none text-red-500 cursor-pointer" title="Not sent — tap to retry">⚠️</span>

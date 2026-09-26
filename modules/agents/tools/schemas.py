@@ -190,6 +190,10 @@ CONFIG_TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "get_capacity_status",
+        "description": "Get every rate limit relevant to this agent (activation quota, Gemini calls/min, daily active-time budget, per-sender unknown-contact quota, knowledge base size, schedule entries) alongside current usage, plus a rough estimate of how many new conversations per hour the agent can currently handle. Read-only, does not consume any quota. Use this near the end of setup, before finish_building_agent, so you can tell the owner roughly what to expect - phrase the estimate as approximate, never as a guarantee.",
+    },
+    {
         "name": "resume_paused_chat",
         "description": "Un-pause the agent for one specific chat, identified by that person's exact phone_number or username, so it starts responding there again. Use this when the owner asks to bring the agent back for a specific customer/chat it had paused/escalated (e.g. after pause_and_escalate). Provide exactly one of phone_number or username - never guess a chat_id.",
         "parameters": {

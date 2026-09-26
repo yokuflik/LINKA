@@ -27,6 +27,7 @@ from modules.agents.tools.common import (
     ToolDeniedError,
     _check_daily_send_quota,
     _chat_is_group,
+    _consume_owner_send_budget,
     _describe_escalation_counterpart,
     _resolve_sender_labels,
 )
@@ -67,6 +68,7 @@ async def _tool_send_message(session: AsyncSession, agent: Agent, arguments: dic
         raise ToolDeniedError("can_message_private is disabled")
 
     await _check_daily_send_quota(agent)
+    await _consume_owner_send_budget(agent)
 
     message = await message_service.process_outgoing(
         session,
@@ -99,6 +101,7 @@ async def _tool_reply_message(session: AsyncSession, agent: Agent, arguments: di
         raise ToolDeniedError("can_message_private is disabled")
 
     await _check_daily_send_quota(agent)
+    await _consume_owner_send_budget(agent)
 
     message = await message_service.process_outgoing(
         session,

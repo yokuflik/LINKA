@@ -43,6 +43,7 @@ from modules.agents.models import Agent
 from modules.agents.personas import get_persona_system_prompt
 from modules.agents.schedule import due_members, remove_due_member, reschedule_recurring
 from modules.agents.time_budget import has_budget_remaining, record_active_seconds
+from modules.agents.token_budget import peek_usage, record_tokens
 from modules.agents.tools import execute_tool_call, get_tool_schemas_for_chat, is_config_mode
 from modules.messaging import service as message_service
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
@@ -166,6 +167,35 @@ async def _check_gemini_call_budget(agent_id: int) -> bool:
         settings.AGENT_GEMINI_CALLS_PER_MINUTE,
         settings.AGENT_GEMINI_CALLS_WINDOW_SECONDS,
     )
+
+
+# ADR 0059: fixed English notice, posted at most once per exhaustion event
+# (SET NX cooldown, same pattern as trigger_engine._notify_activation_quota_
+# exceeded), always into the owner's own agent chat - never into whatever
+# third-party chat the turn was actually serving.
+_TOKEN_BUDGET_EXHAUSTED_NOTICE = (
+    "Your agent has used up its token budget for this time window and will "
+    "pause responding until it resets. It'll pick back up automatically."
+)
+
+
+async def _notify_token_budget_exhausted(session: AsyncSession, agent: Agent, window: str) -> None:
+    cooldown_key = f"agent_token_budget_notice_sent:{window}:{agent.id}"
+    window_seconds = (
+        settings.AGENT_TOKEN_BUDGET_5H_WINDOW_SECONDS
+        if window == "5h"
+        else settings.AGENT_TOKEN_BUDGET_7D_WINDOW_SECONDS
+    )
+    try:
+        acquired = await redis_client.set(cooldown_key, "1", nx=True, ex=window_seconds)
+        if not acquired:
+            return
+        from modules.messaging.send import send_system_message
+
+        await send_system_message(session, agent.owner_agent_chat_id, _TOKEN_BUDGET_EXHAUSTED_NOTICE)
+        await session.commit()
+    except Exception:
+        logger.exception("failed to notify owner of agent %s token budget exhaustion", agent.id)
 
 
 def _format_history_transcript(history) -> str | None:
@@ -327,12 +357,27 @@ async def _run_turn(
                     persona_prompt = get_persona_system_prompt(agent.active_skill)
                 system_prompt = f"{persona_prompt}\n\n{agent.system_prompt}" if agent.system_prompt else persona_prompt
 
+                # ADR 0059: token-usage tracking only, no gating (2026-09-26) -
+                # the char-per-token estimate is too coarse to make send/skip
+                # or output-size decisions from. Calls always run at the
+                # fixed technical output ceiling; record_tokens still tracks
+                # real usage after the fact for the /agents/me/usage display.
+                # (Previously max_output_tokens was derived from estimated
+                # remaining budget, which could clamp to as little as 1 token
+                # on a stale/tight estimate - Gemini would then genuinely
+                # truncate to nothing and report MAX_TOKENS, a self-inflicted
+                # false "out of budget" that had nothing to do with real
+                # capacity.) BYOK (api_key is not None) draws from the
+                # owner's own Gemini quota, not this project's budget.
+                max_output_tokens = settings.AGENT_MAX_OUTPUT_TOKENS_CEILING
+
                 try:
-                    content = await generate_turn(
+                    result = await generate_turn(
                         system_prompt=system_prompt,
                         contents=contents,
                         tool_schemas=tool_schemas,
                         api_key=api_key,
+                        max_output_tokens=max_output_tokens,
                     )
                 except GeminiChatError:
                     logger.exception("agent_worker: Gemini call failed for agent %s", agent_id)
@@ -348,6 +393,38 @@ async def _run_turn(
                         "This took a bit too long to process. Please try again in a moment.",
                     )
                     await session.commit()
+                    return
+
+                content = result.content
+                if result.usage is not None:
+                    await record_tokens(agent_id, result.usage.total_tokens)
+
+                if result.finish_reason == "MAX_TOKENS":
+                    # ADR 0059: stop the turn immediately, no further
+                    # round-trips - the response is necessarily truncated.
+                    # Execution-mode turns (a real chat with someone else)
+                    # never forward the partial text to that chat - only the
+                    # owner is told, via the fixed notice, in their own agent
+                    # chat. Config-mode turns are the owner's own
+                    # conversation with their own agent, so the partial text
+                    # itself is useful to show them (same _post_config_reply
+                    # path a normal config-mode text reply already uses).
+                    logger.info("agent_worker: agent %s hit MAX_TOKENS, ending turn", agent_id)
+                    if chat_id is not None and is_config_mode(agent, chat_id):
+                        partial_text = extract_text(content)
+                        if partial_text:
+                            await _post_config_reply(session, agent, chat_id, partial_text)
+                            await session.commit()
+                    # Only notify for the window(s) actually exhausted right
+                    # now - MAX_TOKENS on a single call doesn't mean both the
+                    # 5h and 7d budgets are out, and sending the identical
+                    # generic notice for each unconditionally duplicated it
+                    # in the owner's agent chat.
+                    usage = await peek_usage(agent_id)
+                    for window, window_usage in usage.items():
+                        if window_usage.is_blocked:
+                            await _notify_token_budget_exhausted(session, agent, window)
+                    ended_status = "done"
                     return
 
                 call = extract_function_call(content)

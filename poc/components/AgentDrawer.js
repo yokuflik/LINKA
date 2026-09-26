@@ -18,6 +18,9 @@ const AgentDrawer = {
     messagesHasMore: { type: Boolean, default: false },
     messagesLoadingOlder: { type: Boolean, default: false },
     thinkingStatus: { default: null },
+    // Token usage windows (ADR 0059) - {window_5h, window_7d} | null.
+    usage: { type: Object, default: null },
+    usageBlocked: { type: Boolean, default: false },
     promptDirty: { type: Boolean, required: true },
     hardTextDirty: { type: Boolean, required: true },
     chatKeywordsDirty: { type: Object, required: true },
@@ -75,6 +78,10 @@ const AgentDrawer = {
               <span class="text-sm font-semibold">{{ view === 'settings' ? 'Agent settings' : 'Your AI Agent' }}</span>
             </div>
             <div class="flex items-center gap-1">
+              <!-- Token usage (ADR 0059) - ring fill = 5h window %; the
+                   popover it opens is the ONLY place either usage window is
+                   shown, per explicit user requirement. -->
+              <UsageProgressBar :usage="usage" />
               <!-- Reset (ADR 0050) - sits right next to the enable/disable
                    toggle, visible in both the chat and settings views. -->
               <button @click="$emit('reset-agent')" :disabled="resetBusy"
@@ -109,7 +116,7 @@ const AgentDrawer = {
             <AgentChatView v-if="view === 'chat'"
                            :currentUser="currentUser" :messages="messages" :loading="messagesLoading"
                            :hasMore="messagesHasMore" :loadingOlder="messagesLoadingOlder"
-                           :thinkingStatus="thinkingStatus"
+                           :thinkingStatus="thinkingStatus" :usageBlocked="usageBlocked" :usage="usage"
                            @send="(text) => $emit('send-chat-message', text)"
                            @load-older="$emit('load-older-messages')"
                            @pick-pdf="(file) => $emit('pick-pdf', file)" />

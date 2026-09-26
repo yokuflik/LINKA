@@ -9,6 +9,10 @@
 const SearchModal = {
   props: {
     query: { type: String, required: true },         // v-model:query
+    startDate: { type: String, default: '' },        // v-model:startDate - '' or 'YYYY-MM-DDTHH:MM'
+    endDate: { type: String, default: '' },           // v-model:endDate
+    showDateRangePicker: { type: Boolean, default: false }, // popover open/closed
+    dateRangeActive: { type: Boolean, default: false },     // start and/or end set -> icon shows "active"
     tab: { type: String, default: 'exact' },          // 'exact' | 'semantic'
     busy: { type: Boolean, default: false },          // active tab's first-page fetch in flight
     moreBusy: { type: Boolean, default: false },      // next page in flight (exact tab only)
@@ -25,7 +29,11 @@ const SearchModal = {
     chatAvatarColorKey: { type: Function, required: true },
     formatChatTime: { type: Function, required: true },
   },
-  emits: ['update:query', 'input-query', 'search', 'switch-tab', 'load-more', 'expand-results', 'pick', 'close'],
+  emits: [
+    'update:query', 'update:startDate', 'update:endDate',
+    'input-query', 'search', 'switch-tab', 'load-more', 'expand-results',
+    'date-range-change', 'toggle-date-range-picker', 'pick', 'close',
+  ],
   data() {
     return {
       MEDIA_LABELS: { 2: 'Photo', 3: 'Video', 4: 'Voice message', 5: 'File' },
@@ -41,6 +49,19 @@ const SearchModal = {
     onInput(e) {
       this.$emit('update:query', e.target.value);
       this.$emit('input-query');
+    },
+    onStartDateInput(e) {
+      this.$emit('update:startDate', e.target.value);
+      this.$emit('date-range-change');
+    },
+    onEndDateInput(e) {
+      this.$emit('update:endDate', e.target.value);
+      this.$emit('date-range-change');
+    },
+    clearDateRange() {
+      this.$emit('update:startDate', '');
+      this.$emit('update:endDate', '');
+      this.$emit('date-range-change');
     },
     chatFor(result) {
       const item = this.chats.find((c) => c.chat.id === result.chat_id);
@@ -95,12 +116,38 @@ const SearchModal = {
             </svg>
             <input :value="query" @input="onInput" @keyup.enter="$emit('search')" autofocus
                    :placeholder="scopedChatName ? 'Search in this chat…' : 'Search all chats…'"
-                   class="w-full pl-8 pr-2 py-1.5 text-sm border border-slate-300 rounded-lg" />
+                   class="w-full pl-8 pr-8 py-1.5 text-sm border border-slate-300 rounded-lg" />
+            <button @click="$emit('toggle-date-range-picker')" type="button"
+                    class="absolute right-1.5 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors"
+                    :class="dateRangeActive ? 'text-teal-700 bg-teal-50' : 'text-slate-400 hover:text-slate-600'"
+                    title="Filter by date range">
+              <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="1.8"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="5" width="18" height="16" rx="2" />
+                <path d="M3 10h18M8 3v4M16 3v4" />
+                <circle v-if="dateRangeActive" cx="17.5" cy="16.5" r="1.4" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
           </div>
           <button @click="$emit('search')" :disabled="busy || !query.trim()"
                   class="px-3 py-1.5 text-sm bg-teal-700 text-white rounded-lg disabled:opacity-50">
             {{ busy ? '…' : 'Search' }}
           </button>
+        </div>
+
+        <div v-if="showDateRangePicker" class="mb-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs space-y-1.5">
+          <label class="flex items-center gap-2">
+            <span class="w-8 text-slate-500 shrink-0">From</span>
+            <input type="datetime-local" :value="startDate" @change="onStartDateInput" :max="endDate || undefined"
+                   class="flex-1 min-w-0 px-2 py-1 border border-slate-300 rounded-lg text-slate-600" />
+          </label>
+          <label class="flex items-center gap-2">
+            <span class="w-8 text-slate-500 shrink-0">To</span>
+            <input type="datetime-local" :value="endDate" @change="onEndDateInput" :min="startDate || undefined"
+                   class="flex-1 min-w-0 px-2 py-1 border border-slate-300 rounded-lg text-slate-600" />
+          </label>
+          <button v-if="startDate || endDate" @click="clearDateRange" type="button"
+                  class="text-teal-700 hover:text-teal-800 font-medium">Clear range</button>
         </div>
 
         <div class="flex gap-1 mb-2 bg-slate-100 rounded-lg p-0.5">

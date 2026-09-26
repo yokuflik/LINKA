@@ -9,8 +9,15 @@ STRING) instead of querying Postgres directly - the overwhelming majority of
 chats involve zero agents, so this keeps the common case at O(1) Redis
 lookups. Postgres is only touched: (a) as a per-owner fallback on a cache
 miss (cold Redis, self-healing - see ``_load_trigger_cfg``), and (b) once,
-to load the full ``Agent`` row right before enqueueing a matched trigger
-onto ``agent_invoke_stream``.
+to load the full ``Agent`` row right before arming a matched trigger's
+debounce timer.
+
+A match no longer enqueues onto ``agent_invoke_stream`` directly - it calls
+``invoke_debounce.arm_debounce`` (ADR 0063), which coalesces a fast burst of
+messages for the same (agent_id, chat_id) into a single turn fired
+AGENT_INVOKE_DEBOUNCE_SECONDS after the *last* one, instead of racing one
+Gemini turn per message. All quota/permission checks below still happen at
+match time, per message, exactly as before.
 """
 import logging
 from datetime import datetime, timezone
@@ -33,7 +40,13 @@ from modules.agents.crud import (
     get_agent_by_owner_chat,
     get_enabled_agents_for_owners,
 )
-from modules.agents.invoke_queue import enqueue_invocation
+from modules.agents.ephemeral_tasks import (
+    find_task_for_chat,
+    fire_summary_and_complete,
+    is_task_complete,
+    record_reply,
+)
+from modules.agents.invoke_debounce import arm_debounce
 from modules.chats.crud.crud_chat import get_chat_by_id
 from modules.chats.crud.crud_participant import get_chat_participants
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE, SYSTEM_MESSAGE_TYPE
@@ -235,9 +248,7 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
                 settings.AGENT_ACTIVATION_QUOTA_WINDOW_SECONDS,
             )
             if allowed:
-                await enqueue_invocation(
-                    agent_id=owner_agent.id, chat_id=message.chat_id, message_id=message.id
-                )
+                await arm_debounce(owner_agent.id, message.chat_id, message.id)
             else:
                 await _notify_activation_quota_exceeded(session, owner_agent.owner_agent_chat_id)
                 await session.commit()
@@ -285,6 +296,27 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
         if message.chat_id in _active_paused_chat_ids(agent.paused_chat_ids):
             continue
 
+        # ADR 0061: a reply in a chat some spawn_ephemeral_task is still
+        # waiting on is recorded deterministically here (no Gemini call needed
+        # to "record" a reply - same reasoning as auto_register_unknown_sender_
+        # chat's plain dict mutation below) rather than falling through to a
+        # normal on_specific_chats-matched turn against that chat. Once every
+        # expected_chat_id has replied, the summarize-to-owner turn is enqueued
+        # immediately and the task deletes itself (complete_task) - no separate
+        # cleanup step, no sweep needed for the "everyone replied" case (only
+        # the nobody-ever-replied case needs the schedule poll loop's sweep,
+        # see invoke_worker._schedule_poll_loop).
+        task_match = find_task_for_chat(agent, message.chat_id)
+        if task_match is not None:
+            task_id, task_entry = task_match
+            agent = await record_reply(session, agent, task_id, message.chat_id, message.content or "")
+            await session.commit()
+            refreshed_entry = agent.triggers.get("on_ephemeral_task", {}).get(task_id)
+            if refreshed_entry is not None and is_task_complete(refreshed_entry):
+                await fire_summary_and_complete(session, agent, task_id, refreshed_entry)
+                await session.commit()
+            continue
+
         allowed = await check_and_increment(
             agent.id,
             "agent_activation",
@@ -322,4 +354,4 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
             await auto_register_unknown_sender_chat(session, agent, message.chat_id)
             await session.commit()
 
-        await enqueue_invocation(agent_id=agent.id, chat_id=message.chat_id, message_id=message.id)
+        await arm_debounce(agent.id, message.chat_id, message.id)

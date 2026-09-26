@@ -46,6 +46,7 @@ async def process_outgoing(
     reply_to_message_id: Optional[int] = None,
     media: Optional[dict] = None,
     *,
+    sender_agent_id: Optional[int] = None,
     limits: MessagingLimits = DEFAULT_MESSAGING_LIMITS,
 ) -> Message:
     """
@@ -61,6 +62,12 @@ async def process_outgoing(
 
     Raises MessageAlreadySentError if this client_message_id was already
     written (duplicate stream entry).
+
+    ``sender_agent_id``, when set, marks this message as authored by that AI
+    agent (ADR 0066) - ``sender_id`` stays the owner's user_id either way
+    (ADR 0045). Enables trg_agents_enforce_message_restrictions, the
+    database-level backstop over the modules/agents/tools/execution.py
+    restriction checks.
     """
     _check_content_length(content, limits.max_message_content_length)
 
@@ -102,6 +109,7 @@ async def process_outgoing(
         media_name=attachment.name if attachment else None,
         media_duration_seconds=attachment.duration_seconds if attachment else None,
         media_blur_hash=attachment.blur_hash if attachment else None,
+        sender_agent_id=sender_agent_id,
     )
 
     await redis_client.set(idem_key, str(message.id), ex=_IDEMPOTENCY_TTL_SECONDS)

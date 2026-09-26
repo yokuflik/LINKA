@@ -98,4 +98,78 @@ mod tests {
         assert_eq!(send_stream_key_for_chat(8, 4), "message_send_stream");
         assert_eq!(send_stream_key_for_chat(9, 4), "message_send_stream:1");
     }
+
+    #[test]
+    fn chat_instances_key_matches_python() {
+        // realtime/fanout/routing.py
+        assert_eq!(chat_instances(42), "chat_instances:42");
+    }
+
+    #[test]
+    fn instance_chats_key_matches_python() {
+        assert_eq!(instance_chats("srv1"), "instance_chats:srv1");
+    }
+
+    #[test]
+    fn instance_inbox_key_matches_python() {
+        assert_eq!(instance_inbox("srv1"), "instance_inbox:srv1");
+    }
+
+    #[test]
+    fn user_events_key_matches_python() {
+        assert_eq!(user_events(42), "user_events:42");
+    }
+
+    #[test]
+    fn presence_events_key_matches_python() {
+        assert_eq!(presence_events(42), "presence_events:42");
+    }
+
+    #[test]
+    fn app_worker_alive_key_matches_python() {
+        assert_eq!(app_worker_alive("app"), "app_worker_alive:app");
+    }
+
+    #[test]
+    fn presence_key_matches_python() {
+        assert_eq!(presence(42), "presence:42");
+    }
+
+    #[test]
+    fn presence_last_seen_key_matches_python() {
+        assert_eq!(presence_last_seen(42), "presence_last_seen:42");
+    }
+
+    #[test]
+    fn ws_conns_key_matches_legacy_python_naming() {
+        // ws_connection_registry.py was deleted by ADR 0038 (connection-cap
+        // enforcement is now Rust-only), but the key name is preserved from
+        // that era per .claude_docs/security_and_rate_limiting.md — pin the
+        // literal so a refactor doesn't silently rename it.
+        assert_eq!(ws_conns(42), "ws:conns:42");
+    }
+
+    #[test]
+    fn shard_for_chat_negative_id_never_negative_via_rem_euclid() {
+        // Snowflakes are documented as always positive, but pin the
+        // rem_euclid behavior explicitly so a future signed-id regression
+        // (or a switch back to plain `%`, which CAN return negative in Rust)
+        // is caught immediately.
+        assert_eq!(shard_for_chat(-1, 4), 3);
+        assert_eq!(shard_for_chat(-4, 4), 0);
+        assert_eq!(shard_for_chat(-5, 4), 3);
+    }
+
+    #[test]
+    fn single_shard_maps_every_chat_to_shard_zero_no_suffix() {
+        assert_eq!(shard_for_chat(123456789, 1), 0);
+        assert_eq!(shard_for_chat(-1, 1), 0);
+        assert_eq!(send_stream_key_for_chat(999, 1), "message_send_stream");
+    }
+
+    #[test]
+    fn stream_key_constants_match_python_literals() {
+        assert_eq!(MESSAGE_SEND_STREAM_KEY, "message_send_stream");
+        assert_eq!(RECEIPT_STREAM_KEY, "receipt_log_stream");
+    }
 }

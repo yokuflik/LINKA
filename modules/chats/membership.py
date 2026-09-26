@@ -3,6 +3,7 @@ guard and the last-member-out chat deletion."""
 
 import json
 from typing import Optional
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from modules.chats.crud.crud_chat import delete_chat
@@ -46,6 +47,8 @@ async def remove_member(
     chat_id: int,
     target_user_id: int,
     new_owner_id: Optional[int] = None,
+    *,
+    sender_agent_id: Optional[int] = None,
 ) -> bool:
     chat = await session.get(Chat, chat_id)
     chat_title = chat.title if chat is not None else None
@@ -84,6 +87,18 @@ async def remove_member(
                 await message_service.send_system_message(
                     session, chat_id=chat_id, content=f"{actor_name} made {new_owner_name} the group owner"
                 )
+
+    if sender_agent_id is not None:
+        # Transaction-scoped (SET LOCAL, not SET) so it never leaks onto a
+        # later, unrelated request on the same pooled connection (ADR 0066).
+        # Read by trg_agents_enforce_leave_group on the DELETE below - the
+        # database-level backstop over the can_leave_groups check in
+        # modules/agents/tools/execution.py::_tool_leave_group.
+        # SET does not accept a bound parameter over the Postgres wire
+        # protocol - the value must be a literal. Safe to inline here: it's
+        # always our own internally-generated bigint id, never user-supplied
+        # text, so there's no injection surface.
+        await session.execute(text(f"SET LOCAL app.current_agent_id = '{int(sender_agent_id)}'"))
 
     removed = await remove_participant(session, chat_id=chat_id, user_id=target_user_id)
     if removed:

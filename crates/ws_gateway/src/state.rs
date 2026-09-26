@@ -57,6 +57,10 @@ pub struct AppState {
     pub presence_subs: DashMap<UserId, HashSet<ConnId>>,
     /// Reverse of `presence_subs`: connection -> the users it watches.
     pub presence_watches: DashMap<ConnId, HashSet<UserId>>,
+    /// Chat-scoped fan-out frames dropped by a full `try_send` for this
+    /// connection since the last flush (ADR 0060). Drained into
+    /// `heartbeat_ack.resync_chat_ids` so the client can target-refetch.
+    pub dropped_chats: DashMap<ConnId, HashSet<ChatId>>,
 
     next_conn_id: AtomicU64,
 }
@@ -80,6 +84,7 @@ impl AppState {
             user_conns: DashMap::new(),
             presence_subs: DashMap::new(),
             presence_watches: DashMap::new(),
+            dropped_chats: DashMap::new(),
             next_conn_id: AtomicU64::new(1),
         }
     }
@@ -193,18 +198,35 @@ impl AppState {
             }
         }
 
+        self.dropped_chats.remove(&id);
+
         (emptied, user_gone, presence_emptied)
     }
 
-    /// Senders for every local connection subscribed to `chat_id`. The guard is
-    /// dropped before the caller `try_send`s (ADR 0033: no `.await` under a lock).
-    pub fn senders_for_chat(&self, chat_id: ChatId) -> Vec<mpsc::Sender<ServerFrame>> {
+    /// Senders for every local connection subscribed to `chat_id`, paired with
+    /// their `ConnId` so a failed `try_send` can be attributed to a connection
+    /// for gap tracking (ADR 0060). The guard is dropped before the caller
+    /// `try_send`s (ADR 0033: no `.await` under a lock).
+    pub fn senders_for_chat(&self, chat_id: ChatId) -> Vec<(ConnId, mpsc::Sender<ServerFrame>)> {
         let Some(ids) = self.chat_subs.get(&chat_id) else {
             return Vec::new();
         };
         ids.iter()
-            .filter_map(|cid| self.conns.get(cid).map(|h| h.tx.clone()))
+            .filter_map(|cid| self.conns.get(cid).map(|h| (*cid, h.tx.clone())))
             .collect()
+    }
+
+    /// Record that a chat-scoped frame was dropped for `conn_id` (ADR 0060).
+    pub fn mark_dropped(&self, conn_id: ConnId, chat_id: ChatId) {
+        self.dropped_chats.entry(conn_id).or_default().insert(chat_id);
+    }
+
+    /// Drain and return the chats dropped for `conn_id` since the last flush.
+    pub fn take_dropped(&self, conn_id: ConnId) -> HashSet<ChatId> {
+        self.dropped_chats
+            .remove(&conn_id)
+            .map(|(_, set)| set)
+            .unwrap_or_default()
     }
 
     /// Senders for every local connection of `user_id` (multi-device).

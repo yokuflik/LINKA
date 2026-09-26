@@ -37,12 +37,21 @@ DEFAULT_AGENT_RESTRICTIONS = {
 # on_schedule (ADR 0046 decision 3): a list of recurring/one-off entries that
 # run a full agent turn at a given time (not a canned message - see
 # modules/agents/schedule.py). Capped at AGENT_MAX_SCHEDULE_ENTRIES.
+# on_ephemeral_task (ADR 0061): map of task_id -> {instruction, owner_chat_id,
+# expected_chat_ids, collected, created_at, expires_at} - a short-lived,
+# self-cleaning task spawned by spawn_ephemeral_task that messages one or more
+# people, accumulates their replies in `collected` (keyed by chat_id), then
+# fires a summarize-to-owner turn and deletes its own entry once every
+# expected_chat_id has replied or expires_at lapses (lazy expiry, checked in
+# the Trigger Rule Engine and the schedule poll loop - see trigger_engine.py /
+# modules/agents/ephemeral_tasks.py). Capped at AGENT_MAX_EPHEMERAL_TASKS.
 DEFAULT_AGENT_TRIGGERS = {
     "on_time_window": {"enabled": False, "start": "09:00", "end": "22:00"},
     "on_specific_chats": {},
     "on_unknown_sender": {"enabled": False},
     "on_any_message": {"enabled": False},
     "on_schedule": [],
+    "on_ephemeral_task": {},
 }
 
 # Skills/personas catalog (ADR 0047 decision 3) - fixed, code-defined, no
@@ -54,9 +63,10 @@ DEFAULT_AGENT_TRIGGERS = {
 DEFAULT_AGENT_ACTIVE_SKILL = "one_off_executor"
 
 # Sub-state inside the config chat (ADR 0049) - dynamic runtime state written
-# by the agent's own transfer_to_builder/transfer_to_help/finish_building_agent
-# tools, meaningful only when chat_id == owner_agent_chat_id. See
-# modules/agents/builder_flow.py for the full state machine.
+# by the agent's own transfer_to_builder/transfer_to_help_building/
+# transfer_to_help_general/finish_building_agent tools, meaningful only when
+# chat_id == owner_agent_chat_id. See modules/agents/builder_flow.py for the
+# full state machine (ADR 0064).
 DEFAULT_AGENT_BUILDER_STATE = "supervisor"
 
 
@@ -139,10 +149,10 @@ class Agent(Base):
     # {"chat_id": "<id>", "paused_at": "<iso>", "expires_at": "<iso>"}
     # objects (ADR 0054). A chat_id here is skipped at trigger-evaluation
     # time until: a human clears it via POST /agents/me/resume-chat/{chat_id}
-    # (un-pausing is deliberately not a tool the agent can call on itself),
-    # the owner replies in their own agent chat (resumes only the
-    # most-recently-escalated entry), or expires_at lapses (lazy expiry,
-    # checked on read - AGENT_ESCALATION_PAUSE_HOURS after paused_at).
+    # or the owner's own resume_paused_chat config tool (ADR 0055 - the only
+    # resume paths; there is no implicit resume on an owner reply), or
+    # expires_at lapses (lazy expiry, checked on read - AGENT_ESCALATION_PAUSE_HOURS
+    # after paused_at).
     paused_chat_ids = Column(
         JSONB,
         nullable=False,
@@ -150,10 +160,11 @@ class Agent(Base):
     )
 
     # Sub-state inside the config chat (ADR 0049) - one of "supervisor" |
-    # "builder_agent" | "help_agent". Only meaningful when the triggering
-    # chat_id is owner_agent_chat_id; execution-mode turns never read/write
-    # this. Written only by the agent's own handoff/finish tools, never by
-    # PATCH /agents/me (see AgentOut.builder_state - read-only).
+    # "builder_agent" | "help_general" | "help_agent_building" (ADR 0064).
+    # Only meaningful when the triggering chat_id is owner_agent_chat_id;
+    # execution-mode turns never read/write this. Written only by the
+    # agent's own handoff/finish tools, never by PATCH /agents/me (see
+    # AgentOut.builder_state - read-only).
     builder_state = Column(
         String(32),
         nullable=False,

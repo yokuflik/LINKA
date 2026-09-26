@@ -35,7 +35,10 @@ async def enqueue_invocation(*, agent_id: int, chat_id: int, message_id: int) ->
 async def enqueue_schedule_fire(*, agent_id: int, schedule_id: str) -> str:
     """ADR 0046 decision 3: append a due on_schedule entry onto the same
     agent_invoke_stream, tagged kind=schedule so process_entry seeds the turn
-    from the entry's instruction instead of chat history."""
+    from the entry's instruction instead of chat history. process_entry
+    re-loads the live entry itself (including any scoped_system_prompt, ADR
+    0061) rather than trusting anything carried on the stream payload - only
+    agent_id/schedule_id are needed here to look it up."""
     return await redis_client.xadd(
         settings.AGENT_INVOKE_STREAM_KEY,
         {

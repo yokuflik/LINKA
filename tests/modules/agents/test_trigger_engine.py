@@ -42,12 +42,15 @@ Behavioral expectations encoded here (not just "whatever the code does"):
   falling back to Postgres and repopulating the cache.
 """
 import json
+import time
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import agent_settings, settings
 from infra.redis.client import redis_client
+from modules.agents.invoke_debounce import due_pairs, pop_latest_message_id
+from modules.agents.invoke_queue import enqueue_invocation
 from modules.agents.models import Agent, DEFAULT_AGENT_RESTRICTIONS, DEFAULT_AGENT_TRIGGERS
 from modules.agents.trigger_engine import evaluate_triggers
 from modules.chats.crud.crud_chat import create_chat
@@ -131,7 +134,22 @@ async def _send(
     return message
 
 
+async def _fire_due_debounces() -> None:
+    """ADR 0063: a trigger match now only arms the debounce ZSET
+    (invoke_debounce.arm_debounce), not enqueue_invocation directly - this
+    simulates invoke_worker's _invoke_debounce_poll_loop popping whatever is
+    due (using a far-future `now` so every armed pair is due regardless of
+    the real AGENT_INVOKE_DEBOUNCE_SECONDS wait) and enqueueing it, so
+    _stream_entries() below still reflects "what would eventually be
+    enqueued" without every test needing a real sleep."""
+    for agent_id, chat_id in await due_pairs(now=time.time() + 3600):
+        message_id = await pop_latest_message_id(agent_id, chat_id)
+        if message_id is not None:
+            await enqueue_invocation(agent_id=agent_id, chat_id=chat_id, message_id=message_id)
+
+
 async def _stream_entries() -> list[dict]:
+    await _fire_due_debounces()
     entries = await redis_client.xrange(settings.AGENT_INVOKE_STREAM_KEY)
     return [fields for _id, fields in entries]
 
@@ -559,10 +577,18 @@ async def test_on_any_message_fires_on_every_private_message_when_enabled(db_ses
 
     m1 = await _send(db_session, target_chat, sender, content="first")
     await evaluate_triggers(m1)
+    # ADR 0063: each matched message re-arms the debounce timer for this
+    # (agent_id, chat_id) instead of enqueueing immediately - a fast second
+    # message coalesces into the same pending turn rather than firing a
+    # second, independent one. Checking the fire actually seeded with the
+    # latest message_id (not the first) proves both the per-message match
+    # *and* the coalescing in one assertion.
     m2 = await _send(db_session, target_chat, sender, content="second, unrelated")
     await evaluate_triggers(m2)
 
-    assert len(await _stream_entries()) == 2
+    entries = await _stream_entries()
+    assert len(entries) == 1
+    assert int(entries[0]["message_id"]) == m2.id
 
 
 async def test_on_any_message_never_fires_in_group_chats(db_session, redis_db):

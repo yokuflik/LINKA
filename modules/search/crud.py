@@ -6,7 +6,7 @@ index is always usable. `messages_around` is the exception - it keeps
 soft-deleted rows so the jump-to-context view can render a tombstone in place.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import AsyncIterator, Optional, Sequence
 
 from sqlalchemy import and_, func, select
@@ -37,6 +37,18 @@ def _match_conditions(tsq):
     )
 
 
+def _date_range_conditions(start_at: Optional[datetime], end_at: Optional[datetime]):
+    """ADR 0068 (extended for time-of-day, ADR 0070): inclusive [start_at,
+    end_at] on `created_at`, both ends optional and independent, full
+    timestamp precision (not just calendar dates)."""
+    conditions = []
+    if start_at is not None:
+        conditions.append(Message.created_at >= start_at)
+    if end_at is not None:
+        conditions.append(Message.created_at <= end_at)
+    return conditions
+
+
 async def search_chat_messages(
     session: AsyncSession,
     *,
@@ -45,11 +57,15 @@ async def search_chat_messages(
     tsq_value: str,
     before_id: Optional[int],
     limit: int,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
 ) -> Sequence[Message]:
     """In-chat search. `chat_id = :chat_id AND content_tsv @@ :q` seeks straight
     into the composite `gin (chat_id, content_tsv)` index (btree_gin)."""
     tsq = _tsquery(tsq_fn, tsq_value)
-    stmt = select(Message).where(Message.chat_id == chat_id, *_match_conditions(tsq))
+    stmt = select(Message).where(
+        Message.chat_id == chat_id, *_match_conditions(tsq), *_date_range_conditions(start_at, end_at)
+    )
     if before_id is not None:
         stmt = stmt.where(
             Message.id < before_id,
@@ -59,14 +75,20 @@ async def search_chat_messages(
     return (await session.execute(stmt)).scalars().all()
 
 
-def _global_stmt(user_id: int, tsq, chat_ids: Optional[Sequence[int]]):
+def _global_stmt(
+    user_id: int,
+    tsq,
+    chat_ids: Optional[Sequence[int]],
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
+):
     stmt = (
         select(Message)
         .join(
             Participant,
             and_(Participant.chat_id == Message.chat_id, Participant.user_id == user_id),
         )
-        .where(*_match_conditions(tsq))
+        .where(*_match_conditions(tsq), *_date_range_conditions(start_at, end_at))
     )
     if chat_ids is not None:
         # Planner hint only - the JOIN already enforces membership. Passed by the
@@ -84,11 +106,13 @@ async def search_global_messages(
     before_id: Optional[int],
     limit: int,
     chat_ids: Optional[Sequence[int]] = None,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
 ) -> Sequence[Message]:
     """Global search. The `participants` JOIN enforces *current* membership in
     the query itself - a removed member's chats drop out immediately."""
     tsq = _tsquery(tsq_fn, tsq_value)
-    stmt = _global_stmt(user_id, tsq, chat_ids)
+    stmt = _global_stmt(user_id, tsq, chat_ids, start_at, end_at)
     if before_id is not None:
         stmt = stmt.where(
             Message.id < before_id,
@@ -106,12 +130,14 @@ async def stream_global_messages(
     tsq_value: str,
     batch: int,
     chat_ids: Optional[Sequence[int]] = None,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
 ) -> AsyncIterator[Message]:
     """Same as `search_global_messages` but over a server-side cursor: rows are
     fetched `batch` at a time so the app process never holds the whole result
     set. The caller (service) enforces the row / wall-clock caps."""
     tsq = _tsquery(tsq_fn, tsq_value)
-    stmt = _global_stmt(user_id, tsq, chat_ids).order_by(Message.id.desc())
+    stmt = _global_stmt(user_id, tsq, chat_ids, start_at, end_at).order_by(Message.id.desc())
     result = await session.stream_scalars(stmt.execution_options(yield_per=batch))
     async for msg in result:
         yield msg

@@ -444,6 +444,28 @@ target, never rendered as text) and `title`/`body` never contained a raw id.
 No schema/architecture change. No new tests (same gap as every prior
 agents-module step) - import-smoke-tested only.
 
+**`no_reply_needed` config-mode tool (ADR 0065, 2026-09-26)**: reported by the
+user - in their own agent chat, after the agent already asked a question and
+was waiting on an answer, a burst of their own follow-up messages (ADR 0063
+debounce/coalescing) could still produce a redundant reply (re-asking the
+same question, or filler like "OK") once the coalesced/re-fired turn ran.
+Root cause: config-mode turns have no `send_message`-shaped tool, so
+`invoke_worker.py::_run_turn`'s `call is None` branch unconditionally posted
+whatever text the model returned via `_post_config_reply` - there was no way
+for the model to end a turn silently, unlike execution-mode (already silent
+on a text-only reply, since those personas are expected to call
+`send_message`/`reply_message` themselves). Fixed with a new no-op
+`no_reply_needed` tool, added to every `BuilderState`'s schema/handler set
+(`modules/agents/tools/schemas.py`, `config_mode.py`, `builder_handoff.py`);
+calling it makes `_run_turn` return immediately after the tool dispatch,
+skipping the text-response branch entirely. `builder_flow.py`'s shared
+`STYLE_RULES` prompt gained a new "When to stay silent" instruction telling
+the model when to use it (already-answered pending question, a plain
+acknowledgement, or a coalesced batch that changed nothing). No schema/DB
+change; `no_reply_needed` calls still count toward the per-turn round-trip
+cap like any other tool. 4 existing exact-handler-set tests in
+`test_builder_flow.py` updated to include the new tool; 118 tests pass.
+
 **Trigger Rule Engine: missing commits + ADR 0054 auto-resume removed
 (2026-09-26, found via new test coverage):** the first real test suite for
 `trigger_engine.py` (`tests/modules/agents/test_trigger_engine.py`, 29

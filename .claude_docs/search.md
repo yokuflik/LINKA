@@ -6,6 +6,16 @@ its trigger / GIN index, or the search rate limits.
 Decision record: `docs/adr/0040-server-side-message-search.md`.
 Plan + rationale: `MESSAGE_SEARCH_PLAN.md` (root).
 
+**Date-range filter (ADR 0068, extended to time-of-day by ADR 0070)**: every
+search entry point below (both FTS and semantic) accepts optional
+`start_at`/`end_at` (ISO 8601 datetime - a bare `YYYY-MM-DD` or a full
+`YYYY-MM-DDTHH:MM:SS`, inclusive both ends, filtered on `created_at` -
+independent of cursor-based `before_id` pagination). Validated for ordering
+only (`start_at <= end_at`) via `search_service.validate_date_range` / an
+inline check in `vector_search.service.semantic_search`, both reusing the
+existing "query too short" 422 error type rather than a new one. No new
+rate-limit bucket - it only narrows an existing WHERE clause.
+
 ## What it is
 
 Keyword search over `messages.content` (+ `media_name`), PostgreSQL-native, no
@@ -81,10 +91,10 @@ agrees. All idempotent.
 
 | Route | Notes |
 |---|---|
-| `GET /chats/{chat_id}/messages/search?q=&cursor=&limit=` | in-chat; `limit` clamped `[1, SEARCH_MAX_PAGE_SIZE]` (50) |
+| `GET /chats/{chat_id}/messages/search?q=&cursor=&limit=&start_at=&end_at=` | in-chat; `limit` clamped `[1, SEARCH_MAX_PAGE_SIZE]` (50) |
 | `GET /chats/{chat_id}/messages/around/{message_id}?radius=` | context window, `radius` clamped `[1, 50]`, default 25 |
-| `GET /search/messages?q=&cursor=&limit=&chat_id=` | global; `chat_id` present → delegates to in-chat |
-| `GET /search/messages/stream?q=` | `text/event-stream`; excluded from `_per_ip_backstop`; Caddy `handle /search/messages/stream` has `flush_interval -1` |
+| `GET /search/messages?q=&cursor=&limit=&chat_id=&start_at=&end_at=` | global; `chat_id` present → delegates to in-chat |
+| `GET /search/messages/stream?q=&start_at=&end_at=` | `text/event-stream`; excluded from `_per_ip_backstop`; Caddy `handle /search/messages/stream` has `flush_interval -1` |
 
 `/search*` added to Caddy `@api`. All `IdStr` ids as JSON strings.
 
@@ -112,6 +122,42 @@ jump-to-result) is built for **both** global (`AppHeader`) and in-chat
 (`ChatHeader`, scoped to the open chat) entry points — see
 `.claude_docs/frontend.md` "Message search UI".
 
+**Date-range picker (ADR 0068, redesigned by ADR 0070)**: `SearchModal.js` has
+a calendar-icon button at the right edge of the search input (mirrors the
+magnifying-glass icon on the left) that toggles a popover holding two
+`<input type="datetime-local">` fields ("From"/"To") - hidden by default so
+the common no-filter case stays as compact as before the feature existed. The
+icon fills teal (`dateRangeActive` in `useSearch.js`) when a range is set,
+even with the popover closed. First open of the popover in a modal session
+(both fields still empty) pre-fills `start = 2025-01-01T00:00` and
+`end = <right now>` (computed fresh at open time); reopening after the user
+has touched the fields never overwrites their choice. One range is shared
+across the Exact/Related tabs (both search the same underlying messages) via
+`useSearch.js` state (`searchStartDate`/`searchEndDate`, `showDateRangePicker`,
+`toggleDateRangePicker`, `clearDateRange`). Changing either field fires
+`onDateRangeChange` immediately (no debounce) and marks the *other* tab's
+cached query text stale so it refetches with the new range on switch.
+`datePart()` converts the `datetime-local` strings to UTC ISO instants
+(`new Date(...).toISOString()`) before building the request URL, sent as
+`start_at`/`end_at`.
+
+**AI agent tool parity (ADR 0068/0069/0070)**: both `search_messages` and
+`search_semantic` (`modules/agents/tools/execution.py`
+`_tool_search_messages`/`_tool_search_semantic`, schemas in `tools/schemas.py`)
+take the same optional `start_date`/`end_date` string arguments (kept under
+that name in the Gemini-facing schema - an LLM naturally supplies either
+shape there), parsed by `_parse_tool_datetime(raw, *, is_end)`: accepts a bare
+`YYYY-MM-DD` (defaults to midnight for a start bound, end-of-day
+23:59:59.999999 for an end bound) or a full ISO datetime for a specific time;
+a malformed value raises `ToolDeniedError` rather than a 500.
+`search_messages` passes the parsed `start_at`/`end_at` to
+`search_service.search_in_chat`/`search_global` (keyword FTS, cursor-paged);
+`search_semantic` passes them to `vector_search_service.semantic_search`
+(meaning-based, flat top-K list, no cursor - same shape as the REST
+`/search/semantic` endpoint). Both tools are in `EXECUTION_TOOL_HANDLERS` +
+`TOOL_SCHEMAS`, so the ADR 0062 Supervisor/Builder union picks up
+`search_semantic` automatically alongside `search_messages`.
+
 ## Semantic (vector) search — ADR 0042
 
 Separate from FTS above: `modules/vector_search/` — `messages.embedding
@@ -125,6 +171,11 @@ Redis list (`vector_embed_queue`), flushed either at `VECTOR_QUEUE_FLUSH_SIZE`
 request (`flush_queue_if_pending`). Query membership enforced the same
 `participants` JOIN pattern as FTS above. Known gaps: no retry on a failed
 flush batch (that batch is dropped), no re-embed on message edit.
+
+`GET /search/semantic?q=&limit=&chat_id=&expanded=&start_at=&end_at=` -
+the ADR 0068/0070 date-time range applies here too, as an extra `created_at`
+predicate in `crud.semantic_search_messages`, independent of the
+`max_distance` relevance floor.
 
 **Relevance floor**: `crud.semantic_search_messages` filters `embedding <=>
 query < max_distance` in addition to `ORDER BY ... LIMIT` — otherwise LIMIT

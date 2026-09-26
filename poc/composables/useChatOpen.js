@@ -475,5 +475,6 @@ function useChatOpen(ctx) {
     selectChat, reloadActiveChatIfUnloaded, revalidateActiveChatOnReconnect,
     refreshActiveChatUsers, jumpToMessage,
     markActiveChatReadIfVisible, windowIsActive,
+    revalidateFromCache,
   };
 }

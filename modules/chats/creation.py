@@ -4,6 +4,7 @@ The initial-group-member cap is injected via `ChatLimits` (ADR 0033).
 """
 
 from typing import Optional, Sequence
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from modules.chats.limits import DEFAULT_CHAT_LIMITS, ChatLimits
@@ -23,7 +24,13 @@ from modules.chats.notifications import _notify_added_to_chat
 from infra.ids.client import next_id
 
 
-async def get_or_create_private_chat(session: AsyncSession, user_a_id: int, user_b_id: int) -> Chat:
+async def get_or_create_private_chat(
+    session: AsyncSession,
+    user_a_id: int,
+    user_b_id: int,
+    *,
+    sender_agent_id: Optional[int] = None,
+) -> Chat:
     """
     Private chats must be idempotent: two users should never end up with two
     separate 1-on-1 chats just because they both tapped "message" at once.
@@ -34,12 +41,29 @@ async def get_or_create_private_chat(session: AsyncSession, user_a_id: int, user
     the user pair - one of the two concurrent create_pair() calls always
     loses, and the loser discards its unused candidate chat and adopts the
     winner's instead.
+
+    ``sender_agent_id``, when set, marks the transaction as agent-attributed
+    (ADR 0066) via ``SET LOCAL app.current_agent_id`` - read by
+    trg_agents_enforce_new_private_chat, the database-level backstop over
+    the can_message_new_private_contacts check in
+    modules/agents/tools/execution.py::_tool_create_chat. A no-op when this
+    call resolves to an already-existing chat (the early return below):
+    can_message_new_private_contacts only concerns brand-new contacts.
     """
     existing_chat_id = await get_pair_chat_id(session, user_a_id, user_b_id)
     if existing_chat_id is not None:
         chat = await session.get(Chat, existing_chat_id)
         if chat is not None:
             return chat
+
+    if sender_agent_id is not None:
+        # Transaction-scoped (SET LOCAL, not SET) so it never leaks onto a
+        # later, unrelated request on the same pooled connection.
+        # SET does not accept a bound parameter over the Postgres wire
+        # protocol - the value must be a literal. Safe to inline here: it's
+        # always our own internally-generated bigint id, never user-supplied
+        # text, so there's no injection surface.
+        await session.execute(text(f"SET LOCAL app.current_agent_id = '{int(sender_agent_id)}'"))
 
     candidate_chat = await create_chat(session, chat_id=await next_id(), is_group=False)
     # Captured now, before create_pair(): on a lost race it rolls back,

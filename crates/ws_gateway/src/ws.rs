@@ -67,12 +67,7 @@ pub async fn ws_handler(
 /// 4xxx close it gets from the Python endpoint rather than a bare HTTP error.
 fn close_after_upgrade(ws: WebSocketUpgrade, _state: Arc<AppState>, code: u16) -> Response {
     ws.on_upgrade(move |mut socket| async move {
-        let _ = socket
-            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
-                code,
-                reason: "".into(),
-            })))
-            .await;
+        let _ = send_close(&mut socket, code).await;
     })
 }
 
@@ -100,9 +95,20 @@ async fn run_connection(
     let mut socket = socket;
 
     // --- Auth ---
-    let claims = linka_common::auth::verify(&token, state.config.jwt_secret.as_bytes())
-        .map_err(|_| CLOSE_UNAUTHORIZED)?;
-    let user_id = linka_common::auth::user_id(&claims).map_err(|_| CLOSE_UNAUTHORIZED)?;
+    let claims = match linka_common::auth::verify(&token, state.config.jwt_secret.as_bytes()) {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = send_close(&mut socket, CLOSE_UNAUTHORIZED).await;
+            return Err(CLOSE_UNAUTHORIZED);
+        }
+    };
+    let user_id = match linka_common::auth::user_id(&claims) {
+        Ok(id) => id,
+        Err(_) => {
+            let _ = send_close(&mut socket, CLOSE_UNAUTHORIZED).await;
+            return Err(CLOSE_UNAUTHORIZED);
+        }
+    };
 
     // --- Handshake churn (per IP + per user) ---
     let l = &state.config.limits;
@@ -370,13 +376,22 @@ pub(crate) fn send_frame(state: &AppState, conn_id: ConnId, frame: String) {
     send(state, conn_id, frame);
 }
 
+/// Send a close frame and give the peer a brief window to actually read it
+/// before the caller drops the socket. Without this, dropping `socket`
+/// immediately after `send` races the TCP flush and the peer often sees a
+/// raw connection reset instead of the close code (axum's WS sink has no
+/// synchronous flush-and-wait-for-close-ack primitive to call instead).
 async fn send_close(socket: &mut WebSocket, code: u16) -> Result<(), axum::Error> {
-    socket
+    let result = socket
         .send(Message::Close(Some(axum::extract::ws::CloseFrame {
             code,
             reason: "".into(),
         })))
-        .await
+        .await;
+    // Best-effort: drain until the peer's own Close/EOF arrives, capped so a
+    // silent peer can't hang the caller.
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), socket.recv()).await;
+    result
 }
 
 /// Step 4 dispatch: only `heartbeat` and `send_message` are live. Metered
@@ -394,7 +409,18 @@ async fn dispatch(
         ClientFrame::Heartbeat => {
             let mut conn = state.redis.clone();
             crate::presence::heartbeat(&mut conn, user_id, state.config.presence_ttl_secs).await;
-            send(state, conn_id, r#"{"type":"heartbeat_ack"}"#.to_string());
+            // ADR 0060: flush any chats whose fan-out frame was dropped for
+            // this connection since the last heartbeat, so the client can
+            // target-refetch instead of silently missing the update.
+            let dropped = state.take_dropped(conn_id);
+            let mut ack = serde_json::json!({"type": "heartbeat_ack"});
+            if !dropped.is_empty() {
+                // Snowflake-id-as-string convention (see events.rs) - chat
+                // ids go over the wire as strings, never bare numbers.
+                let ids: Vec<String> = dropped.into_iter().map(|id| id.to_string()).collect();
+                ack["resync_chat_ids"] = serde_json::json!(ids);
+            }
+            send(state, conn_id, ack.to_string());
         }
         ClientFrame::SendMessage(m) => {
             let primary = state

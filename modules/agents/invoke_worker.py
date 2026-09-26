@@ -14,6 +14,14 @@ functionCall round-trips, each dispatched through
 modules.agents.tools.execute_tool_call. The whole turn is wrapped in
 asyncio.wait_for(AGENT_TURN_TIMEOUT_SECONDS) by process_entry below so a
 stuck Gemini call or tool execution can't hold a worker slot indefinitely.
+
+`process_entry` also holds a per-(agent_id, chat_id) turn mutex around
+`_run_turn` (ADR 0063) - a debounced fire landing while a previous turn for
+the same pair is still running re-arms the debounce timer instead of racing
+a second concurrent turn. `_invoke_debounce_poll_loop` (alongside
+`_schedule_poll_loop`, same due-ZSET-poll pattern) is what actually turns a
+coalesced burst of trigger matches into the single `enqueue_invocation` call
+that lands on this stream in the first place.
 """
 import asyncio
 import contextlib
@@ -29,8 +37,16 @@ from infra.db.connection import session_scope
 from infra.ratelimit.service import check_and_increment
 from infra.redis.client import redis_client
 from modules.agents.builder_flow import BuilderState, get_builder_state_prompt
-from modules.agents.crud import get_agent_by_id
-from modules.agents.invoke_queue import enqueue_schedule_fire
+from modules.agents.crud import get_agent_by_id, get_agents_with_ephemeral_tasks
+from modules.agents.ephemeral_tasks import fire_summary_and_complete, sweep_expired_task_ids
+from modules.agents.invoke_debounce import (
+    acquire_turn_lock,
+    arm_debounce,
+    due_pairs,
+    pop_latest_message_id,
+    release_turn_lock,
+)
+from modules.agents.invoke_queue import enqueue_invocation, enqueue_schedule_fire
 from modules.agents.gemini_client import (
     GeminiChatError,
     extract_function_call,
@@ -75,8 +91,10 @@ _TOOL_THINKING_LABELS = {
     "get_agent_status": "Checking its own status…",
     "estimate_api_usage": "Estimating usage…",
     "schedule_one_off_task": "Scheduling a task…",
+    "spawn_ephemeral_task": "Starting a one-off task…",
     "transfer_to_builder": "Bringing in the builder…",
-    "transfer_to_help": "Bringing in help…",
+    "transfer_to_help_building": "Bringing in help…",
+    "transfer_to_help_general": "Bringing in help…",
     "finish_building_agent": "Finishing up and activating…",
 }
 
@@ -102,6 +120,7 @@ async def _post_config_reply(session: AsyncSession, agent: Agent, chat_id: int, 
         client_message_id=f"agent-{uuid.uuid4().hex}",
         content=text,
         type=AGENT_REPLY_MESSAGE_TYPE,
+        sender_agent_id=agent.id,
     )
 
 
@@ -178,6 +197,15 @@ _TOKEN_BUDGET_EXHAUSTED_NOTICE = (
     "pause responding until it resets. It'll pick back up automatically."
 )
 
+# Fixed English notice for the AGENT_TURN_MAX_TOOL_ROUNDTRIPS cap - always
+# posted (no cooldown, unlike the token-budget notice above: this cap is per-
+# turn, not a standing pause, so there is no ongoing state to avoid re-
+# notifying about).
+_ROUND_TRIP_CAP_NOTICE = (
+    "This request was too complex to finish in one go, so your agent stopped "
+    "partway through. Please try again with a simpler or more specific request."
+)
+
 
 async def _notify_token_budget_exhausted(session: AsyncSession, agent: Agent, window: str) -> None:
     cooldown_key = f"agent_token_budget_notice_sent:{window}:{agent.id}"
@@ -251,6 +279,7 @@ async def _run_turn(
     chat_id: int | None,
     message_id: int | None = None,
     schedule_instruction: str | None = None,
+    scoped_system_prompt: str | None = None,
 ) -> None:
     """Runs one Gemini + tool-calling turn for `agent_id`. Message-fired
     (`message_id` set) seeds from chat history; schedule-fired
@@ -259,7 +288,12 @@ async def _run_turn(
     its own DB session (this consumer's caller session is per-batch and
     shouldn't be held across a slow Gemini call). Every failure is logged and
     swallowed - a bad turn must never crash the worker loop; the daily time
-    budget still gets accounted by the caller's `finally`."""
+    budget still gets accounted by the caller's `finally`.
+
+    `scoped_system_prompt` (ADR 0061) replaces the agent's persona +
+    system_prompt for this one turn only, when set (schedule_one_off_task's
+    optional field, or an ephemeral task's fixed relay/summarize template) -
+    never written back to agent.system_prompt."""
     async with session_scope() as session:
         agent = await get_agent_by_id(session, agent_id)
         if agent is None or not agent.is_enabled:
@@ -277,7 +311,14 @@ async def _run_turn(
         # customer). "done"/"error" mirrors the same gate in the finally below.
         owner_user_id = agent.owner_user_id
         ended_status = "error"
-        config_mode_turn = chat_id is None or is_config_mode(agent, chat_id)
+        # Must agree with the real tool-mode gate (dispatch.is_config_mode),
+        # which returns False for chat_id=None - a schedule/ephemeral-task
+        # turn with no chat target dispatches execution-mode tools, so it must
+        # not be flagged as config-mode here either (previously `chat_id is
+        # None or ...` disagreed with the gate, making a chat_id-less turn
+        # look like config-mode for the drawer's "thinking" indicator while
+        # actually running with execution-mode tool_schemas underneath).
+        config_mode_turn = is_config_mode(agent, chat_id)
         if config_mode_turn:
             await _publish_agent_thinking(owner_user_id, "started")
         # Real peer-visible "typing" indicator (not the owner-only
@@ -313,6 +354,7 @@ async def _run_turn(
                         client_message_id=f"agent-{uuid.uuid4().hex}",
                         content=verdict.redirect_message or local_redirect_text(agent),
                         type=AGENT_REPLY_MESSAGE_TYPE,
+                        sender_agent_id=agent.id,
                     )
                     await session.commit()
                     ended_status = "done"
@@ -337,7 +379,8 @@ async def _run_turn(
 
                 # Re-derived every round-trip, not just once before the loop:
                 # a config-mode handoff tool (transfer_to_builder/
-                # transfer_to_help/finish_building_agent, ADR 0049) flips
+                # transfer_to_help_building/transfer_to_help_general/
+                # finish_building_agent, ADR 0049/0064) flips
                 # agent.builder_state mid-turn, and without this the very next
                 # Gemini call would still run under the OLD state's prompt and
                 # (more importantly) its OLD, now-wrong tool_schemas - unable
@@ -351,11 +394,20 @@ async def _run_turn(
                 # purely by chat_id (+ builder_state for config mode), never
                 # by active_skill/system_prompt/anything model-controlled.
                 tool_schemas = get_tool_schemas_for_chat(agent, chat_id)
-                if is_config_mode(agent, chat_id):
+                if scoped_system_prompt:
+                    # ADR 0061: a scoped one-off/ephemeral turn runs under its
+                    # own short-lived prompt instead of the agent's persistent
+                    # persona/system_prompt/builder_state prompt - deliberately
+                    # bypasses all three so the task stays limited to exactly
+                    # what it was told to do, regardless of the agent's normal
+                    # configuration.
+                    system_prompt = scoped_system_prompt
+                elif is_config_mode(agent, chat_id):
                     persona_prompt = get_builder_state_prompt(BuilderState(agent.builder_state))
+                    system_prompt = f"{persona_prompt}\n\n{agent.system_prompt}" if agent.system_prompt else persona_prompt
                 else:
                     persona_prompt = get_persona_system_prompt(agent.active_skill)
-                system_prompt = f"{persona_prompt}\n\n{agent.system_prompt}" if agent.system_prompt else persona_prompt
+                    system_prompt = f"{persona_prompt}\n\n{agent.system_prompt}" if agent.system_prompt else persona_prompt
 
                 # ADR 0059: token-usage tracking only, no gating (2026-09-26) -
                 # the char-per-token estimate is too coarse to make send/skip
@@ -473,6 +525,20 @@ async def _run_turn(
                         {"role": "user", "parts": [function_response_part(call["name"], {"error": "tool round-trip limit reached for this turn"})]}
                     )
                     logger.info("agent_worker: agent %s hit the %d round-trip cap", agent_id, settings.AGENT_TURN_MAX_TOOL_ROUNDTRIPS)
+                    # Same owner-facing UX as the MAX_TOKENS/Gemini-error paths
+                    # above (frontend error UX rule: never leave a turn
+                    # silently dead with no notice) - always into the owner's
+                    # own agent chat, never into whatever third-party chat an
+                    # execution-mode turn was actually serving (found
+                    # 2026-09-26: a turn hitting this cap previously ended
+                    # with zero message anywhere).
+                    await _post_config_reply(
+                        session,
+                        agent,
+                        agent.owner_agent_chat_id,
+                        _ROUND_TRIP_CAP_NOTICE,
+                    )
+                    await session.commit()
                     ended_status = "done"
                     return
 
@@ -482,6 +548,14 @@ async def _run_turn(
                     )
                 tool_result = await execute_tool_call(session, agent, call["name"], call["args"], chat_id=chat_id)
                 await session.commit()
+                if call["name"] == "no_reply_needed":
+                    # ADR 0065: the model explicitly chose to end this
+                    # config-mode turn without posting anything - stop right
+                    # here instead of looping for another round-trip or
+                    # falling through to the call-is-None/_post_config_reply
+                    # path (which posts unconditionally).
+                    ended_status = "done"
+                    return
                 # The reply just landed (new_message clears the indicator
                 # client-side) - stop the loop right here instead of waiting
                 # for the turn's finally, or a tick still in flight can
@@ -564,13 +638,34 @@ class AgentInvokeConsumer(BaseStreamConsumer):
                     logger.info("agent_worker: schedule entry %s gone/disabled, skipping", schedule_id)
                     return
                 chat_id = int(entry["chat_id"]) if entry.get("chat_id") else None
-                coro = _run_turn(agent_id, chat_id, schedule_instruction=entry["instruction"])
+                coro = _run_turn(
+                    agent_id,
+                    chat_id,
+                    schedule_instruction=entry["instruction"],
+                    scoped_system_prompt=entry.get("scoped_system_prompt"),
+                )
                 log_target = f"schedule {schedule_id}"
             else:
                 chat_id = int(fields["chat_id"])
                 message_id = int(fields["message_id"])
                 coro = _run_turn(agent_id, chat_id, message_id)
                 log_target = f"chat {chat_id}"
+
+            # Per-(agent_id, chat_id) turn mutex (ADR 0063): a debounced fire
+            # landing while a previous turn for the same pair is still
+            # running (up to AGENT_TURN_TIMEOUT_SECONDS) must not start a
+            # second concurrent turn - re-arm the debounce timer instead of
+            # dropping the message, so it retries right after the current
+            # turn finishes. chat_id=None (schedule-fired, no chat target)
+            # never contends with anything.
+            if not await acquire_turn_lock(agent_id, chat_id):
+                logger.info(
+                    "agent_worker: turn already running for agent %s %s, re-arming debounce",
+                    agent_id, log_target,
+                )
+                if chat_id is not None:
+                    await arm_debounce(agent_id, chat_id)
+                return
 
             started = time.monotonic()
             try:
@@ -593,6 +688,7 @@ class AgentInvokeConsumer(BaseStreamConsumer):
                 await session.commit()
             finally:
                 await record_active_seconds(agent_id, time.monotonic() - started)
+                await release_turn_lock(agent_id, chat_id)
 
 
 async def _fire_schedule_entry(session: AsyncSession, agent_id: int, schedule_id: str) -> None:
@@ -634,11 +730,56 @@ async def _fire_schedule_entry(session: AsyncSession, agent_id: int, schedule_id
         await remove_due_member(agent_id, schedule_id)
 
 
+async def _sweep_expired_ephemeral_tasks() -> None:
+    """ADR 0061: closes out on_ephemeral_task entries whose expires_at
+    lapsed with nobody having replied - the one completion path with no
+    inbound message to piggyback on (every other completion happens inline
+    in the Trigger Rule Engine as soon as a reply lands). Runs on the same
+    cadence as the schedule poll loop rather than a separate timer - one
+    more cheap check alongside it, not a new worker."""
+    async with session_scope() as session:
+        agents = await get_agents_with_ephemeral_tasks(session)
+        for agent in agents:
+            for task_id in sweep_expired_task_ids(agent):
+                entry = agent.triggers.get("on_ephemeral_task", {}).get(task_id)
+                if entry is None:
+                    continue
+                await fire_summary_and_complete(session, agent, task_id, entry)
+        await session.commit()
+
+
+async def _invoke_debounce_poll_loop(stop_event: asyncio.Event) -> None:
+    """Tight poll (ADR 0063) alongside the schedule poll loop below - pops
+    every (agent_id, chat_id) pair whose debounce window has elapsed and
+    enqueues one agent_invoke_stream entry per pair, using the message_id
+    stashed by the most recent arm_debounce call for that pair (the latest
+    message in whatever burst got coalesced). A pair with no stashed
+    message_id (arm_debounce failed, or the key already expired) is skipped
+    - nothing to seed a turn from."""
+    while not stop_event.is_set():
+        try:
+            for agent_id, chat_id in await due_pairs():
+                message_id = await pop_latest_message_id(agent_id, chat_id)
+                if message_id is None:
+                    continue
+                await enqueue_invocation(agent_id=agent_id, chat_id=chat_id, message_id=message_id)
+        except Exception:
+            logger.exception("agent_worker: invoke debounce poll iteration failed")
+
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(), timeout=settings.AGENT_INVOKE_DEBOUNCE_POLL_INTERVAL_SECONDS
+            )
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _schedule_poll_loop(stop_event: asyncio.Event) -> None:
     """Lightweight loop inside this same agent_worker process (ADR 0046
     decision 3) - checks agent_schedule_due every
     AGENT_SCHEDULE_POLL_INTERVAL_SECONDS and fires whatever's due. Runs
-    alongside the stream consumer, not as a replacement for it."""
+    alongside the stream consumer, not as a replacement for it. Also sweeps
+    expired ephemeral tasks (ADR 0061) on the same tick."""
     while not stop_event.is_set():
         try:
             members = await due_members()
@@ -648,6 +789,11 @@ async def _schedule_poll_loop(stop_event: asyncio.Event) -> None:
                     await _fire_schedule_entry(session, int(agent_id_str), schedule_id)
         except Exception:
             logger.exception("agent_worker: schedule poll iteration failed")
+
+        try:
+            await _sweep_expired_ephemeral_tasks()
+        except Exception:
+            logger.exception("agent_worker: ephemeral task sweep failed")
 
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=settings.AGENT_SCHEDULE_POLL_INTERVAL_SECONDS)
@@ -665,4 +811,5 @@ async def run_forever(stop_event: asyncio.Event | None = None) -> None:
     await asyncio.gather(
         consumer.run_forever(stop_event),
         _schedule_poll_loop(stop_event),
+        _invoke_debounce_poll_loop(stop_event),
     )

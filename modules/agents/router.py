@@ -108,6 +108,7 @@ async def create_my_agent(
         client_message_id=f"agent-greeting-{agent.id}",
         content=_GREETING_TEXT,
         type=AGENT_REPLY_MESSAGE_TYPE,
+        sender_agent_id=agent.id,
     )
 
     return _agent_out(agent)
@@ -199,6 +200,7 @@ async def reset_my_agent(
         client_message_id=f"agent-reset-greeting-{await next_id()}",
         content=_GREETING_TEXT,
         type=AGENT_REPLY_MESSAGE_TYPE,
+        sender_agent_id=agent.id,
     )
 
     out = _agent_out(agent)

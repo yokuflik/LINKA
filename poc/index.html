@@ -635,6 +635,9 @@ const app = createApp({
 
     <SearchModal v-if="showSearchModal"
       v-model:query="searchQuery"
+      v-model:startDate="searchStartDate"
+      v-model:endDate="searchEndDate"
+      :showDateRangePicker="showDateRangePicker" :dateRangeActive="dateRangeActive"
       :tab="searchTab"
       :busy="activeBusy" :moreBusy="searchMoreBusy" :error="activeError"
       :results="activeResults" :hasMore="activeHasMore"
@@ -646,6 +649,7 @@ const app = createApp({
       :formatChatTime="formatChatTime"
       @input-query="onSearchInput" @search="runActiveSearch" @switch-tab="switchSearchTab"
       @load-more="loadMoreSearchResults" @expand-results="loadMoreSemanticResults"
+      @date-range-change="onDateRangeChange" @toggle-date-range-picker="toggleDateRangePicker"
       @pick="openSearchResult" @close="closeSearchModal" />
 
     <ScheduleMessageModal v-if="showScheduleModal"

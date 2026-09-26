@@ -18,3 +18,8 @@ jsonwebtoken = { version = "9", default-features = false }
 
 [dev-dependencies]
 serde_json.workspace = true
+# Test-only: guards env-var-mutating config tests (Stage 1.2) against
+# cargo test's default parallel-thread execution within one process.
+serial_test = "3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+base64 = "0.22"

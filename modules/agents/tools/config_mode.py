@@ -8,6 +8,7 @@ PATCH /agents/me and update_own_triggers - one write path, multiple entry
 points.
 """
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +23,10 @@ from modules.agents.crud import (
     resume_agent_chat,
     update_agent_config,
     update_agent_triggers,
+)
+from modules.agents.ephemeral_tasks import (
+    EphemeralTaskQuotaExceededError,
+    spawn_ephemeral_task,
 )
 from modules.agents.models import Agent
 from modules.agents.personas import STORABLE_SKILLS
@@ -103,9 +108,10 @@ async def _tool_resume_paused_chat(session: AsyncSession, agent: Agent, argument
     """ADR 0055: explicit, conversational counterpart to the human-only
     POST /agents/me/resume-chat/{chat_id} endpoint - resolves phone_number/
     username via the same resolve_user contract, then un-pauses that one
-    chat specifically. Additive to ADR 0054's implicit most-recent-pause
-    resume, which still fires unconditionally elsewhere - this is for when
-    that heuristic isn't enough (multiple concurrent pauses)."""
+    chat specifically. This and the REST endpoint are the only two ways a
+    paused chat resumes before its lazy expiry (ADR 0054's original design
+    also auto-resumed on any owner reply in their own agent chat, but that
+    was removed - see trigger_engine.py)."""
     phone_number = arguments.get("phone_number")
     username = arguments.get("username")
     if bool(phone_number) == bool(username):
@@ -187,6 +193,7 @@ async def _tool_get_capacity_status(session: AsyncSession, agent: Agent, argumen
     doc_count = await count_knowledge_documents(session, agent.id)
     chunk_count = await count_knowledge_chunks(session, agent.id)
     schedule_used = len(agent.triggers.get("on_schedule", []))
+    ephemeral_tasks_used = len(agent.triggers.get("on_ephemeral_task", {}))
     auto_chats_used = sum(
         1 for entry in agent.triggers.get("on_specific_chats", {}).values()
         if isinstance(entry, dict) and "_auto_added_at" in entry
@@ -237,6 +244,7 @@ async def _tool_get_capacity_status(session: AsyncSession, agent: Agent, argumen
             "chunks_used": chunk_count, "chunks_max": settings.AGENT_KNOWLEDGE_MAX_CHUNKS_PER_AGENT,
         },
         "schedule_entries": {"used": schedule_used, "max": settings.AGENT_MAX_SCHEDULE_ENTRIES},
+        "ephemeral_tasks": {"used": ephemeral_tasks_used, "max": settings.AGENT_MAX_EPHEMERAL_TASKS},
         "auto_registered_chats": {"used": auto_chats_used, "max": settings.AGENT_MAX_AUTO_CHATS},
         "capacity_estimate": {
             "approx_new_conversations_per_hour": conversations_per_hour_estimate,
@@ -247,14 +255,25 @@ async def _tool_get_capacity_status(session: AsyncSession, agent: Agent, argumen
 
 async def _tool_schedule_one_off_task(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
     """Reuses the on_schedule mechanism directly (ADR 0046 decision 3) -
-    kind: "once", not a new scheduling path."""
+    kind: "once", not a new scheduling path. execute_at either an ISO-8601 UTC
+    instant, or the sentinel "now" for immediate-ish execution (picked up on
+    the next AGENT_SCHEDULE_POLL_INTERVAL_SECONDS tick, same as any entry
+    whose `at` is already in the past - this just makes that an explicit,
+    documented choice instead of an emergent side effect). scoped_system_prompt
+    (ADR 0061) is optional free text used INSTEAD OF the agent's persona +
+    system_prompt for this one firing only - never written to agent.system_prompt,
+    so the agent's persistent config is untouched before or after."""
     task = str(arguments["task"])
     execute_at = str(arguments["execute_at"])
+    if execute_at.strip().lower() == "now":
+        execute_at = datetime.now(timezone.utc).isoformat()
+    scoped_system_prompt = arguments.get("scoped_system_prompt")
     entry = {
         "id": uuid.uuid4().hex,
         "kind": "once",
         "at": execute_at,
         "instruction": task,
+        "scoped_system_prompt": str(scoped_system_prompt) if scoped_system_prompt else None,
         "chat_id": arguments.get("chat_id"),
         "enabled": True,
     }
@@ -268,6 +287,37 @@ async def _tool_schedule_one_off_task(session: AsyncSession, agent: Agent, argum
     return {"schedule_id": entry["id"]}
 
 
+async def _tool_spawn_ephemeral_task(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0061: starts a short-lived, self-cleaning task that messages one or
+    more chats, waits for their replies, then summarizes to the owner and
+    deletes its own trigger entry - see modules/agents/ephemeral_tasks.py.
+    Registers the task AND schedules the initial outreach to each chat_id
+    (each fires immediately, in its own execution-mode turn, via the same
+    mechanism as schedule_one_off_task) - config-mode itself has no
+    send_message tool, so this tool cannot message anyone directly."""
+    instruction = str(arguments["instruction"])
+    chat_ids = arguments.get("chat_ids")
+    if not isinstance(chat_ids, list) or not chat_ids:
+        raise ToolDeniedError("chat_ids must be a non-empty list")
+    timeout_minutes = arguments.get("timeout_minutes")
+
+    try:
+        result = await spawn_ephemeral_task(
+            session, agent, instruction=instruction, chat_ids=chat_ids, timeout_minutes=timeout_minutes,
+        )
+    except EphemeralTaskQuotaExceededError as exc:
+        raise ToolDeniedError(str(exc))
+    return result
+
+
+async def _tool_no_reply_needed(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """No-op (ADR 0065): lets the model end a config-mode turn without
+    posting anything to the owner's agent chat. invoke_worker.py detects this
+    call by name and skips _post_config_reply for the turn entirely - the
+    return value here is only to close out the function-calling round-trip."""
+    return {"status": "ok"}
+
+
 CONFIG_TOOL_HANDLERS = {
     "set_agent_persona": _tool_set_agent_persona,
     "update_agent_rules": _tool_update_agent_rules,
@@ -278,4 +328,6 @@ CONFIG_TOOL_HANDLERS = {
     "resolve_user": _tool_resolve_user,
     "resume_paused_chat": _tool_resume_paused_chat,
     "get_capacity_status": _tool_get_capacity_status,
+    "spawn_ephemeral_task": _tool_spawn_ephemeral_task,
+    "no_reply_needed": _tool_no_reply_needed,
 }

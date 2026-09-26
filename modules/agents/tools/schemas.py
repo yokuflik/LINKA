@@ -8,7 +8,9 @@ CONFIG_TOOL_SCHEMAS entries and builder_flow's handoff schemas.
 from modules.agents.builder_flow import (
     FINISH_BUILDING_AGENT_SCHEMA,
     TRANSFER_TO_BUILDER_SCHEMA,
-    TRANSFER_TO_HELP_SCHEMA,
+    TRANSFER_TO_HELP_BUILDING_SCHEMA,
+    TRANSFER_TO_HELP_GENERAL_SCHEMA,
+    TRANSFER_TO_SUPERVISOR_SCHEMA,
     BuilderState,
 )
 
@@ -61,10 +63,22 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "read_history",
-        "description": "Read the last 20 messages of a chat, oldest first, each with sender_id/timestamp/content.",
+        "description": (
+            "Read up to 20 messages of a chat at a time, oldest first, each with "
+            "sender_id/timestamp/content. The result includes has_more: if true, this is "
+            "only part of the history - call again with before_id set to next_before_id to "
+            "go further back in parts. Never claim you've seen the whole conversation when "
+            "has_more is true."
+        ),
         "parameters": {
             "type": "object",
-            "properties": {"chat_id": {"type": "string"}},
+            "properties": {
+                "chat_id": {"type": "string"},
+                "before_id": {
+                    "type": "string",
+                    "description": "Optional: pass the previous result's next_before_id to fetch the next older page",
+                },
+            },
             "required": ["chat_id"],
         },
     },
@@ -84,12 +98,67 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "search_messages",
-        "description": "Keyword-search the owner's own messages (optionally scoped to one chat) - e.g. to check who has been waiting for a reply.",
+        "description": (
+            "Keyword-search the owner's own messages, optionally scoped to one chat and/or a "
+            "date range. Returns up to 10 matches at a time. The result includes has_more: if "
+            "true, call again with cursor set to next_cursor to get more matches. Never claim "
+            "you've found everything when has_more is true."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
                 "chat_id": {"type": "string", "description": "Optional: restrict the search to this chat"},
+                "cursor": {
+                    "type": "string",
+                    "description": "Optional: pass the previous result's next_cursor to fetch the next page",
+                },
+                "start_date": {
+                    "type": "string",
+                    "description": (
+                        "Optional: only messages on/after this date/time. Format YYYY-MM-DD "
+                        "(midnight assumed) or YYYY-MM-DDTHH:MM:SS for a specific time"
+                    ),
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": (
+                        "Optional: only messages on/before this date/time. Format YYYY-MM-DD "
+                        "(end of day assumed) or YYYY-MM-DDTHH:MM:SS for a specific time"
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search_semantic",
+        "description": (
+            "Meaning-based search over the owner's own messages - finds relevant messages even "
+            "if they don't contain the exact query words (paraphrases, related topics), optionally "
+            "scoped to one chat and/or a date range. Use this instead of search_messages when the "
+            "exact wording is unknown or the request is conceptual (e.g. 'did anyone complain about "
+            "the price'). Returns a flat list of the best matches, not paginated."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "chat_id": {"type": "string", "description": "Optional: restrict the search to this chat"},
+                "start_date": {
+                    "type": "string",
+                    "description": (
+                        "Optional: only messages on/after this date/time. Format YYYY-MM-DD "
+                        "(midnight assumed) or YYYY-MM-DDTHH:MM:SS for a specific time"
+                    ),
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": (
+                        "Optional: only messages on/before this date/time. Format YYYY-MM-DD "
+                        "(end of day assumed) or YYYY-MM-DDTHH:MM:SS for a specific time"
+                    ),
+                },
             },
             "required": ["query"],
         },
@@ -167,12 +236,13 @@ CONFIG_TOOL_SCHEMAS = [
     },
     {
         "name": "schedule_one_off_task",
-        "description": "Schedule a single one-time future task (reuses the same mechanism as a recurring schedule entry, kind=once).",
+        "description": "Schedule a single one-time task, immediately or in the future (reuses the same mechanism as a recurring schedule entry, kind=once).",
         "parameters": {
             "type": "object",
             "properties": {
                 "task": {"type": "string", "description": "Free-text instruction to execute at the scheduled time"},
-                "execute_at": {"type": "string", "description": "ISO-8601 UTC instant"},
+                "execute_at": {"type": "string", "description": "ISO-8601 UTC instant, or the literal string 'now' to run as soon as possible (within about a minute)"},
+                "scoped_system_prompt": {"type": "string", "description": "Optional: a short, self-contained system prompt limiting what this one firing may do (e.g. 'Ask if they can come Saturday, then tell the owner the answer. Do nothing else.'). If omitted, the task runs under the agent's normal persona and rules."},
                 "chat_id": {"type": "string", "description": "Optional: chat to join history from when the task fires"},
             },
             "required": ["task", "execute_at"],
@@ -204,16 +274,78 @@ CONFIG_TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "name": "spawn_ephemeral_task",
+        "description": "Start a short-lived task that messages one or more people, waits for their replies, then summarizes the results back to the owner and cleans itself up automatically. Use for one-off coordination like asking several people the same question (e.g. 'ask X and Y if they're coming Saturday and tell me their answers'). You MUST call resolve_user first for each named person to get their chat_id - never guess one.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "instruction": {"type": "string", "description": "What to ask/say to each person, written as an instruction (e.g. 'Ask if they can come to the event Saturday.')"},
+                "chat_ids": {"type": "array", "items": {"type": "string"}, "description": "chat_id of each person to message, from resolve_user"},
+                "timeout_minutes": {"type": "integer", "description": "Give up and summarize whoever replied after this many minutes (default 1440 = 24h)"},
+            },
+            "required": ["instruction", "chat_ids"],
+        },
+    },
+    {
+        "name": "no_reply_needed",
+        "description": "Call this instead of replying when the owner's latest message doesn't need a new response - e.g. it already answers a question you just asked and are waiting on, it's a brief acknowledgement with nothing left to add, or a burst of coalesced messages turned out not to change anything since your last turn. Ends the turn silently with no message posted to the chat.",
+    },
 ]
 
 # --- Builder sub-state schema sets (ADR 0049) --------------------------------
 _RESUME_PAUSED_CHAT_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "resume_paused_chat")
+_RESOLVE_USER_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "resolve_user")
+_SPAWN_EPHEMERAL_TASK_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "spawn_ephemeral_task")
+# ADR 0065: every builder_state - including the two zero-action Help states -
+# needs a way to end a turn without posting a message.
+_NO_REPLY_NEEDED_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "no_reply_needed")
 # get_capacity_status is deliberately excluded from the Builder interview flow (not called
 # during finishing, per user request) - it stays available to other config-mode contexts.
 _BUILDER_TOOL_SCHEMAS = [s for s in CONFIG_TOOL_SCHEMAS if s["name"] != "get_capacity_status"]
 
+# ADR 0062: Supervisor also gets the full execution-mode toolset (TOOL_SCHEMAS),
+# plus resolve_user + spawn_ephemeral_task (otherwise config-mode-only), so the
+# owner can issue direct "act as me" commands (send/reply/create_chat/search/
+# etc targeting OTHER chats, or "message X and tell me what they say") from
+# their own agent chat without being routed into the Builder interview flow
+# first. See dispatch.py's matching handler union in builder_handoff.py.
 BUILDER_STATE_TOOL_SCHEMAS = {
-    BuilderState.SUPERVISOR: [TRANSFER_TO_BUILDER_SCHEMA, TRANSFER_TO_HELP_SCHEMA, _RESUME_PAUSED_CHAT_SCHEMA],
-    BuilderState.BUILDER: [*_BUILDER_TOOL_SCHEMAS, TRANSFER_TO_HELP_SCHEMA, FINISH_BUILDING_AGENT_SCHEMA],
-    BuilderState.HELP: [TRANSFER_TO_BUILDER_SCHEMA],
+    BuilderState.SUPERVISOR: [
+        TRANSFER_TO_BUILDER_SCHEMA,
+        TRANSFER_TO_HELP_BUILDING_SCHEMA,
+        TRANSFER_TO_HELP_GENERAL_SCHEMA,
+        _RESUME_PAUSED_CHAT_SCHEMA,
+        _RESOLVE_USER_SCHEMA,
+        _SPAWN_EPHEMERAL_TASK_SCHEMA,
+        _NO_REPLY_NEEDED_SCHEMA,
+        *TOOL_SCHEMAS,
+    ],
+    BuilderState.BUILDER: [
+        # ADR 0062-style union: the Builder is talking to its own supervised
+        # owner too, so it also gets the full execution-mode toolset - see
+        # builder_handoff.py's matching handler union.
+        *TOOL_SCHEMAS,
+        *_BUILDER_TOOL_SCHEMAS,
+        TRANSFER_TO_HELP_BUILDING_SCHEMA,
+        TRANSFER_TO_HELP_GENERAL_SCHEMA,
+        TRANSFER_TO_SUPERVISOR_SCHEMA,
+        FINISH_BUILDING_AGENT_SCHEMA,
+    ],
+    # ADR 0064: two disjoint Help personas, replacing the single help_agent
+    # state. Neither gathers/saves config - only transfer tools, same
+    # zero-action posture the original Help state had. Each can reach the
+    # other directly, or fall back to the Supervisor when unsure - the
+    # Supervisor is the one state that always knows where to route next.
+    BuilderState.HELP_BUILDING: [
+        TRANSFER_TO_BUILDER_SCHEMA,
+        TRANSFER_TO_HELP_GENERAL_SCHEMA,
+        TRANSFER_TO_SUPERVISOR_SCHEMA,
+        _NO_REPLY_NEEDED_SCHEMA,
+    ],
+    BuilderState.HELP_GENERAL: [
+        TRANSFER_TO_HELP_BUILDING_SCHEMA,
+        TRANSFER_TO_SUPERVISOR_SCHEMA,
+        _NO_REPLY_NEEDED_SCHEMA,
+    ],
 }

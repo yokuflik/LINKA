@@ -1,8 +1,13 @@
 """REST endpoint for semantic vector search (ADR 0042).
 
-GET /search/semantic?q=&limit=&chat_id=
+GET /search/semantic?q=&limit=&chat_id=&start_at=&end_at=
+
+`start_at`/`end_at` (ISO 8601 datetime, inclusive both ends, e.g.
+`2025-01-01` or `2025-01-01T14:30:00`) restrict results to a `created_at`
+window (ADR 0068/0070).
 """
 
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
@@ -30,6 +35,8 @@ async def search_semantic(
     limit: int = 0,
     chat_id: Optional[int] = None,
     expanded: bool = False,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
     limits: VectorSearchLimits = Depends(get_vector_search_limits),
@@ -39,5 +46,13 @@ async def search_semantic(
     )
     page = limits.default_limit if limit <= 0 else min(limit, limits.max_limit)
     return await vector_search_service.semantic_search(
-        session, user_id=user_id, raw_query=q, chat_id=chat_id, limit=page, expanded=expanded, limits=limits
+        session,
+        user_id=user_id,
+        raw_query=q,
+        chat_id=chat_id,
+        limit=page,
+        expanded=expanded,
+        limits=limits,
+        start_at=start_at,
+        end_at=end_at,
     )

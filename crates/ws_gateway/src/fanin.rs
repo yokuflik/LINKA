@@ -77,7 +77,11 @@ async fn listen(
     }
 }
 
-async fn handle_message(state: &Arc<AppState>, channel: &str, payload: &str) {
+/// `pub` (not just crate-private) so integration tests under `tests/` can
+/// drive branch dispatch directly without a live pub/sub subscription cycle
+/// (RUST_GATEWAY_TEST_PLAN.md Phase 7, Stage 7.1). Pure visibility change, no
+/// behavior difference — `listen()` is still the only real caller.
+pub async fn handle_message(state: &Arc<AppState>, channel: &str, payload: &str) {
     let Ok(event) = serde_json::from_str::<serde_json::Value>(payload) else {
         return;
     };
@@ -98,18 +102,22 @@ async fn handle_message(state: &Arc<AppState>, channel: &str, payload: &str) {
         return;
     }
 
-    // Presence update for a watched user -> its local watchers.
+    // Presence update for a watched user -> its local watchers. Not gap-
+    // tracked (ADR 0060): presence is ephemeral and self-corrects on the
+    // next status change, unlike chat message/edit/receipt fan-out.
     if let Some(uid) = channel
         .strip_prefix("presence_events:")
         .and_then(|s| s.parse::<i64>().ok())
     {
-        fan_out(state.senders_for_presence(uid), payload);
+        fan_out_untracked(state.senders_for_presence(uid), payload);
         return;
     }
 
     // Chat-scoped event off `instance_inbox`: route to local subscribers.
+    // Gap-tracked (ADR 0060): a dropped frame here is flushed to the
+    // affected connection on its next heartbeat as `resync_chat_ids`.
     if let Some(chat_id) = event_chat_id(&event) {
-        fan_out(state.senders_for_chat(chat_id), payload);
+        fan_out_chat(state, chat_id, payload);
     }
 }
 
@@ -136,8 +144,11 @@ async fn handle_user_event(state: &Arc<AppState>, uid: i64, event: &serde_json::
         }
     }
 
-    // Forwarded to the client too (UI reacts without polling).
-    fan_out(state.senders_for_user(uid), &event.to_string());
+    // Forwarded to the client too (UI reacts without polling). Not
+    // gap-tracked (ADR 0060): scope is chat message/edit/receipt fan-out
+    // only; a missed added/removed_from_chat notice self-corrects the next
+    // time `ws-bootstrap` runs on reconnect.
+    fan_out_untracked(state.senders_for_user(uid), &event.to_string());
 }
 
 fn remove_one_chat_sub(state: &AppState, chat_id: i64, conn_id: u64) -> (bool, ()) {
@@ -169,9 +180,22 @@ async fn routing_remove(state: &Arc<AppState>, chat_id: i64) {
 }
 
 /// `try_send` (never `.await`) to each sender so one slow client can't stall
-/// fan-in; a full buffer just drops the frame for that client.
-fn fan_out(senders: Vec<mpsc::Sender<ServerFrame>>, payload: &str) {
+/// fan-in; a full buffer just drops the frame for that client. No gap
+/// tracking — see call sites for why (presence / user-notice fan-out).
+fn fan_out_untracked(senders: Vec<mpsc::Sender<ServerFrame>>, payload: &str) {
     for tx in senders {
         let _ = tx.try_send(ServerFrame::Text(payload.to_string()));
+    }
+}
+
+/// Chat-scoped fan-out (ADR 0060): same drop-on-full `try_send` as
+/// `fan_out_untracked`, but a failed send records the chat against that
+/// connection in `AppState.dropped_chats` so it can be flushed to the
+/// client as `resync_chat_ids` on its next `heartbeat_ack`.
+fn fan_out_chat(state: &AppState, chat_id: i64, payload: &str) {
+    for (conn_id, tx) in state.senders_for_chat(chat_id) {
+        if tx.try_send(ServerFrame::Text(payload.to_string())).is_err() {
+            state.mark_dropped(conn_id, chat_id);
+        }
     }
 }

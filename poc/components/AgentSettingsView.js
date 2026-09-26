@@ -82,7 +82,7 @@ const AgentSettingsView = {
           below for anything that must actually be blocked.
         </p>
         <textarea :value="form.system_prompt" @input="$emit('prompt-input', $event.target.value)"
-                  rows="3" placeholder="e.g. Be friendly and brief. Don't discuss politics." dir="auto"
+                  rows="8" placeholder="e.g. Be friendly and brief. Don't discuss politics." dir="auto"
                   class="w-full px-2 py-1.5 text-sm border border-slate-300 rounded-lg"></textarea>
         <div v-if="promptDirty" class="flex gap-2 mt-2">
           <button @click="$emit('save-prompt')" :disabled="busy"

@@ -128,9 +128,10 @@ class AgentOut(BaseModel):
     # decision 5) - human-only resume via POST /agents/me/resume-chat/{id}.
     paused_chat_ids: List[IdStr] = []
     # Sub-state inside the config chat (ADR 0049): "supervisor" |
-    # "builder_agent" | "help_agent". Read-only here - only the agent's own
-    # transfer_to_builder/transfer_to_help/finish_building_agent tools change
-    # it, never PATCH /agents/me.
+    # "builder_agent" | "help_general" | "help_agent_building" (ADR 0064).
+    # Read-only here - only the agent's own transfer_to_builder/
+    # transfer_to_help_general/transfer_to_help_building/
+    # finish_building_agent tools change it, never PATCH /agents/me.
     builder_state: str
 
 

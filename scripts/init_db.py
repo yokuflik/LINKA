@@ -29,6 +29,7 @@ from modules.search.ddl import apply_search_ddl
 from modules.vector_search.ddl import apply_vector_ddl, ensure_vector_extension
 # Agent knowledge base FTS (ADR 0046 decision 4): content_tsv trigger + index.
 from modules.agents.knowledge_ddl import apply_knowledge_ddl
+from modules.agents.restriction_ddl import apply_restriction_ddl
 # Registers every model on Base.metadata - importing database.connection alone
 # doesn't import the model modules themselves.
 from modules.chats.models import chat
@@ -229,9 +230,10 @@ async def main(drop: bool) -> None:
                 # value to preserve).
                 "ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_chat_ids JSONB "
                 "NOT NULL DEFAULT '[]'::jsonb",
-                # ADR 0049: sub-state inside the config chat, written by the
-                # agent's own transfer_to_builder/transfer_to_help/
-                # finish_building_agent tools. New column, existing rows
+                # ADR 0049/0064: sub-state inside the config chat, written by
+                # the agent's own transfer_to_builder/transfer_to_help_building/
+                # transfer_to_help_general/finish_building_agent tools. New
+                # column, existing rows
                 # backfilled to the same default new rows get (no prior
                 # per-agent value to preserve, same as active_skill above).
                 "ALTER TABLE agents ADD COLUMN IF NOT EXISTS builder_state VARCHAR(32) "
@@ -254,6 +256,13 @@ async def main(drop: bool) -> None:
             # trigger + gin(agent_id, content_tsv) index on the new
             # agent_knowledge_chunks table (created by create_all above).
             await apply_knowledge_ddl(conn)
+            # DB-level backstop for Agent.restrictions (ADR 0066):
+            # messages.sender_agent_id column + the three BEFORE triggers
+            # (send/reply, leave-group, new-private-chat). Runs after
+            # apply_search_ddl (same messages-table ALTER pattern) and before
+            # ensure_partitions() so the message trigger is on the parent
+            # when new partitions inherit it.
+            await apply_restriction_ddl(conn)
             # Real dated partitions on top of the DEFAULT safety net (ADR 0005).
             await ensure_partitions(conn)
             print(

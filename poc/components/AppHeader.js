@@ -91,7 +91,7 @@ const AppHeader = {
                     :name="displayName" :colorKey="currentUser.id" sizeClass="w-8 h-8 text-xs" />
           </button>
           <div v-if="showProfileMenu"
-               class="absolute end-0 mt-2 w-56 bg-white rounded-xl shadow-lg border border-slate-200 py-1.5 z-30 text-start">
+               class="absolute end-0 mt-2 w-56 bg-white rounded-xl shadow-lg border border-slate-200 py-1.5 z-[60] text-start">
             <div class="px-3 py-2 border-b border-slate-100">
               <p class="text-sm font-medium text-slate-800 truncate">{{ displayName }}</p>
               <p v-if="currentUser.username" class="text-xs text-slate-400 truncate">@{{ currentUser.username }}</p>

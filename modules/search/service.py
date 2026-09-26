@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime
 from typing import AsyncIterator, Optional
 
 from sqlalchemy import text
@@ -129,6 +130,12 @@ def _paginate(rows, limit: int, terms: list[str], radius: int) -> SearchResponse
 
 # --- Public entry points ---------------------------------------------------
 
+def validate_date_range(start_at: Optional[datetime], end_at: Optional[datetime]) -> None:
+    """ADR 0068/0070: reuses the existing 422 error type rather than adding a new one."""
+    if start_at is not None and end_at is not None and start_at > end_at:
+        raise SearchQueryTooShortError("start_at must not be after end_at")
+
+
 async def search_in_chat(
     session: AsyncSession,
     *,
@@ -138,10 +145,13 @@ async def search_in_chat(
     cursor: Optional[str],
     limit: int,
     limits: SearchLimits = DEFAULT_SEARCH_LIMITS,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
 ) -> SearchResponseOut:
     # Parse first (no DB), so a too-short query is a clean 422 even before the
     # membership hit; membership is still enforced before the search query runs.
     fn, value, terms = build_tsquery(raw_query, limits)
+    validate_date_range(start_at, end_at)
     if not await is_participant(session, chat_id, user_id):
         raise NotAParticipantError(f"User {user_id} is not a participant of chat {chat_id}")
     rows = await crud.search_chat_messages(
@@ -151,6 +161,8 @@ async def search_in_chat(
         tsq_value=value,
         before_id=decode_cursor(cursor),
         limit=limit,
+        start_at=start_at,
+        end_at=end_at,
     )
     return _paginate(rows, limit, terms, limits.snippet_radius)
 
@@ -163,8 +175,11 @@ async def search_global(
     cursor: Optional[str],
     limit: int,
     limits: SearchLimits = DEFAULT_SEARCH_LIMITS,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
 ) -> SearchResponseOut:
     fn, value, terms = build_tsquery(raw_query, limits)
+    validate_date_range(start_at, end_at)
     ids = list(await get_all_chat_ids_for_user(session, user_id, limit=limits.any_inline_max + 1))
     chat_ids = ids if len(ids) <= limits.any_inline_max else None
     if chat_ids is not None and not chat_ids:
@@ -177,6 +192,8 @@ async def search_global(
         before_id=decode_cursor(cursor),
         limit=limit,
         chat_ids=chat_ids,
+        start_at=start_at,
+        end_at=end_at,
     )
     return _paginate(rows, limit, terms, limits.snippet_radius)
 
@@ -218,12 +235,15 @@ async def stream_search(
     raw_query: str,
     lock_key: str,
     limits: SearchLimits = DEFAULT_SEARCH_LIMITS,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
 ) -> AsyncIterator[str]:
     """Global search as an SSE byte stream over a server-side cursor. Ends with
     `event: done {count, truncated}`; `truncated` is set when the row cap or the
     wall-clock cap is hit. The caller acquires `lock_key`; this generator always
     releases it. Membership is enforced by the query's JOIN, checked once here."""
     fn, value, terms = build_tsquery(raw_query, limits)
+    validate_date_range(start_at, end_at)
     started = time.monotonic()
     count = 0
     truncated = False
@@ -235,7 +255,13 @@ async def stream_search(
             await session.execute(text(f"SET LOCAL statement_timeout = {int(limits.statement_timeout_ms)}"))
             last_keepalive = time.monotonic()
             async for msg in crud.stream_global_messages(
-                session, user_id=user_id, tsq_fn=fn, tsq_value=value, batch=limits.stream_batch
+                session,
+                user_id=user_id,
+                tsq_fn=fn,
+                tsq_value=value,
+                batch=limits.stream_batch,
+                start_at=start_at,
+                end_at=end_at,
             ):
                 if count >= limits.stream_max_results or (time.monotonic() - started) >= limits.stream_max_seconds:
                     truncated = True

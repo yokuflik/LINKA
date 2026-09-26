@@ -159,7 +159,7 @@ async def test_get_tool_schemas_returns_execution_schemas_when_chat_id_none():
 
 @pytest.mark.parametrize(
     "builder_state",
-    [BuilderState.SUPERVISOR, BuilderState.BUILDER, BuilderState.HELP],
+    [BuilderState.SUPERVISOR, BuilderState.BUILDER, BuilderState.HELP_GENERAL, BuilderState.HELP_BUILDING],
 )
 async def test_get_tool_schemas_returns_the_matching_builder_state_schema_set(builder_state):
     agent = _agent(builder_state=builder_state.value)
@@ -167,12 +167,23 @@ async def test_get_tool_schemas_returns_the_matching_builder_state_schema_set(bu
 
 
 async def test_get_tool_schemas_builder_state_sets_are_disjoint_from_execution_schemas():
+    # ADR 0062: Supervisor and Builder are the deliberate exceptions - both
+    # talk to the agent's own supervised owner, so both get the full
+    # execution-mode toolset unioned in (Supervisor so the owner can issue
+    # direct "act as me" commands from their idle chat; Builder so it can do
+    # the same mid-interview without transferring out first). Help keeps the
+    # original ADR 0047 invariant of zero overlap with execution-mode schemas.
     execution_names = {schema["name"] for schema in TOOL_SCHEMAS}
     for builder_state, schemas in BUILDER_STATE_TOOL_SCHEMAS.items():
         config_names = {schema["name"] for schema in schemas}
-        assert not (execution_names & config_names), (
-            f"{builder_state} tool schemas must not overlap execution-mode schemas"
-        )
+        if builder_state in (BuilderState.SUPERVISOR, BuilderState.BUILDER):
+            assert execution_names <= config_names, (
+                f"{builder_state} must expose the full execution-mode toolset (ADR 0062)"
+            )
+        else:
+            assert not (execution_names & config_names), (
+                f"{builder_state} tool schemas must not overlap execution-mode schemas"
+            )
 
 
 # --- execute_tool_call: execution mode ---------------------------------------
@@ -236,11 +247,14 @@ async def test_unknown_tool_name_in_execution_mode_is_denied(fake_session, _mock
 # --- execute_tool_call: config mode / builder_state gating -------------------
 
 
-async def test_config_mode_rejects_an_execution_only_tool_even_in_owner_chat(monkeypatch, fake_session, _mock_log_call):
-    """The hard boundary: chat_id alone puts us in config mode, so an
-    execution tool name must be rejected regardless of builder_state, and
-    the (mocked) send handler must never run - this is exactly the
-    prompt-injection scenario the module's own docstring calls out."""
+async def test_config_mode_rejects_an_execution_only_tool_in_a_state_without_it(monkeypatch, fake_session, _mock_log_call):
+    """The hard boundary: chat_id alone puts us in config mode, and within
+    config mode an execution tool name must still be rejected for any
+    builder_state whose handler set doesn't include it (either Help state -
+    unlike supervisor/builder_agent, which deliberately union in the full
+    execution-mode toolset per ADR 0062) - the (mocked) send handler must
+    never run. This is exactly the prompt-injection scenario the module's
+    own docstring calls out."""
     called = False
 
     async def _should_never_run(session, agent, arguments):
@@ -250,7 +264,7 @@ async def test_config_mode_rejects_an_execution_only_tool_even_in_owner_chat(mon
 
     monkeypatch.setitem(execution_module.EXECUTION_TOOL_HANDLERS, "send_message", _should_never_run)
 
-    agent = _agent(builder_state=BuilderState.BUILDER.value)
+    agent = _agent(builder_state=BuilderState.HELP_GENERAL.value)
     result = await execute_tool_call(fake_session, agent, "send_message", {"chat_id": "1", "content": "hi"}, chat_id=OWNER_AGENT_CHAT_ID)
 
     assert called is False
@@ -263,7 +277,8 @@ async def test_config_mode_rejects_an_execution_only_tool_even_in_owner_chat(mon
     "tool_name,builder_state",
     [
         ("transfer_to_builder", BuilderState.SUPERVISOR),
-        ("transfer_to_help", BuilderState.SUPERVISOR),
+        ("transfer_to_help_building", BuilderState.SUPERVISOR),
+        ("transfer_to_help_general", BuilderState.SUPERVISOR),
         ("resume_paused_chat", BuilderState.SUPERVISOR),
     ],
 )
@@ -302,7 +317,9 @@ async def test_supervisor_state_rejects_builder_only_tools(fake_session, _mock_l
         "resolve_user",
         "resume_paused_chat",
         "get_capacity_status",
-        "transfer_to_help",
+        "transfer_to_help_building",
+        "transfer_to_help_general",
+        "transfer_to_supervisor",
         "finish_building_agent",
     ],
 )
@@ -330,13 +347,15 @@ async def test_builder_state_rejects_transfer_to_builder_it_does_not_have(fake_s
     assert _mock_log_call[-1]["allowed"] is False
 
 
-async def test_help_state_allows_transfer_to_builder(monkeypatch, fake_session, _mock_log_call):
+async def test_help_building_state_allows_transfer_to_builder(monkeypatch, fake_session, _mock_log_call):
     async def _fake_handler(session, agent, arguments):
         return {"status": "transferred", "to": "builder_agent"}
 
-    monkeypatch.setitem(builder_handoff_module.BUILDER_STATE_HANDLERS[BuilderState.HELP], "transfer_to_builder", _fake_handler)
+    monkeypatch.setitem(
+        builder_handoff_module.BUILDER_STATE_HANDLERS[BuilderState.HELP_BUILDING], "transfer_to_builder", _fake_handler
+    )
 
-    agent = _agent(builder_state=BuilderState.HELP.value)
+    agent = _agent(builder_state=BuilderState.HELP_BUILDING.value)
     result = await execute_tool_call(fake_session, agent, "transfer_to_builder", {}, chat_id=OWNER_AGENT_CHAT_ID)
 
     assert result == {"status": "transferred", "to": "builder_agent"}
@@ -346,29 +365,47 @@ async def test_help_state_allows_transfer_to_builder(monkeypatch, fake_session, 
 @pytest.mark.parametrize(
     "tool_name",
     [
-        "transfer_to_help",
+        "transfer_to_builder",
         "resume_paused_chat",
         "set_agent_persona",
         "update_agent_rules",
         "finish_building_agent",
     ],
 )
-async def test_help_state_rejects_everything_except_transfer_to_builder(fake_session, _mock_log_call, tool_name):
-    agent = _agent(builder_state=BuilderState.HELP.value)
+async def test_help_general_state_rejects_tools_it_does_not_have(fake_session, _mock_log_call, tool_name):
+    agent = _agent(builder_state=BuilderState.HELP_GENERAL.value)
     result = await execute_tool_call(fake_session, agent, tool_name, {}, chat_id=OWNER_AGENT_CHAT_ID)
 
     assert "error" in result
     assert _mock_log_call[-1]["allowed"] is False
-    assert "config/help_agent" in _mock_log_call[-1]["denial_reason"]
+    assert "config/help_general" in _mock_log_call[-1]["denial_reason"]
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "resume_paused_chat",
+        "set_agent_persona",
+        "update_agent_rules",
+        "finish_building_agent",
+    ],
+)
+async def test_help_building_state_rejects_tools_it_does_not_have(fake_session, _mock_log_call, tool_name):
+    agent = _agent(builder_state=BuilderState.HELP_BUILDING.value)
+    result = await execute_tool_call(fake_session, agent, tool_name, {}, chat_id=OWNER_AGENT_CHAT_ID)
+
+    assert "error" in result
+    assert _mock_log_call[-1]["allowed"] is False
+    assert "config/help_agent_building" in _mock_log_call[-1]["denial_reason"]
 
 
 async def test_config_mode_denial_reason_reflects_current_builder_state(fake_session, _mock_log_call):
     """The denial reason string should be informative about which mode
     denied the call (used for debugging/observability), not a generic
     'config' label that hides which sub-state was active."""
-    agent = _agent(builder_state=BuilderState.HELP.value)
+    agent = _agent(builder_state=BuilderState.HELP_GENERAL.value)
     await execute_tool_call(fake_session, agent, "set_agent_persona", {}, chat_id=OWNER_AGENT_CHAT_ID)
-    assert "help_agent" in _mock_log_call[-1]["denial_reason"]
+    assert "help_general" in _mock_log_call[-1]["denial_reason"]
 
 
 # --- execute_tool_call: exception handling -----------------------------------

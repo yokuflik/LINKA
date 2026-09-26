@@ -24,6 +24,30 @@ function useSearch(ctx) {
   const searchChatId = ref(null);      // null = global search; set = scoped to one chat
   const searchTab = ref('exact');      // 'exact' | 'semantic'
 
+  // Date-range filter (ADR 0068/0070 - full date+time, not just calendar
+  // dates), shared across both tabs - both search the same underlying
+  // messages, so switching tabs keeps the same range. Values are
+  // <input type="datetime-local"> strings ('YYYY-MM-DDTHH:MM'), converted to
+  // ISO instants only when building a request URL. The picker itself lives
+  // in a popover toggled by the calendar icon at the right edge of the
+  // search box (see SearchModal.js) - not shown by default.
+  const showDateRangePicker = ref(false);
+  const searchStartDate = ref('');     // '' or 'YYYY-MM-DDTHH:MM'
+  const searchEndDate = ref('');
+
+  // Defaults asked for: start of range = beginning of 2025, end = right now
+  // (recomputed fresh each time the picker opens, not once at page load).
+  function toLocalInputValue(d) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  function defaultRangeStart() {
+    return '2025-01-01T00:00';
+  }
+  function defaultRangeEnd() {
+    return toLocalInputValue(new Date());
+  }
+
   // Exact (keyword FTS) tab state.
   const searchBusy = ref(false);       // first-page fetch in flight
   const searchMoreBusy = ref(false);   // next-page fetch in flight
@@ -45,16 +69,28 @@ function useSearch(ctx) {
   let exactQueriedText = null;     // last query text the exact tab actually fetched
   let semanticQueriedText = null;  // same, for the semantic tab
 
+  // Shared by both endpoints - '' means "no bound", never sent as a param.
+  // <input type="datetime-local"> has no timezone info; new Date(...) parses
+  // it as local time, and toISOString() converts to the UTC instant the
+  // backend expects.
+  function datePart() {
+    let part = '';
+    if (searchStartDate.value) part += `&start_at=${encodeURIComponent(new Date(searchStartDate.value).toISOString())}`;
+    if (searchEndDate.value) part += `&end_at=${encodeURIComponent(new Date(searchEndDate.value).toISOString())}`;
+    return part;
+  }
+
   function searchEndpoint(cursorPart) {
-    return searchChatId.value
-      ? `/chats/${searchChatId.value}/messages/search?q=${encodeURIComponent(searchQuery.value.trim())}${cursorPart}`
-      : `/search/messages?q=${encodeURIComponent(searchQuery.value.trim())}${cursorPart}`;
+    const base = searchChatId.value
+      ? `/chats/${searchChatId.value}/messages/search?q=${encodeURIComponent(searchQuery.value.trim())}`
+      : `/search/messages?q=${encodeURIComponent(searchQuery.value.trim())}`;
+    return `${base}${cursorPart}${datePart()}`;
   }
 
   function semanticEndpoint(expanded) {
     const chatPart = searchChatId.value ? `&chat_id=${encodeURIComponent(searchChatId.value)}` : '';
     const expandedPart = expanded ? '&expanded=true' : '';
-    return `/search/semantic?q=${encodeURIComponent(searchQuery.value.trim())}&limit=${SEMANTIC_LIMIT}${chatPart}${expandedPart}`;
+    return `/search/semantic?q=${encodeURIComponent(searchQuery.value.trim())}&limit=${SEMANTIC_LIMIT}${chatPart}${expandedPart}${datePart()}`;
   }
 
   // Pass a chatId to scope the search to that chat only; omit/null for global.
@@ -65,10 +101,25 @@ function useSearch(ctx) {
   }
   function closeSearchModal() {
     showSearchModal.value = false;
+    showDateRangePicker.value = false;
     searchChatId.value = null;
     searchQuery.value = '';
+    searchStartDate.value = '';
+    searchEndDate.value = '';
     resetSearchResults();
     if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
+  }
+
+  // Calendar-icon button toggle. Applies the requested defaults (start of
+  // 2025 / right now) the first time the picker is opened for this modal
+  // session, so an untouched picker still shows a sensible range rather than
+  // two empty fields - but never overwrites dates the user already set.
+  function toggleDateRangePicker() {
+    if (!showDateRangePicker.value && !searchStartDate.value && !searchEndDate.value) {
+      searchStartDate.value = defaultRangeStart();
+      searchEndDate.value = defaultRangeEnd();
+    }
+    showDateRangePicker.value = !showDateRangePicker.value;
   }
   function resetSearchResults() {
     searchResults.value = [];
@@ -164,6 +215,18 @@ function useSearch(ctx) {
     return searchTab.value === 'semantic' ? runSemanticSearch() : runSearch();
   }
 
+  // Changing either date bound: bypasses the debounce (like Enter/the Search
+  // button) and invalidates the *other* tab's cached query text, so it
+  // refetches with the new range on switch instead of showing stale results.
+  function onDateRangeChange() {
+    if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
+    if (searchTab.value === 'exact') semanticQueriedText = null;
+    else exactQueriedText = null;
+    const q = searchQuery.value.trim();
+    if (q.length < SEARCH_MIN_LEN) return;
+    runActiveSearch();
+  }
+
   // Switching tabs fetches lazily - only if that tab hasn't already run for
   // the current query text (so bouncing back and forth doesn't re-fire).
   function switchSearchTab(tab) {
@@ -239,13 +302,23 @@ function useSearch(ctx) {
     () => searchTab.value === 'semantic' && !semanticBusy.value && !semanticExpanded.value
       && searchQuery.value.trim().length >= SEARCH_MIN_LEN
   );
+  // Drives the calendar icon's "active" styling (filled vs outline).
+  const dateRangeActive = computed(() => !!(searchStartDate.value || searchEndDate.value));
+
+  function clearDateRange() {
+    searchStartDate.value = '';
+    searchEndDate.value = '';
+    onDateRangeChange();
+  }
 
   return {
     showSearchModal, searchQuery, searchChatId, searchTab,
+    showDateRangePicker, searchStartDate, searchEndDate, dateRangeActive,
     searchBusy, searchMoreBusy, searchError, searchResults, searchHasMore,
     semanticBusy, semanticMoreBusy, semanticError, semanticResults, semanticExpanded,
     activeResults, activeBusy, activeError, activeHasMore, showSemanticExpandButton,
     openSearchModal, closeSearchModal, onSearchInput, runSearch, runSemanticSearch,
     runActiveSearch, switchSearchTab, loadMoreSearchResults, loadMoreSemanticResults, openSearchResult,
+    onDateRangeChange, toggleDateRangePicker, clearDateRange,
   };
 }

@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.sql import func
 from sqlalchemy.exc import IntegrityError
 from typing import Sequence, Optional
@@ -87,6 +87,7 @@ async def create_message(
     media_name: Optional[str] = None,
     media_duration_seconds: Optional[int] = None,
     media_blur_hash: Optional[str] = None,
+    sender_agent_id: Optional[int] = None,
 ) -> Optional[Message]:
     """
     Insert a new message into the chat and bump the chat's recency
@@ -115,7 +116,22 @@ async def create_message(
         media_name=media_name,
         media_duration_seconds=media_duration_seconds,
         media_blur_hash=media_blur_hash,
+        sender_agent_id=sender_agent_id,
     )
+
+    if sender_agent_id is not None:
+        # Transaction-scoped (SET LOCAL, not SET) so it never leaks onto a
+        # later, unrelated request on the same pooled connection (ADR 0066).
+        # trg_agents_enforce_message_restrictions itself reads
+        # NEW.sender_agent_id directly and doesn't need this, but the
+        # participants-side triggers (leave-group / new-private-chat) do, and
+        # this keeps one single "how does an agent identify itself to
+        # Postgres" convention across every enforcement point.
+        # SET does not accept a bound parameter ($1) over the Postgres wire
+        # protocol - the value must be a literal. Safe to inline here: it's
+        # always our own internally-generated bigint id, never user-supplied
+        # text, so there's no injection surface.
+        await session.execute(text(f"SET LOCAL app.current_agent_id = '{int(sender_agent_id)}'"))
 
     session.add(new_message)
     try:

@@ -112,6 +112,11 @@ async def session_factory():
         from modules.agents.knowledge_ddl import apply_knowledge_ddl
         await apply_knowledge_ddl(conn)
 
+        # DB-level backstop for Agent.restrictions (ADR 0066):
+        # messages.sender_agent_id column + the three BEFORE triggers.
+        from modules.agents.restriction_ddl import apply_restriction_ddl
+        await apply_restriction_ddl(conn)
+
     async_session = sessionmaker(
         engine, class_=AsyncSession, expire_on_commit=False
     )

@@ -1,13 +1,14 @@
-"""Builder / Supervisor / Help flow (ADR 0049) - modules/agents/builder_flow.py
-+ modules/agents/tools/builder_handoff.py.
+"""Builder / Supervisor / Help flow (ADR 0049, ADR 0064) -
+modules/agents/builder_flow.py + modules/agents/tools/builder_handoff.py.
 
-Behavioral contract exercised here (written against ADR 0049 / the
+Behavioral contract exercised here (written against ADR 0049/0064 / the
 `.claude_docs/ai_agent.md` description of intended behavior, not against
 however the code happens to already work):
 
-- BuilderState has exactly three values (supervisor/builder_agent/help_agent)
-  and BUILDER_STATE_PROMPTS/get_builder_state_prompt cover all three, each
-  with a distinct, non-empty prompt.
+- BuilderState has exactly four values (supervisor/builder_agent/
+  help_general/help_agent_building) and BUILDER_STATE_PROMPTS/
+  get_builder_state_prompt cover all four, each with a distinct, non-empty
+  prompt.
 - get_builder_state_prompt raises for anything that isn't already a
   BuilderState member - callers must coerce a stored string through
   BuilderState(...) first (same convention as personas.get_persona_system_prompt),
@@ -17,22 +18,30 @@ however the code happens to already work):
   reflects the new state - it must never call sync_agent_cache (builder_state
   is not part of the trigger pre-filter cache payload: only is_enabled/
   triggers/active_skill/paused_chat_ids are cached, per modules/agents/cache.py).
-- transfer_to_help is the mirror of transfer_to_builder, writing
-  builder_state="help_agent", also never touching sync_agent_cache.
+- transfer_to_help_building/transfer_to_help_general mirror transfer_to_builder,
+  writing builder_state="help_agent_building"/"help_general" respectively,
+  also never touching sync_agent_cache.
 - finish_building_agent writes builder_state="supervisor" AND is_enabled=True
   in the same update_agent_config call (a single patch, not two writes), then
   calls sync_agent_cache exactly once with the freshly updated agent - this is
   the one handoff tool that changes is_enabled and therefore must resync the
   cache. If update_agent_config raises, sync_agent_cache must never be called
   (no half-applied cache sync after a failed write).
-- BUILDER_STATE_HANDLERS wires each BuilderState to a disjoint tool-name set:
-  supervisor -> {transfer_to_builder, transfer_to_help, resume_paused_chat};
+- BUILDER_STATE_HANDLERS wires each BuilderState to its own tool-name set:
+  supervisor -> {transfer_to_builder, transfer_to_help_building,
+  transfer_to_help_general, resume_paused_chat, resolve_user,
+  spawn_ephemeral_task} + the full execution-mode toolset (ADR 0062);
   builder_agent -> the 6 ADR 0047 config tools + resolve_user +
-  resume_paused_chat + get_capacity_status + transfer_to_help +
-  finish_building_agent; help_agent -> {transfer_to_builder} only. No tool
-  name appears in more than one state's handler set except where explicitly
-  shared (transfer_to_help in supervisor+builder_agent, resume_paused_chat in
-  supervisor+builder_agent) - handoff/no-op boundaries are otherwise strict.
+  resume_paused_chat + get_capacity_status + transfer_to_help_building +
+  transfer_to_help_general + transfer_to_supervisor + finish_building_agent +
+  the full execution-mode toolset too (same ADR 0062 reasoning - the Builder
+  talks to its own supervised owner, so it can act directly mid-interview);
+  help_agent_building -> {transfer_to_builder, transfer_to_help_general,
+  transfer_to_supervisor} only; help_general -> {transfer_to_help_building,
+  transfer_to_supervisor} only. Supervisor and builder_agent are the two
+  deliberate exceptions to the config/execution no-overlap invariant; both
+  Help states keep it strictly (transfer tools only, no execution/config
+  tool of their own).
 - Every handler referenced in BUILDER_STATE_HANDLERS is an async callable
   accepting (session, agent, arguments) - dispatch.execute_tool_call always
   calls builder-state handlers with that 3-arg signature (none of these tools
@@ -75,8 +84,13 @@ def fake_session():
 # --- BuilderState / prompt coverage ------------------------------------------
 
 
-def test_builder_state_has_exactly_three_values():
-    assert {s.value for s in BuilderState} == {"supervisor", "builder_agent", "help_agent"}
+def test_builder_state_has_exactly_four_values():
+    assert {s.value for s in BuilderState} == {
+        "supervisor",
+        "builder_agent",
+        "help_general",
+        "help_agent_building",
+    }
 
 
 def test_every_builder_state_has_a_distinct_non_empty_prompt():
@@ -180,11 +194,11 @@ async def test_transfer_to_builder_ignores_extra_arguments(monkeypatch, fake_ses
     assert result["status"] == "transferred"
 
 
-# --- transfer_to_help ----------------------------------------------------------
+# --- transfer_to_help_building / transfer_to_help_general ---------------------
 
 
 @pytest.mark.asyncio
-async def test_transfer_to_help_sets_builder_state_to_help_agent(monkeypatch, fake_session):
+async def test_transfer_to_help_building_sets_builder_state_to_help_agent_building(monkeypatch, fake_session):
     captured_patch = {}
 
     async def _fake_update(session, agent, patch):
@@ -195,16 +209,16 @@ async def test_transfer_to_help_sets_builder_state_to_help_agent(monkeypatch, fa
     monkeypatch.setattr(builder_handoff_module, "update_agent_config", _fake_update)
 
     agent = _agent(builder_state=BuilderState.BUILDER.value)
-    result = await builder_handoff_module._tool_transfer_to_help(fake_session, agent, {})
+    result = await builder_handoff_module._tool_transfer_to_help_building(fake_session, agent, {})
 
-    assert captured_patch == {"builder_state": BuilderState.HELP.value}
+    assert captured_patch == {"builder_state": BuilderState.HELP_BUILDING.value}
     assert result["status"] == "transferred"
-    assert result["to"] == BuilderState.HELP.value
+    assert result["to"] == BuilderState.HELP_BUILDING.value
     assert "instruction" in result and isinstance(result["instruction"], str)
 
 
 @pytest.mark.asyncio
-async def test_transfer_to_help_never_touches_sync_agent_cache(monkeypatch, fake_session):
+async def test_transfer_to_help_building_never_touches_sync_agent_cache(monkeypatch, fake_session):
     sync_called = False
 
     async def _fake_sync(agent):
@@ -219,7 +233,95 @@ async def test_transfer_to_help_never_touches_sync_agent_cache(monkeypatch, fake
     monkeypatch.setattr(builder_handoff_module, "sync_agent_cache", _fake_sync)
 
     agent = _agent(builder_state=BuilderState.SUPERVISOR.value)
-    await builder_handoff_module._tool_transfer_to_help(fake_session, agent, {})
+    await builder_handoff_module._tool_transfer_to_help_building(fake_session, agent, {})
+
+    assert sync_called is False
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_help_general_sets_builder_state_to_help_general(monkeypatch, fake_session):
+    captured_patch = {}
+
+    async def _fake_update(session, agent, patch):
+        captured_patch.update(patch)
+        agent.builder_state = patch["builder_state"]
+        return agent
+
+    monkeypatch.setattr(builder_handoff_module, "update_agent_config", _fake_update)
+
+    agent = _agent(builder_state=BuilderState.SUPERVISOR.value)
+    result = await builder_handoff_module._tool_transfer_to_help_general(fake_session, agent, {})
+
+    assert captured_patch == {"builder_state": BuilderState.HELP_GENERAL.value}
+    assert result["status"] == "transferred"
+    assert result["to"] == BuilderState.HELP_GENERAL.value
+    assert "instruction" in result and isinstance(result["instruction"], str)
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_help_general_never_touches_sync_agent_cache(monkeypatch, fake_session):
+    sync_called = False
+
+    async def _fake_sync(agent):
+        nonlocal sync_called
+        sync_called = True
+
+    async def _fake_update(session, agent, patch):
+        agent.builder_state = patch["builder_state"]
+        return agent
+
+    monkeypatch.setattr(builder_handoff_module, "update_agent_config", _fake_update)
+    monkeypatch.setattr(builder_handoff_module, "sync_agent_cache", _fake_sync)
+
+    agent = _agent(builder_state=BuilderState.BUILDER.value)
+    await builder_handoff_module._tool_transfer_to_help_general(fake_session, agent, {})
+
+    assert sync_called is False
+
+
+# --- transfer_to_supervisor ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_supervisor_sets_builder_state_to_supervisor(monkeypatch, fake_session):
+    captured_patch = {}
+
+    async def _fake_update(session, agent, patch):
+        captured_patch.update(patch)
+        agent.builder_state = patch["builder_state"]
+        return agent
+
+    monkeypatch.setattr(builder_handoff_module, "update_agent_config", _fake_update)
+
+    agent = _agent(builder_state=BuilderState.BUILDER.value)
+    result = await builder_handoff_module._tool_transfer_to_supervisor(fake_session, agent, {})
+
+    assert captured_patch == {"builder_state": BuilderState.SUPERVISOR.value}
+    assert result["status"] == "transferred"
+    assert result["to"] == BuilderState.SUPERVISOR.value
+    assert "instruction" in result and isinstance(result["instruction"], str)
+
+
+@pytest.mark.asyncio
+async def test_transfer_to_supervisor_never_activates_agent_or_touches_cache(monkeypatch, fake_session):
+    """Unlike finish_building_agent, this is an escape hatch, not a
+    completion signal - it must never flip is_enabled or sync the cache."""
+    sync_called = False
+
+    async def _fake_sync(agent):
+        nonlocal sync_called
+        sync_called = True
+
+    async def _fake_update(session, agent, patch):
+        assert "is_enabled" not in patch
+        agent.builder_state = patch["builder_state"]
+        return agent
+
+    monkeypatch.setattr(builder_handoff_module, "update_agent_config", _fake_update)
+    monkeypatch.setattr(builder_handoff_module, "sync_agent_cache", _fake_sync)
+
+    agent = _agent(builder_state=BuilderState.BUILDER.value)
+    await builder_handoff_module._tool_transfer_to_supervisor(fake_session, agent, {})
 
     assert sync_called is False
 
@@ -307,15 +409,29 @@ async def test_finish_building_agent_never_calls_sync_agent_cache_if_update_fail
 # --- BUILDER_STATE_HANDLERS wiring: disjoint tool sets ------------------------
 
 
-def test_supervisor_handler_set_is_exactly_the_three_expected_tools():
+def test_supervisor_handler_set_is_exactly_the_expected_tools():
+    # ADR 0062: Supervisor gets its own tools plus the full execution-mode
+    # toolset, so the owner can act directly ("send X a message") from their
+    # own agent chat without transferring into the Builder interview flow.
+    from modules.agents.tools.execution import EXECUTION_TOOL_HANDLERS
+
     assert set(BUILDER_STATE_HANDLERS[BuilderState.SUPERVISOR]) == {
         "transfer_to_builder",
-        "transfer_to_help",
+        "transfer_to_help_building",
+        "transfer_to_help_general",
         "resume_paused_chat",
+        "resolve_user",
+        "spawn_ephemeral_task",
+        "no_reply_needed",
+        *EXECUTION_TOOL_HANDLERS,
     }
 
 
 def test_builder_handler_set_includes_every_expected_config_and_handoff_tool():
+    # Builder also gets the full execution-mode toolset unioned in (same
+    # ADR 0062 reasoning as Supervisor) so it can act directly mid-interview.
+    from modules.agents.tools.execution import EXECUTION_TOOL_HANDLERS
+
     expected = {
         "set_agent_persona",
         "update_agent_rules",
@@ -326,38 +442,75 @@ def test_builder_handler_set_includes_every_expected_config_and_handoff_tool():
         "resolve_user",
         "resume_paused_chat",
         "get_capacity_status",
-        "transfer_to_help",
+        "spawn_ephemeral_task",
+        "no_reply_needed",
+        "transfer_to_help_building",
+        "transfer_to_help_general",
+        "transfer_to_supervisor",
         "finish_building_agent",
+        *EXECUTION_TOOL_HANDLERS,
     }
     assert set(BUILDER_STATE_HANDLERS[BuilderState.BUILDER]) == expected
 
 
-def test_help_handler_set_is_exactly_transfer_to_builder():
-    assert set(BUILDER_STATE_HANDLERS[BuilderState.HELP]) == {"transfer_to_builder"}
+def test_help_building_handler_set_is_exactly_its_three_transfer_tools():
+    # ADR 0065: every builder_state also gets no_reply_needed.
+    assert set(BUILDER_STATE_HANDLERS[BuilderState.HELP_BUILDING]) == {
+        "transfer_to_builder",
+        "transfer_to_help_general",
+        "transfer_to_supervisor",
+        "no_reply_needed",
+    }
+
+
+def test_help_general_handler_set_is_exactly_its_two_transfer_tools():
+    # ADR 0065: every builder_state also gets no_reply_needed.
+    assert set(BUILDER_STATE_HANDLERS[BuilderState.HELP_GENERAL]) == {
+        "transfer_to_help_building",
+        "transfer_to_supervisor",
+        "no_reply_needed",
+    }
 
 
 def test_builder_state_never_has_transfer_to_builder_available():
-    """Only supervisor/help_agent can hand off *into* the builder - the
-    Builder's own tool set must never include a way to transfer to itself."""
+    """Only supervisor/help_agent_building can hand off *into* the builder -
+    the Builder's own tool set must never include a way to transfer to
+    itself, and help_general reaches the builder only via help_building."""
     assert "transfer_to_builder" not in BUILDER_STATE_HANDLERS[BuilderState.BUILDER]
+    assert "transfer_to_builder" not in BUILDER_STATE_HANDLERS[BuilderState.HELP_GENERAL]
 
 
-def test_supervisor_and_help_never_have_finish_building_agent():
+def test_only_supervisor_and_builder_have_finish_building_agent():
     assert "finish_building_agent" not in BUILDER_STATE_HANDLERS[BuilderState.SUPERVISOR]
-    assert "finish_building_agent" not in BUILDER_STATE_HANDLERS[BuilderState.HELP]
+    assert "finish_building_agent" not in BUILDER_STATE_HANDLERS[BuilderState.HELP_BUILDING]
+    assert "finish_building_agent" not in BUILDER_STATE_HANDLERS[BuilderState.HELP_GENERAL]
+    assert "finish_building_agent" in BUILDER_STATE_HANDLERS[BuilderState.BUILDER]
 
 
-def test_only_builder_and_supervisor_share_transfer_to_help_and_resume_paused_chat():
-    """These two tool names are the only ones intentionally duplicated across
-    states; help_agent must not have either."""
-    assert "transfer_to_help" not in BUILDER_STATE_HANDLERS[BuilderState.HELP]
-    assert "resume_paused_chat" not in BUILDER_STATE_HANDLERS[BuilderState.HELP]
-    for tool_name in ("transfer_to_help", "resume_paused_chat"):
+def test_both_help_states_can_reach_each_other_and_the_supervisor():
+    """Each Help state can hand off directly to its sibling and to the
+    Supervisor (the escape hatch for when it's unsure what's being asked) -
+    neither Help state has an execution/config tool of its own."""
+    assert "transfer_to_help_general" in BUILDER_STATE_HANDLERS[BuilderState.HELP_BUILDING]
+    assert "transfer_to_supervisor" in BUILDER_STATE_HANDLERS[BuilderState.HELP_BUILDING]
+    assert "transfer_to_help_building" in BUILDER_STATE_HANDLERS[BuilderState.HELP_GENERAL]
+    assert "transfer_to_supervisor" in BUILDER_STATE_HANDLERS[BuilderState.HELP_GENERAL]
+
+
+def test_supervisor_and_builder_both_have_both_help_transfers_and_resume_paused_chat():
+    """These tool names are intentionally duplicated across supervisor and
+    builder_agent; neither Help state has resume_paused_chat."""
+    for state in (BuilderState.HELP_BUILDING, BuilderState.HELP_GENERAL):
+        assert "resume_paused_chat" not in BUILDER_STATE_HANDLERS[state]
+    for tool_name in ("transfer_to_help_building", "transfer_to_help_general", "resume_paused_chat"):
         assert tool_name in BUILDER_STATE_HANDLERS[BuilderState.SUPERVISOR]
         assert tool_name in BUILDER_STATE_HANDLERS[BuilderState.BUILDER]
 
 
-def test_no_execution_only_tool_leaks_into_any_builder_state_handler_set():
+def test_no_execution_only_tool_leaks_into_either_help_handler_set():
+    # Supervisor and Builder are the deliberate ADR 0062-style exceptions
+    # (both talk to the agent's own supervised owner) - neither Help state
+    # must ever see an execution-only tool.
     execution_only_tools = {
         "send_message",
         "reply_message",
@@ -370,10 +523,8 @@ def test_no_execution_only_tool_leaks_into_any_builder_state_handler_set():
         "fetch_chunk",
         "pause_and_escalate",
     }
-    for state, handlers in BUILDER_STATE_HANDLERS.items():
-        assert not (execution_only_tools & set(handlers)), (
-            f"{state} must not expose any execution-only tool"
-        )
+    for state in (BuilderState.HELP_BUILDING, BuilderState.HELP_GENERAL):
+        assert not (execution_only_tools & set(BUILDER_STATE_HANDLERS[state]))
 
 
 @pytest.mark.parametrize("state", list(BuilderState))

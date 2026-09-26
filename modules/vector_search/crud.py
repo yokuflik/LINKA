@@ -10,6 +10,7 @@ bind parameter name (silently drops the parameter instead of raising), so the
 unambiguous `CAST` form is required here.
 """
 
+from datetime import datetime
 from typing import Optional, Sequence
 
 from sqlalchemy import text
@@ -41,6 +42,8 @@ async def semantic_search_messages(
     limit: int,
     max_distance: float,
     chat_id: Optional[int] = None,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
 ):
     """Cosine-nearest messages, membership enforced by the participants JOIN
     (ADR 0040's pattern) - a removed member's chats never surface, checked at
@@ -48,8 +51,14 @@ async def semantic_search_messages(
     given, additionally scopes to one chat (still re-checks membership via the
     JOIN rather than trusting the caller). `max_distance` drops rows below the
     relevance floor instead of letting LIMIT pad the page with unrelated
-    matches (ADR 0042 addendum)."""
+    matches (ADR 0042 addendum). `start_at`/`end_at` (ADR 0068/0070) add an
+    inclusive `created_at` window (full timestamp precision), independent of
+    the relevance floor."""
     where_extra = "AND m.chat_id = :chat_id " if chat_id is not None else ""
+    if start_at is not None:
+        where_extra += "AND m.created_at >= :start_at "
+    if end_at is not None:
+        where_extra += "AND m.created_at <= :end_at "
     stmt = text(
         "SELECT m.id, m.chat_id, m.sender_id, m.type, m.content, m.created_at, "
         "m.embedding <=> CAST(:query_embedding AS vector) AS distance "
@@ -70,5 +79,9 @@ async def semantic_search_messages(
     }
     if chat_id is not None:
         params["chat_id"] = chat_id
+    if start_at is not None:
+        params["start_at"] = start_at
+    if end_at is not None:
+        params["end_at"] = end_at
     result = await session.execute(stmt, params)
     return result.mappings().all()

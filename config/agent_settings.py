@@ -33,6 +33,28 @@ AGENT_INVOKE_STREAM_CLAIM_IDLE_MS = int(
 # this just caps this process's own memory/DB-connection footprint.
 AGENT_WORKER_CONCURRENCY = int(os.environ.get("AGENT_WORKER_CONCURRENCY", "10"))
 
+# --- Message-batch debounce + per-chat turn mutex (ADR 0063) ---
+# A matched trigger no longer enqueues onto agent_invoke_stream directly -
+# it ZADDs {agent_id}:{chat_id} onto this due-ZSET, score = now + the
+# debounce window below. A second match for the same pair before it fires
+# just overwrites the score (coalescing a burst of fast messages/self-
+# corrections into one turn). Same due-ZSET pattern as
+# AGENT_SCHEDULE_DUE_ZSET_KEY, polled by its own tight loop in invoke_worker.
+AGENT_INVOKE_DEBOUNCE_ZSET_KEY = os.environ.get(
+    "AGENT_INVOKE_DEBOUNCE_ZSET_KEY", "agent_invoke_debounce_due"
+)
+AGENT_INVOKE_DEBOUNCE_SECONDS = float(os.environ.get("AGENT_INVOKE_DEBOUNCE_SECONDS", "2"))
+AGENT_INVOKE_DEBOUNCE_POLL_INTERVAL_SECONDS = float(
+    os.environ.get("AGENT_INVOKE_DEBOUNCE_POLL_INTERVAL_SECONDS", "1")
+)
+# Per-(agent_id, chat_id) mutex held for the duration of one _run_turn call
+# (process_entry) so a debounced fire that lands while a previous turn for
+# the same pair is still running (up to AGENT_TURN_TIMEOUT_SECONDS) doesn't
+# start a second concurrent turn - it re-arms the debounce ZSET instead. TTL
+# equals the turn timeout, so a crashed worker holding the lock self-heals on
+# the same bound the turn itself is already capped at.
+AGENT_TURN_LOCK_KEY_PREFIX = os.environ.get("AGENT_TURN_LOCK_KEY_PREFIX", "agent_turn_lock")
+
 # Daily active-processing-time budget (seconds), ADR 0045. 1 hour default.
 AGENT_DAILY_ACTIVE_SECONDS_BUDGET = int(
     os.environ.get("AGENT_DAILY_ACTIVE_SECONDS_BUDGET", str(60 * 60))
@@ -54,7 +76,7 @@ AGENT_GEMINI_CALLS_WINDOW_SECONDS = int(os.environ.get("AGENT_GEMINI_CALLS_WINDO
 # legitimately needs more than 4 round-trips in one turn; the old cap was
 # sized specifically to fit under the old 5/min limit above, which no longer
 # applies.
-AGENT_TURN_MAX_TOOL_ROUNDTRIPS = int(os.environ.get("AGENT_TURN_MAX_TOOL_ROUNDTRIPS", "8"))
+AGENT_TURN_MAX_TOOL_ROUNDTRIPS = int(os.environ.get("AGENT_TURN_MAX_TOOL_ROUNDTRIPS", "12"))
 
 # Whole-turn wall-clock timeout (asyncio.wait_for) - aborts a stuck turn
 # cleanly instead of holding a worker slot indefinitely.
@@ -103,12 +125,27 @@ AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS = int(
 # against this cap and are never evicted by it.
 AGENT_MAX_AUTO_CHATS = int(os.environ.get("AGENT_MAX_AUTO_CHATS", "200"))
 
+# --- on_ephemeral_task trigger (ADR 0061) ---
+# Cap on concurrent ephemeral reply-collection tasks one agent can have
+# in-flight - enforced in the spawn_ephemeral_task config tool, same
+# ScheduleQuotaExceededError-style guard as AGENT_MAX_SCHEDULE_ENTRIES.
+AGENT_MAX_EPHEMERAL_TASKS = int(os.environ.get("AGENT_MAX_EPHEMERAL_TASKS", "5"))
+# Hard ceiling on a spawned task's timeout_minutes, regardless of what the
+# Supervisor/Builder asks for - keeps a forgotten task from lingering forever.
+AGENT_EPHEMERAL_TASK_MAX_MINUTES = int(
+    os.environ.get("AGENT_EPHEMERAL_TASK_MAX_MINUTES", str(60 * 24 * 3))
+)
+# Default timeout when the tool call omits timeout_minutes.
+AGENT_EPHEMERAL_TASK_DEFAULT_MINUTES = int(
+    os.environ.get("AGENT_EPHEMERAL_TASK_DEFAULT_MINUTES", str(60 * 24))
+)
+
 # ADR 0054: pause_and_escalate freezes a chat for at most this many hours
 # before it auto-resumes on its own (lazy expiry, checked on read in the
 # trigger engine - no cron/sweep). A human resume via
-# POST /agents/me/resume-chat/{id}, or the owner replying in their own agent
-# chat (which resumes only the most-recently-escalated paused chat), still
-# lifts the pause earlier.
+# POST /agents/me/resume-chat/{id}, or the owner's own resume_paused_chat
+# config tool (ADR 0055 - the only resume paths; there is no implicit resume
+# on an owner reply), still lifts the pause earlier.
 AGENT_ESCALATION_PAUSE_HOURS = int(os.environ.get("AGENT_ESCALATION_PAUSE_HOURS", "24"))
 
 # --- on_schedule trigger (ADR 0046, decision 3) ---
@@ -222,11 +259,11 @@ AGENT_ESTIMATED_SECONDS_PER_TURN = int(os.environ.get("AGENT_ESTIMATED_SECONDS_P
 # adds exactly 1 and can't be reused for a weighted counter). Independent of
 # AGENT_GEMINI_CALLS_PER_MINUTE/AGENT_DAILY_ACTIVE_SECONDS_BUDGET - those
 # gate call count/wall-clock time, this gates token volume.
-AGENT_TOKEN_BUDGET_5H = int(os.environ.get("AGENT_TOKEN_BUDGET_5H", "750000"))
+AGENT_TOKEN_BUDGET_5H = int(os.environ.get("AGENT_TOKEN_BUDGET_5H", "1000000"))
 AGENT_TOKEN_BUDGET_5H_WINDOW_SECONDS = int(
     os.environ.get("AGENT_TOKEN_BUDGET_5H_WINDOW_SECONDS", str(5 * 60 * 60))
 )
-AGENT_TOKEN_BUDGET_7D = int(os.environ.get("AGENT_TOKEN_BUDGET_7D", "4000000"))
+AGENT_TOKEN_BUDGET_7D = int(os.environ.get("AGENT_TOKEN_BUDGET_7D", "5000000"))
 AGENT_TOKEN_BUDGET_7D_WINDOW_SECONDS = int(
     os.environ.get("AGENT_TOKEN_BUDGET_7D_WINDOW_SECONDS", str(7 * 24 * 60 * 60))
 )
@@ -261,6 +298,10 @@ __all__ = [
     "AGENT_INVOKE_STREAM_BLOCK_MS",
     "AGENT_INVOKE_STREAM_CLAIM_IDLE_MS",
     "AGENT_WORKER_CONCURRENCY",
+    "AGENT_INVOKE_DEBOUNCE_ZSET_KEY",
+    "AGENT_INVOKE_DEBOUNCE_SECONDS",
+    "AGENT_INVOKE_DEBOUNCE_POLL_INTERVAL_SECONDS",
+    "AGENT_TURN_LOCK_KEY_PREFIX",
     "AGENT_DAILY_ACTIVE_SECONDS_BUDGET",
     "AGENT_GEMINI_CALLS_PER_MINUTE",
     "AGENT_GEMINI_CALLS_WINDOW_SECONDS",

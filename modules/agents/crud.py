@@ -30,8 +30,11 @@ def _merge_triggers(current: dict, patch: dict) -> dict:
     fields, and a top-level-only shallow merge previously let a partial patch
     corrupt the row (missing start/end -> 500 on GET /agents/me). on_specific_chats
     is merged per chat_id for the same reason (each entry has its own
-    sub-shape); on_schedule is replaced wholesale by design (see
-    update_own_triggers)."""
+    sub-shape) - and chat_ids the patch does NOT mention are now preserved
+    (previously the whole map was replaced by only the patched keys, silently
+    dropping every other manual/auto-registered entry); a patch value of None
+    for a chat_id explicitly removes that one entry. on_schedule is replaced
+    wholesale by design (see update_own_triggers)."""
     merged = {**current, **patch}
     if "on_time_window" in patch:
         merged["on_time_window"] = {**current.get("on_time_window", {}), **patch["on_time_window"]}
@@ -41,10 +44,13 @@ def _merge_triggers(current: dict, patch: dict) -> dict:
         merged["on_any_message"] = {**current.get("on_any_message", {}), **patch["on_any_message"]}
     if "on_specific_chats" in patch:
         existing_chats = current.get("on_specific_chats", {})
-        merged["on_specific_chats"] = {
-            chat_id: {**existing_chats.get(chat_id, {}), **chat_patch}
-            for chat_id, chat_patch in patch["on_specific_chats"].items()
-        }
+        merged_chats = dict(existing_chats)
+        for chat_id, chat_patch in patch["on_specific_chats"].items():
+            if chat_patch is None:
+                merged_chats.pop(chat_id, None)
+            else:
+                merged_chats[chat_id] = {**existing_chats.get(chat_id, {}), **chat_patch}
+        merged["on_specific_chats"] = merged_chats
     return merged
 
 
@@ -212,6 +218,22 @@ async def get_knowledge_chunk(
         AgentKnowledgeChunk.agent_id == agent_id,
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_agents_with_ephemeral_tasks(session: AsyncSession) -> Sequence[Agent]:
+    """ADR 0061: enabled agents whose on_ephemeral_task map is non-empty -
+    used by the schedule poll loop to sweep tasks whose expires_at lapsed
+    with nobody having replied (the one completion path with no inbound
+    message to piggyback the check on; every other completion happens
+    inline in the Trigger Rule Engine when a reply lands). Filters in Python
+    after loading enabled agents, same pattern as every other agent query in
+    this module (no existing JSONB-predicate query to follow, and this table
+    is not remotely large enough to need one) - if agent volume ever makes
+    this worth indexing, a partial index on triggers is the ADR 0040-style
+    fix, not a rewrite of this function's callers."""
+    stmt = select(Agent).where(Agent.is_enabled.is_(True))
+    result = await session.execute(stmt)
+    return [a for a in result.scalars().all() if a.triggers.get("on_ephemeral_task")]
 
 
 async def get_enabled_agents_for_owners(session: AsyncSession, owner_user_ids: Sequence[int]) -> Sequence[Agent]:

@@ -4,6 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "ws_gateway"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ws_gateway"
 path = "src/main.rs"
@@ -24,3 +28,13 @@ futures-util = { version = "0.3", default-features = false, features = ["sink", 
 # Internal-network bootstrap call only (ADR 0036) — no TLS, plaintext HTTP.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 time = { version = "0.3", default-features = false, features = ["formatting", "std"] }
+
+[dev-dependencies]
+# Test-only: HTTP mocking for /internal/* (Phase 8/9), WS client for driving
+# the real handshake/read/write loop (Phase 8), env-var test isolation
+# (Phase 1 Stage 1.2), and full-featured tokio for #[tokio::test] + time control.
+wiremock = "0.6"
+tokio-tungstenite = "0.24"
+serial_test = "3"
+jsonwebtoken = { version = "9", default-features = false }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "test-util"] }

@@ -6,7 +6,7 @@ unchanged - no behaviour change.
 
 Modules:
 - common          - ToolDeniedError, identity masking, quota check, call logging
-- execution       - the 10 execution-mode tool handlers + EXECUTION_TOOL_HANDLERS
+- execution       - the 11 execution-mode tool handlers + EXECUTION_TOOL_HANDLERS
 - config_mode     - the 8 config-mode tool handlers + CONFIG_TOOL_HANDLERS
 - builder_handoff - ADR 0049 handoff tools + BUILDER_STATE_HANDLERS
 - schemas         - TOOL_SCHEMAS, CONFIG_TOOL_SCHEMAS, BUILDER_STATE_TOOL_SCHEMAS

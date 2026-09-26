@@ -125,3 +125,160 @@ impl Config {
             .any(|o| o == "*" || o == origin)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    /// All env vars `Config`/`Limits::from_env` reads — used to force a clean
+    /// slate before each test so leftover vars from one test (or the host
+    /// shell) can't leak into another.
+    const ALL_ENV_KEYS: &[&str] = &[
+        "REDIS_URL",
+        "JWT_SECRET",
+        "CORS_ALLOW_ORIGINS",
+        "WS_GATEWAY_BIND",
+        "APP_INTERNAL_URL",
+        "APP_SERVER_ID",
+        "SEND_STREAM_SHARDS",
+        "MESSAGE_SEND_STREAM_MAXLEN",
+        "RECEIPT_STREAM_MAXLEN",
+        "CHAT_INSTANCE_TTL_SECONDS",
+        "ROUTING_HEARTBEAT_INTERVAL_SECONDS",
+        "PRESENCE_TTL_SECONDS",
+        "WS_CONN_MAX_CONNECTIONS",
+        "WS_CONN_MAX_AGE_SECONDS",
+        "WS_FRAME_RATE_MAX",
+        "WS_FRAME_RATE_WINDOW_SECONDS",
+        "WS_FRAME_FLOOD_STRIKES",
+        "WS_UPGRADE_IP_RATE_LIMIT_MAX",
+        "WS_UPGRADE_IP_RATE_LIMIT_WINDOW_SECONDS",
+        "WS_UPGRADE_USER_RATE_LIMIT_MAX",
+        "WS_UPGRADE_USER_RATE_LIMIT_WINDOW_SECONDS",
+        "WS_SEND_MESSAGE_RATE_MAX",
+        "WS_SEND_MESSAGE_RATE_WINDOW_SECONDS",
+        "WS_SEND_MESSAGE_BURST_MAX",
+        "WS_SEND_MESSAGE_BURST_WINDOW_SECONDS",
+        "WS_RECEIPTS_RATE_MAX",
+        "WS_RECEIPTS_RATE_WINDOW_SECONDS",
+        "WS_TYPING_RATE_MAX",
+        "WS_TYPING_RATE_WINDOW_SECONDS",
+        "WS_SUBSCRIBE_PRESENCE_RATE_MAX",
+        "WS_SUBSCRIBE_PRESENCE_RATE_WINDOW_SECONDS",
+        "WS_EDIT_RATE_MAX",
+        "WS_EDIT_RATE_WINDOW_SECONDS",
+    ];
+
+    fn clear_env() {
+        for k in ALL_ENV_KEYS {
+            env::remove_var(k);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn defaults_with_no_env_vars_set() {
+        clear_env();
+        let c = Config::from_env();
+        assert_eq!(c.redis_url, "redis://127.0.0.1:6379/0");
+        assert_eq!(c.jwt_secret, "");
+        assert_eq!(c.cors_allow_origins, vec!["*".to_string()]);
+        assert_eq!(c.bind_addr, "0.0.0.0:8081");
+        assert_eq!(c.app_internal_url, "http://app:8000");
+        assert_eq!(c.app_server_id, "app");
+        assert_eq!(c.send_stream_shards, 4);
+        assert_eq!(c.send_stream_maxlen, 1_000_000);
+        assert_eq!(c.receipt_stream_maxlen, 1_000_000);
+        assert_eq!(c.chat_instance_ttl_secs, 90);
+        assert_eq!(c.routing_heartbeat_secs, 30);
+        assert_eq!(c.presence_ttl_secs, 60);
+        assert_eq!(c.ws_conn_max, 5);
+        assert_eq!(c.ws_conn_max_age_secs, 26 * 3600);
+
+        let l = &c.limits;
+        assert_eq!(l.frame_max, 30);
+        assert_eq!(l.frame_window_secs, 10.0);
+        assert_eq!(l.frame_flood_strikes, 60);
+        assert_eq!(l.upgrade_ip_max, 20);
+        assert_eq!(l.upgrade_ip_window_secs, 10.0);
+        assert_eq!(l.upgrade_user_max, 10);
+        assert_eq!(l.upgrade_user_window_secs, 10.0);
+        assert_eq!(l.send_max, 3);
+        assert_eq!(l.send_window_secs, 1.0);
+        assert_eq!(l.send_burst_max, 40);
+        assert_eq!(l.send_burst_window_secs, 60.0);
+        assert_eq!(l.receipts_max, 60);
+        assert_eq!(l.receipts_window_secs, 10.0);
+        assert_eq!(l.typing_max, 10);
+        assert_eq!(l.typing_window_secs, 10.0);
+        assert_eq!(l.sub_presence_max, 20);
+        assert_eq!(l.sub_presence_window_secs, 10.0);
+        assert_eq!(l.edit_max, 20);
+        assert_eq!(l.edit_window_secs, 60.0);
+    }
+
+    #[test]
+    #[serial]
+    fn frame_rate_max_env_override() {
+        clear_env();
+        env::set_var("WS_FRAME_RATE_MAX", "99");
+        assert_eq!(Config::from_env().limits.frame_max, 99);
+        clear_env();
+    }
+
+    #[test]
+    #[serial]
+    fn malformed_env_var_falls_back_to_default() {
+        clear_env();
+        env::set_var("WS_FRAME_RATE_MAX", "notanumber");
+        assert_eq!(Config::from_env().limits.frame_max, 30);
+        clear_env();
+    }
+
+    #[test]
+    #[serial]
+    fn empty_cors_origins_produces_empty_list_not_single_empty_string() {
+        clear_env();
+        env::set_var("CORS_ALLOW_ORIGINS", "");
+        let c = Config::from_env();
+        assert!(c.cors_allow_origins.is_empty(), "{:?}", c.cors_allow_origins);
+        clear_env();
+    }
+
+    #[test]
+    #[serial]
+    fn cors_origins_trimmed_and_matched() {
+        clear_env();
+        env::set_var("CORS_ALLOW_ORIGINS", "https://a.com, https://b.com");
+        let c = Config::from_env();
+        assert_eq!(c.cors_allow_origins, vec!["https://a.com", "https://b.com"]);
+        assert!(c.origin_allowed("https://a.com"));
+        assert!(c.origin_allowed("https://b.com"));
+        assert!(!c.origin_allowed("https://evil.com"));
+        clear_env();
+    }
+
+    #[test]
+    #[serial]
+    fn wildcard_cors_allows_anything() {
+        clear_env();
+        env::set_var("CORS_ALLOW_ORIGINS", "*");
+        let c = Config::from_env();
+        assert!(c.origin_allowed("https://anything.example"));
+        assert!(c.origin_allowed(""));
+        clear_env();
+    }
+
+    #[test]
+    #[serial]
+    fn origin_allowed_is_exact_match_not_suffix() {
+        clear_env();
+        env::set_var("CORS_ALLOW_ORIGINS", "https://a.com");
+        let c = Config::from_env();
+        assert!(c.origin_allowed("https://a.com"));
+        assert!(!c.origin_allowed("https://a.com.evil.com"));
+        assert!(!c.origin_allowed("http://a.com"));
+        clear_env();
+    }
+}

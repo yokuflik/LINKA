@@ -174,3 +174,39 @@ impl RateLimiter {
             .await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conn_member_joins_server_and_connection_id() {
+        assert_eq!(conn_member("srv", "uuid-1"), "srv:uuid-1");
+    }
+
+    #[test]
+    fn split_conn_member_is_exact_inverse_for_uuid_with_no_colons() {
+        let member = conn_member("srv1", "550e8400-e29b-41d4-a716-446655440000");
+        let (sid, cid) = split_conn_member(&member);
+        assert_eq!(sid, "srv1");
+        assert_eq!(cid, "550e8400-e29b-41d4-a716-446655440000");
+    }
+
+    #[test]
+    fn split_conn_member_malformed_no_colon_returns_empty_server_id() {
+        let (sid, cid) = split_conn_member("not-a-member-string");
+        assert_eq!(sid, "");
+        assert_eq!(cid, "not-a-member-string");
+    }
+
+    #[test]
+    fn split_conn_member_uses_rsplit_once_favoring_last_colon() {
+        // If server_id itself ever contained a colon, rsplit_once means the
+        // LAST colon wins the split, not the first — defends against an
+        // accidental switch to split_once, which would silently misattribute
+        // evictions when a member has more than one colon.
+        let (sid, cid) = split_conn_member("host:with:colons:conn-id");
+        assert_eq!(sid, "host:with:colons");
+        assert_eq!(cid, "conn-id");
+    }
+}

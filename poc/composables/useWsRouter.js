@@ -43,7 +43,21 @@ function useWsRouter(ctx) {
       return;
     }
     if (msg.type === 'ack') { log('ack:', msg.for, msg); return; }
-    if (msg.type === 'heartbeat_ack') { return; }
+    if (msg.type === 'heartbeat_ack') {
+      // ADR 0060: the gateway flushes chats whose live fan-out frame was
+      // dropped under WS backpressure since our last heartbeat. Refetch the
+      // active chat directly (id-deduped merge, no-ops if not in the list)
+      // and refresh the sidebar once for previews/unread on any others,
+      // since those are populated by the same drop-prone WS path.
+      if (Array.isArray(msg.resync_chat_ids) && msg.resync_chat_ids.length) {
+        const activeId = ctx.activeChatId.value;
+        if (activeId != null && msg.resync_chat_ids.includes(activeId)) {
+          ctx.revalidateFromCache(activeId);
+        }
+        if (ctx.loadChats) ctx.loadChats();
+      }
+      return;
+    }
 
     // The AI agent's own 1:1 chat (ADR 0045, AGENT_DRAWER_UI_PLAN.md) is
     // deliberately kept OUT of LinkaChatStore.messages/activeChatId - it has

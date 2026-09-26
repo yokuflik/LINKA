@@ -8,6 +8,7 @@ prompt (see docs/adr/0045).
 """
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +39,13 @@ from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
 from modules.messaging.read_api import get_message_history
 from modules.search import service as search_service
 from modules.search.errors import SearchQueryTooShortError
+from modules.vector_search import service as vector_search_service
+from modules.vector_search.errors import (
+    EmbeddingProviderError,
+    EmbeddingProviderQuotaExceededError,
+    EmbeddingProviderUnavailableError,
+    VectorSearchQueryTooShortError,
+)
 from realtime.notification_service import send_push
 
 logger = logging.getLogger(__name__)
@@ -77,6 +85,7 @@ async def _tool_send_message(session: AsyncSession, agent: Agent, arguments: dic
         client_message_id=_new_client_message_id(),
         content=content,
         type=AGENT_REPLY_MESSAGE_TYPE,
+        sender_agent_id=agent.id,
     )
     return {"message_id": str(message.id)}
 
@@ -110,6 +119,7 @@ async def _tool_reply_message(session: AsyncSession, agent: Agent, arguments: di
         client_message_id=_new_client_message_id(),
         content=content,
         reply_to_message_id=reply_to_message_id,
+        sender_agent_id=agent.id,
     )
     return {"message_id": str(message.id)}
 
@@ -122,7 +132,9 @@ async def _tool_create_chat(session: AsyncSession, agent: Agent, arguments: dict
     if not agent.restrictions.get("can_message_private", True):
         raise ToolDeniedError("can_message_private is disabled")
 
-    chat = await chat_service.get_or_create_private_chat(session, agent.owner_user_id, target_user_id)
+    chat = await chat_service.get_or_create_private_chat(
+        session, agent.owner_user_id, target_user_id, sender_agent_id=agent.id
+    )
     return {"chat_id": str(chat.id)}
 
 
@@ -139,17 +151,33 @@ async def _tool_leave_group(session: AsyncSession, agent: Agent, arguments: dict
         chat_id=chat_id,
         target_user_id=agent.owner_user_id,
         new_owner_id=int(new_owner_id) if new_owner_id is not None else None,
+        sender_agent_id=agent.id,
     )
     return {"left": True}
 
 
+READ_HISTORY_PAGE_SIZE = 20
+
+
 async def _tool_read_history(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
     chat_id = int(arguments["chat_id"])
+    before_id = arguments.get("before_id")
+    before_id = int(before_id) if before_id is not None else None
 
     if chat_id in {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}:
         raise ToolDeniedError("chat_id is in blocked_read_chat_ids")
 
-    messages = await get_message_history(session, agent.owner_user_id, chat_id, limit=20)
+    # Fetch one extra row to detect has_more without a separate count query
+    # (ADR 0067) - same trick cursor-paginated endpoints use elsewhere.
+    messages = list(
+        await get_message_history(
+            session, agent.owner_user_id, chat_id, before_id=before_id, limit=READ_HISTORY_PAGE_SIZE + 1
+        )
+    )
+    has_more = len(messages) > READ_HISTORY_PAGE_SIZE
+    messages = messages[:READ_HISTORY_PAGE_SIZE]
+    next_before_id = str(messages[-1].id) if has_more else None
+
     labels = await _resolve_sender_labels(session, [m.sender_id for m in messages])
     # Structured, not raw text: sender + timestamp let Gemini reason about
     # who said what and when, which matters in group chats where several
@@ -163,8 +191,11 @@ async def _tool_read_history(session: AsyncSession, agent: Agent, arguments: dic
                 "timestamp": m.created_at.isoformat(),
                 "content": m.content,
             }
-            for m in reversed(list(messages))  # oldest first for a readable transcript
-        ]
+            for m in reversed(messages)  # oldest first for a readable transcript
+        ],
+        # ADR 0067: has_more tells the model this page isn't the whole chat.
+        "has_more": has_more,
+        "next_before_id": next_before_id,
     }
 
 
@@ -185,6 +216,27 @@ async def _tool_update_own_triggers(session: AsyncSession, agent: Agent, argumen
     return {"triggers": updated.triggers}
 
 
+def _parse_tool_datetime(raw: Optional[str], *, is_end: bool) -> Optional[datetime]:
+    """ADR 0068/0070: the model passes either a bare ISO date (`YYYY-MM-DD` -
+    defaults to midnight for a start bound, end-of-day for an end bound, so a
+    same-day range is non-empty) or a full ISO datetime
+    (`YYYY-MM-DDTHH:MM:SS`) for a specific time. A malformed value is a model
+    mistake, not a system error, so it's rejected as a denial rather than
+    raising a 500 deep in fromisoformat."""
+    if not raw:
+        return None
+    raw = str(raw)
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        raise ToolDeniedError(f"invalid date/time '{raw}', expected YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS")
+    if len(raw) <= 10 and is_end:
+        # A bare date with no time component, used as the end bound - extend
+        # to the last microsecond of that day instead of leaving it at midnight.
+        parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 async def _tool_search_messages(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
     """ADR 0046 decision 3: thin wrapper over the existing ADR 0040 keyword
     search, scoped to the owner's own chats (search_in_chat/search_global
@@ -193,6 +245,9 @@ async def _tool_search_messages(session: AsyncSession, agent: Agent, arguments: 
     "check who's waiting for a reply"."""
     query = str(arguments["query"])
     chat_id = arguments.get("chat_id")
+    cursor = arguments.get("cursor")
+    start_at = _parse_tool_datetime(arguments.get("start_date"), is_end=False)
+    end_at = _parse_tool_datetime(arguments.get("end_date"), is_end=True)
 
     if chat_id is not None:
         chat_id = int(chat_id)
@@ -202,11 +257,24 @@ async def _tool_search_messages(session: AsyncSession, agent: Agent, arguments: 
     try:
         if chat_id is not None:
             result = await search_service.search_in_chat(
-                session, user_id=agent.owner_user_id, chat_id=chat_id, raw_query=query, cursor=None, limit=10,
+                session,
+                user_id=agent.owner_user_id,
+                chat_id=chat_id,
+                raw_query=query,
+                cursor=cursor,
+                limit=10,
+                start_at=start_at,
+                end_at=end_at,
             )
         else:
             result = await search_service.search_global(
-                session, user_id=agent.owner_user_id, raw_query=query, cursor=None, limit=10,
+                session,
+                user_id=agent.owner_user_id,
+                raw_query=query,
+                cursor=cursor,
+                limit=10,
+                start_at=start_at,
+                end_at=end_at,
             )
     except SearchQueryTooShortError as exc:
         raise ToolDeniedError(str(exc))
@@ -228,7 +296,60 @@ async def _tool_search_messages(session: AsyncSession, agent: Agent, arguments: 
                 "created_at": r.created_at.isoformat(),
             }
             for r in result.results
-        ]
+        ],
+        # ADR 0067: has_more/next_cursor tell the model these aren't all the matches.
+        "has_more": result.has_more,
+        "next_cursor": result.next_cursor,
+    }
+
+
+async def _tool_search_semantic(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0069: meaning-based counterpart to _tool_search_messages, wrapping
+    the existing ADR 0042 semantic search - same owner-scoping (participants
+    JOIN enforces membership, never a bypass) and same ADR 0068 date-range
+    support. Flat top-K list, no cursor (semantic search isn't paginated)."""
+    query = str(arguments["query"])
+    chat_id = arguments.get("chat_id")
+    start_at = _parse_tool_datetime(arguments.get("start_date"), is_end=False)
+    end_at = _parse_tool_datetime(arguments.get("end_date"), is_end=True)
+
+    if chat_id is not None:
+        chat_id = int(chat_id)
+        if chat_id in {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}:
+            raise ToolDeniedError("chat_id is in blocked_read_chat_ids")
+
+    try:
+        result = await vector_search_service.semantic_search(
+            session,
+            user_id=agent.owner_user_id,
+            raw_query=query,
+            chat_id=chat_id,
+            limit=vector_search_service.DEFAULT_VECTOR_SEARCH_LIMITS.default_limit,
+            start_at=start_at,
+            end_at=end_at,
+        )
+    except VectorSearchQueryTooShortError as exc:
+        raise ToolDeniedError(str(exc))
+    except EmbeddingProviderUnavailableError:
+        raise ToolDeniedError("semantic search is not available right now")
+    except (EmbeddingProviderError, EmbeddingProviderQuotaExceededError):
+        raise ToolDeniedError("semantic search failed, try again later")
+
+    labels = await _resolve_sender_labels(session, [r.sender_id for r in result.results])
+    # Same identity-masking rule as _tool_search_messages - no raw sender_id
+    # in what's handed to Gemini, chat_id kept as the model's tool-call handle.
+    return {
+        "results": [
+            {
+                "chat_id": str(r.chat_id),
+                "sender_name": labels.get(str(r.sender_id), {}).get("name") if r.sender_id is not None else None,
+                "sender_phone_number": labels.get(str(r.sender_id), {}).get("phone_number") if r.sender_id is not None else None,
+                "content": r.content,
+                "distance": r.distance,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in result.results
+        ],
     }
 
 
@@ -324,6 +445,7 @@ EXECUTION_TOOL_HANDLERS = {
     "read_history": _tool_read_history,
     "update_own_triggers": _tool_update_own_triggers,
     "search_messages": _tool_search_messages,
+    "search_semantic": _tool_search_semantic,
     "get_knowledge_index": _tool_get_knowledge_index,
     "fetch_chunk": _tool_fetch_chunk,
     "pause_and_escalate": _tool_pause_and_escalate,

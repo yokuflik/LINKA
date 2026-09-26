@@ -324,4 +324,159 @@ mod tests {
         let f: ClientFrame = serde_json::from_str(r#"{"type":"totally_new"}"#).unwrap();
         assert!(matches!(f, ClientFrame::Other));
     }
+
+    #[test]
+    fn chat_id_as_bare_number_parses_like_string_form() {
+        let raw = r#"{"type":"send_message","chat_id":123,"client_message_id":"c1","content":"hi"}"#;
+        let f: ClientFrame = serde_json::from_str(raw).unwrap();
+        match f {
+            ClientFrame::SendMessage(m) => assert_eq!(m.chat_id, 123),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn de_opt_id_empty_string_is_none() {
+        let raw = r#"{"type":"send_message","chat_id":"1","client_message_id":"c1","reply_to_message_id":""}"#;
+        let f: ClientFrame = serde_json::from_str(raw).unwrap();
+        match f {
+            ClientFrame::SendMessage(m) => assert_eq!(m.reply_to_message_id, None),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn de_opt_id_explicit_null_is_none() {
+        let raw = r#"{"type":"send_message","chat_id":"1","client_message_id":"c1","reply_to_message_id":null}"#;
+        let f: ClientFrame = serde_json::from_str(raw).unwrap();
+        match f {
+            ClientFrame::SendMessage(m) => assert_eq!(m.reply_to_message_id, None),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn de_opt_id_real_number_is_some() {
+        let raw = r#"{"type":"send_message","chat_id":"1","client_message_id":"c1","reply_to_message_id":77}"#;
+        let f: ClientFrame = serde_json::from_str(raw).unwrap();
+        match f {
+            ClientFrame::SendMessage(m) => assert_eq!(m.reply_to_message_id, Some(77)),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn de_id_non_integer_number_is_parse_error() {
+        let raw = r#"{"type":"send_message","chat_id":1.5,"client_message_id":"c1"}"#;
+        let res: Result<ClientFrame, _> = serde_json::from_str(raw);
+        assert!(res.is_err(), "1.5 must not silently truncate to an id");
+    }
+
+    #[test]
+    fn de_id_boolean_is_parse_error() {
+        let raw = r#"{"type":"send_message","chat_id":true,"client_message_id":"c1"}"#;
+        let res: Result<ClientFrame, _> = serde_json::from_str(raw);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn de_id_array_is_parse_error() {
+        let raw = r#"{"type":"send_message","chat_id":[1],"client_message_id":"c1"}"#;
+        let res: Result<ClientFrame, _> = serde_json::from_str(raw);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn send_message_defaults_with_no_media_and_no_message_type() {
+        let raw = r#"{"type":"send_message","chat_id":"1","client_message_id":"c1"}"#;
+        let f: ClientFrame = serde_json::from_str(raw).unwrap();
+        match f {
+            ClientFrame::SendMessage(m) => {
+                assert_eq!(m.r#type, 1);
+                let e = SendStreamEntry::from_frame(&m, 1);
+                assert_eq!(e.media_key, "");
+                assert_eq!(e.media_name, "");
+                assert_eq!(e.media_duration_seconds, "");
+                assert_eq!(e.media_blur_hash, "");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn flat_media_fields_populate_stream_entry() {
+        let raw = r#"{"type":"send_message","chat_id":"1","client_message_id":"c1",
+            "message_type":2,"media_key":"m/flat","media_name":"n.jpg",
+            "media_duration_seconds":9,"media_blur_hash":"hash"}"#;
+        let f: ClientFrame = serde_json::from_str(raw).unwrap();
+        match f {
+            ClientFrame::SendMessage(m) => {
+                let e = SendStreamEntry::from_frame(&m, 1);
+                assert_eq!(e.media_key, "m/flat");
+                assert_eq!(e.media_name, "n.jpg");
+                assert_eq!(e.media_duration_seconds, "9");
+                assert_eq!(e.media_blur_hash, "hash");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn nested_media_takes_priority_over_flat_fields() {
+        let raw = r#"{"type":"send_message","chat_id":"1","client_message_id":"c1",
+            "message_type":2,
+            "media":{"key":"m/nested","name":"nested.jpg"},
+            "media_key":"m/flat","media_name":"flat.jpg"}"#;
+        let f: ClientFrame = serde_json::from_str(raw).unwrap();
+        match f {
+            ClientFrame::SendMessage(m) => {
+                let e = SendStreamEntry::from_frame(&m, 1);
+                assert_eq!(e.media_key, "m/nested");
+                assert_eq!(e.media_name, "nested.jpg");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn edit_frame_requires_content() {
+        let raw = r#"{"type":"edit_message","chat_id":"1","message_id":"2"}"#;
+        let res: Result<ClientFrame, _> = serde_json::from_str(raw);
+        assert!(res.is_err(), "missing `content` must be a parse error");
+    }
+
+    #[test]
+    fn mark_frame_rejects_both_message_id_and_its_alias_present() {
+        // Plan asked to verify empirically whether `message_id` wins when both
+        // the field and its `up_to_message_id` alias are present. It does not:
+        // serde's alias mechanism treats this as the SAME logical field seen
+        // twice, so it's a hard "duplicate field" parse error, not a silent
+        // precedence pick. Document that outcome explicitly.
+        let raw = r#"{"type":"mark_read","chat_id":"5","message_id":"42","up_to_message_id":"999"}"#;
+        let res: Result<ClientFrame, _> = serde_json::from_str(raw);
+        assert!(res.is_err(), "expected a duplicate-field error when both message_id and its alias are present");
+    }
+
+    #[test]
+    fn event_chat_id_four_cases() {
+        assert_eq!(event_chat_id(&serde_json::json!({"chat_id": "5"})), Some(5));
+        assert_eq!(event_chat_id(&serde_json::json!({"chat_id": 5})), Some(5));
+        assert_eq!(event_chat_id(&serde_json::json!({})), None);
+        assert_eq!(event_chat_id(&serde_json::json!({"chat_id": "abc"})), None);
+    }
+
+    #[test]
+    fn other_variant_round_trips_for_any_unrecognized_type() {
+        let f: ClientFrame = serde_json::from_str(r#"{"type":"future_action","foo":"bar"}"#).unwrap();
+        assert!(matches!(f, ClientFrame::Other));
+    }
+
+    #[test]
+    fn missing_type_field_is_a_hard_parse_error_not_other() {
+        // #[serde(tag = "type")] requires the tag field to exist to classify
+        // the object at all; a missing tag is not the same as an unrecognized
+        // tag value, and must not silently resolve to `Other`.
+        let res: Result<ClientFrame, _> = serde_json::from_str(r#"{"foo":"bar"}"#);
+        assert!(res.is_err(), "a frame with no `type` key must fail to parse, not become Other");
+    }
 }

@@ -6,17 +6,6 @@
 //! `instance_inbox:{server_id}` / `user_events:{uid}` messages into client
 //! frames. Presence + typing land in Step 6.
 
-mod bootstrap;
-mod fanin;
-mod handlers;
-mod message_ops;
-mod presence;
-mod receipts;
-mod routing;
-mod send_path;
-mod state;
-mod ws;
-
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,9 +15,9 @@ use axum::{
     Router,
 };
 use linka_common::config::Config;
-use state::AppState;
 use tokio::sync::mpsc;
 use tracing_subscriber::{prelude::*, EnvFilter};
+use ws_gateway::{fanin, routing, state::AppState, ws};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> anyhow::Result<()> {

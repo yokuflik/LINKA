@@ -63,6 +63,18 @@ class Message(Base):
     # history for the other participants (mirrors WhatsApp's "deleted user" behavior).
     sender_id = Column(BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
+    # Which AI agent (if any) actually authored this message, as opposed to
+    # the human owner (ADR 0066). sender_id is always the owner's user_id
+    # either way (ADR 0045 - the agent has no user_id of its own), so this is
+    # the only DB-visible fact distinguishing agent-sent from human-sent -
+    # deliberately not inferred from type == AGENT_REPLY_MESSAGE_TYPE, which
+    # is a display-only signal an application bug could set incorrectly.
+    # Read by trg_agents_enforce_message_restrictions
+    # (modules/agents/restriction_ddl.py) to enforce Agent.restrictions at
+    # the database level, independent of the modules/agents/tools/execution.py
+    # Python check. NULL for every human-sent and system message.
+    sender_agent_id = Column(BigInteger, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True)
+
     # 1=text, 2=image, 3=video, 4=audio, 5=file, 6=system. SMALLINT for the same
     # memory-efficiency reason as Participant.role.
     type = Column(SMALLINT, nullable=False, default=1)

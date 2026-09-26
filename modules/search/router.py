@@ -4,8 +4,13 @@
 - GET /chats/{chat_id}/messages/around/{id}   - jump-to-context window
 - GET /search/messages                        - global, cursor paginated (default)
 - GET /search/messages/stream                 - global, SSE (huge result sets)
+
+All search routes accept optional `start_at`/`end_at` (ISO 8601 datetime,
+inclusive both ends, e.g. `2025-01-01` or `2025-01-01T14:30:00`) to restrict
+results to a `created_at` window (ADR 0068/0070).
 """
 
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
@@ -62,6 +67,8 @@ async def search_in_chat(
     request: Request,
     cursor: Optional[str] = None,
     limit: int = 0,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
     limits: SearchLimits = Depends(get_search_limits),
@@ -75,6 +82,8 @@ async def search_in_chat(
         cursor=cursor,
         limit=_clamp_page(limit, limits),
         limits=limits,
+        start_at=start_at,
+        end_at=end_at,
     )
 
 
@@ -104,6 +113,8 @@ async def search_messages(
     cursor: Optional[str] = None,
     limit: int = 0,
     chat_id: Optional[int] = None,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
     user_id: int = Depends(get_current_user_id),
     session: AsyncSession = Depends(get_db),
     limits: SearchLimits = Depends(get_search_limits),
@@ -112,10 +123,25 @@ async def search_messages(
     page = _clamp_page(limit, limits)
     if chat_id is not None:
         return await search_service.search_in_chat(
-            session, user_id=user_id, chat_id=chat_id, raw_query=q, cursor=cursor, limit=page, limits=limits
+            session,
+            user_id=user_id,
+            chat_id=chat_id,
+            raw_query=q,
+            cursor=cursor,
+            limit=page,
+            limits=limits,
+            start_at=start_at,
+            end_at=end_at,
         )
     return await search_service.search_global(
-        session, user_id=user_id, raw_query=q, cursor=cursor, limit=page, limits=limits
+        session,
+        user_id=user_id,
+        raw_query=q,
+        cursor=cursor,
+        limit=page,
+        limits=limits,
+        start_at=start_at,
+        end_at=end_at,
     )
 
 
@@ -123,6 +149,8 @@ async def search_messages(
 async def stream_search_messages(
     q: str,
     request: Request,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
     user_id: int = Depends(get_current_user_id),
     limits: SearchLimits = Depends(get_search_limits),
 ):
@@ -137,16 +165,19 @@ async def stream_search_messages(
         ip, "search_ip", limits.ip_rate_max, limits.ip_rate_window_s
     ):
         raise RateLimited("search_ip", retry_after=limits.ip_rate_window_s)
-    # Validate the query now so a bad one is a clean 422, not a 200 that opens a
-    # stream and immediately errors.
+    # Validate the query/date-range now so a bad one is a clean 422, not a 200
+    # that opens a stream and immediately errors.
     search_service.build_tsquery(q, limits)
+    search_service.validate_date_range(start_at, end_at)
 
     lock_key = search_service.stream_lock_key(user_id)
     if not await redis_client.set(lock_key, "1", nx=True, ex=limits.stream_lock_ttl_seconds):
         raise SearchStreamBusyError("a search stream is already running for this user")
 
     return StreamingResponse(
-        search_service.stream_search(user_id=user_id, raw_query=q, lock_key=lock_key, limits=limits),
+        search_service.stream_search(
+            user_id=user_id, raw_query=q, lock_key=lock_key, limits=limits, start_at=start_at, end_at=end_at
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

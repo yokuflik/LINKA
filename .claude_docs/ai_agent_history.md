@@ -119,7 +119,7 @@ Decisions locked in before coding (user confirmed 2026-09-13):
 - Per-turn timeout 20s (`asyncio.wait_for`); tool round-trip cap 4 (matches
   the ADR's 1 initial + 4 round-trips = 5 calls/min ceiling).
 
-- `modules/agents/tools.py`: `TOOL_SCHEMAS` (Gemini function-declaration
+- `modules/agents/tools/`: `TOOL_SCHEMAS` (Gemini function-declaration
   JSON) + `execute_tool_call(session, agent, tool_name, arguments)`. Six
   tools, each dispatching to the existing facade
   (`modules.messaging.service.process_outgoing` for `send_message`/
@@ -230,7 +230,7 @@ frontend pieces referenced below.
     else calls `remove_agent_cache`. Called after every trigger-affecting
     write: `POST /agents/me` (create), `PATCH /agents/me`
     (`modules/agents/router.py`), and the `update_own_triggers` tool
-    (`modules/agents/tools.py::_tool_update_own_triggers`). Best-effort -
+    (`modules/agents/tools/execution.py::_tool_update_own_triggers`). Best-effort -
     wrapped in try/except, a Redis failure never fails the write it's
     attached to.
   - `remove_agent_cache(owner_user_id)`: SREM + DEL, used when an agent is
@@ -299,7 +299,7 @@ frontend pieces referenced below.
   membership from `Agent.triggers.on_schedule` (adds/updates live entries,
   removes stale ones) - called after every `on_schedule`-touching write:
   `PATCH /agents/me` (`modules/agents/router.py`) and the
-  `update_own_triggers` tool (`modules/agents/tools.py`). `next_daily_occurrence`
+  `update_own_triggers` tool (`modules/agents/tools/`). `next_daily_occurrence`
   does the recurring-entry next-fire math; `due_members`/`remove_due_member`/
   `reschedule_recurring` are the poll loop's read/write primitives.
 - `modules/agents/crud.py::_check_schedule_quota` enforces
@@ -333,7 +333,7 @@ frontend pieces referenced below.
     `_build_initial_contents` (pure chat history). A schedule-fired turn
     consumes the same hourly activation quota and daily time budget as a
     message-fired turn - no third quota dimension, per the ADR.
-- `modules/agents/tools.py`: seventh tool `search_messages(query, chat_id?)`
+- `modules/agents/tools/`: seventh tool `search_messages(query, chat_id?)`
   - thin wrapper over `modules.search.service.search_in_chat`/`search_global`
     (ADR 0040), scoped to the owner's own chats via the same
     participants-JOIN membership check those already do; `chat_id` also
@@ -408,7 +408,7 @@ frontend pieces referenced below.
   mime), `GET /me/knowledge` (list), `DELETE /me/knowledge/{document_id}`
   (204, 404 if not this agent's). A shared `_get_my_agent_or_404` helper was
   extracted (previously duplicated inline in `get_my_agent`/`patch_my_agent`).
-- Eighth tool `search_knowledge(query)` in `modules/agents/tools.py` - thin
+- Eighth tool `search_knowledge(query)` in `modules/agents/tools/` - thin
   wrapper over `crud.search_knowledge_chunks`, hard-scoped to `agent.id`
   (never crosses into another agent's documents), returned
   `{document_id, chunk_index, content}` per hit. **Removed from the tool
@@ -552,7 +552,7 @@ component/composable detail.
 3. ~~Tool registry + `execute_tool_call` + Gemini client, wired into
    `_run_turn`~~ DONE - see Step 4 above.
 4. ~~`max_messages_per_day` enforcement~~ DONE - `_check_daily_send_quota`
-   in `tools.py`, fixed-window via `infra.ratelimit`.
+   in `tools/`, fixed-window via `infra.ratelimit`.
 5. ~~Backend CRUD + config API~~ DONE - see Step 5 above. All ADR 0045
    implementation steps are complete; remaining items are the follow-ups
    listed above.

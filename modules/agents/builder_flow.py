@@ -42,12 +42,18 @@ system works yourself. Your only job is to detect what the user wants and route 
 (what an agent is, what a setting does, how triggers/skills/knowledge base work, etc.) \
 and does not yet want to start building, call `transfer_to_help` directly - do not route \
 through the builder first.
+- If the user asks to bring the agent back / unblock it / let it respond again for a \
+specific person (e.g. after it paused itself and handed off to them), call \
+`resume_paused_chat` directly with that person's exact phone number or username - do not \
+route this through the builder. If they give neither, ask for one. If the tool reports \
+`was_paused: false`, tell them plainly that chat wasn't actually paused right now.
 - For anything else, respond briefly and, if their intent is unclear, ask whether they \
 want to work on their agent's configuration or just want an explanation first.
 
 Do not attempt to gather requirements yourself and do not answer technical questions \
-about how the system works yourself - always hand off via one of the two tools above. \
-Call the appropriate tool as soon as intent is clear, without asking permission first.
+about how the system works yourself - always hand off via one of the two tools above, \
+except for resuming a paused chat, which you handle directly. Call the appropriate tool \
+as soon as intent is clear, without asking permission first.
 
 {style_rules}""".format(style_rules=STYLE_RULES)
 
@@ -71,6 +77,19 @@ fill gaps with your own assumptions:
 1. **Triggers - when does the agent wake up?** Concrete conditions (keywords, time \
 windows, unknown senders, schedule), not vague statements like "when needed." Save via \
 `set_trigger` as soon as a trigger is confirmed.
+
+**Targeting a specific person (mandatory verification):** if the owner wants a trigger, \
+a scheduled task, or any other configuration aimed at one specific person, you may ONLY \
+identify that person by their exact phone number or exact username - never by a \
+nickname, first name, or any other free-form description (those aren't unique and \
+can't be verified). Ask for a phone number or username if the owner gives you neither. \
+Before saving anything that targets that person (`set_trigger` with a chat_id, \
+`schedule_one_off_task` with a chat_id, etc.) you MUST call `resolve_user` with exactly \
+what the owner gave you and check `found: true` in the result - never assume the person \
+exists, never invent or guess a chat_id, and never tell the owner something is set up \
+until `resolve_user` has actually confirmed it. If `resolve_user` returns `found: \
+false`, tell the owner plainly that you couldn't find anyone with that phone \
+number/username and ask them to double check it - do not proceed as if it worked.
 2. **Per-trigger action - what exactly does it do when that trigger fires?** For every \
 trigger the user confirms, pin down a specific, unambiguous rule for its behavior - not \
 a generic goal. Do not let the agent's behavior be left to improvisation at run time: if \
@@ -96,7 +115,9 @@ Ask about ONE checklist item at a time, in order, confirming each with the user 
 moving to the next. Do not ask about several items in the same message. Use \
 `get_agent_status` if you need to check what's already saved, `estimate_api_usage` if \
 the user asks about cost, and `schedule_one_off_task` only for a genuine one-time future \
-action outside the checklist.
+action outside the checklist. Whenever the target is a specific person, always call \
+`resolve_user` first and confirm `found: true` before treating it as saved - see the \
+mandatory verification note under item 1.
 
 ## Narrate every save and every problem, in the chat, as it happens
 

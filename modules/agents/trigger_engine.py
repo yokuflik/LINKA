@@ -32,6 +32,7 @@ from modules.agents.crud import (
     get_agent_by_id,
     get_agent_by_owner_chat,
     get_enabled_agents_for_owners,
+    resume_most_recent_pause,
 )
 from modules.agents.invoke_queue import enqueue_invocation
 from modules.chats.crud.crud_chat import get_chat_by_id
@@ -164,6 +165,27 @@ async def _load_trigger_cfg(session: AsyncSession, owner_user_id: int) -> Option
     }
 
 
+def _active_paused_chat_ids(paused_chat_ids: list) -> set[int]:
+    """ADR 0054: paused_chat_ids entries are {"chat_id", "paused_at",
+    "expires_at"} objects - this pulls out just the chat_ids that haven't
+    lapsed yet (lazy expiry, checked here on read). Tolerates the pre-0054
+    flat-string shape by treating it as already expired."""
+    now = datetime.now(timezone.utc)
+    active = set()
+    for entry in paused_chat_ids:
+        if not isinstance(entry, dict):
+            continue
+        expires_at = entry.get("expires_at")
+        if not expires_at:
+            continue
+        try:
+            if datetime.fromisoformat(expires_at) > now:
+                active.add(int(entry["chat_id"]))
+        except ValueError:
+            continue
+    return active
+
+
 async def evaluate_triggers(message: Message) -> None:
     """Fire-and-forget: exceptions are logged, never raised, so a bug here
     can never take down message delivery. Skips system messages outright.
@@ -198,6 +220,14 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
     # checks as any other trigger match.
     owner_agent = await get_agent_by_owner_chat(session, message.chat_id)
     if owner_agent is not None and owner_agent.owner_user_id == message.sender_id:
+        # ADR 0054: any message from the owner in their own agent chat is
+        # presumed to be about whichever escalation is freshest, so it
+        # resumes just that one paused chat (not every paused chat at once)
+        # before the owner's own turn is evaluated below.
+        resumed_chat_id = await resume_most_recent_pause(session, owner_agent)
+        if resumed_chat_id is not None:
+            await sync_agent_cache(owner_agent)
+
         if owner_agent.is_enabled:
             allowed = await check_and_increment(
                 owner_agent.id,
@@ -227,8 +257,7 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
         # escalate) via the cache is skipped before even matching triggers -
         # cheap pre-filter, same idea as the blocked_read_chat_ids check
         # further down against the full row.
-        paused_chat_ids = {int(cid) for cid in cfg.get("paused_chat_ids", [])}
-        if message.chat_id in paused_chat_ids:
+        if message.chat_id in _active_paused_chat_ids(cfg.get("paused_chat_ids", [])):
             continue
 
         matched_unknown_sender = await _matches_unknown_sender(session, cfg["triggers"], message)
@@ -253,7 +282,7 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
         blocked_chat_ids = {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}
         if message.chat_id in blocked_chat_ids:
             continue
-        if message.chat_id in {int(cid) for cid in agent.paused_chat_ids}:
+        if message.chat_id in _active_paused_chat_ids(agent.paused_chat_ids):
             continue
 
         allowed = await check_and_increment(

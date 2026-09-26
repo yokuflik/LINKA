@@ -336,6 +336,18 @@ async def _run_turn(
                     )
                 except GeminiChatError:
                     logger.exception("agent_worker: Gemini call failed for agent %s", agent_id)
+                    # Same owner-facing UX as the outer asyncio.TimeoutError
+                    # handler in process_entry (frontend error UX rule: never
+                    # leave a turn silently dead with no notice) - a Gemini
+                    # HTTP failure/timeout here is otherwise indistinguishable
+                    # from the agent just not responding at all.
+                    await _post_config_reply(
+                        session,
+                        agent,
+                        agent.owner_agent_chat_id,
+                        "This took a bit too long to process. Please try again in a moment.",
+                    )
+                    await session.commit()
                     return
 
                 call = extract_function_call(content)

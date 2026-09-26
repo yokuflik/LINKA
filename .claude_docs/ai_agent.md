@@ -23,6 +23,17 @@ implementation log for decisions 5-7, and ADR 0053's full implementation log,
 both live in their respective ADR files, per the user's explicit request to
 keep implementation detail alongside the ADR once it's substantial.
 
+**`modules/agents/tools.py` split into a package (ADR 0056, 2026-09-25):**
+`modules/agents/tools/` now holds `common.py` (identity masking, quota
+check, call logging), `execution.py` (execution-mode tool handlers),
+`config_mode.py` (config-mode tool handlers), `builder_handoff.py` (ADR 0049
+handoff tools), `schemas.py` (`TOOL_SCHEMAS`/`CONFIG_TOOL_SCHEMAS`/
+`BUILDER_STATE_TOOL_SCHEMAS`), and `dispatch.py` (`is_config_mode`/
+`get_tool_schemas_for_chat`/`execute_tool_call` - the hard tool-mode gate).
+`__init__.py` is a thin facade; `invoke_worker.py`'s `from modules.agents.tools
+import execute_tool_call, get_tool_schemas_for_chat, is_config_mode` is
+unchanged. Pure structural split, no behaviour change.
+
 **Real peer-visible typing indicator DONE 2026-09-25** (no ADR - in-scope UX
 fix, not a new architectural decision): `invoke_worker.py::_run_turn` now
 starts a `_publish_peer_typing_loop` background task whenever a turn is
@@ -145,7 +156,7 @@ Implementation log for full detail:
   `owner_agent_chat_id` (decision 4). Writable via the `set_agent_persona`
   config tool (decision 6) - no direct PATCH support (deliberate: the model
   validates against the fixed catalog before storing).
-- Decision 4 (hard tool-mode gate): `modules/agents/tools.py::
+- Decision 4 (hard tool-mode gate): `modules/agents/tools/dispatch.py::
   is_config_mode(agent, chat_id)` is the sole gate decision point
   (`chat_id == agent.owner_agent_chat_id`; `chat_id=None` i.e. a
   schedule-fired turn is never config mode). `get_tool_schemas_for_chat`
@@ -158,7 +169,7 @@ Implementation log for full detail:
   and picks the system-prompt skill the same way (config-mode always
   `agent_builder`; otherwise the owner's `active_skill`), prepended to
   `Agent.system_prompt`.
-- Decision 5 (Agentic RAG + escalation): `modules/agents/tools.py`
+- Decision 5 (Agentic RAG + escalation): `modules/agents/tools/`
   execution registry has `get_knowledge_index()` (every chunk as
   `{document_id, filename, chunk_id, excerpt}`, capped by
   `AGENT_KNOWLEDGE_MAX_CHUNKS_PER_AGENT`), `fetch_chunk(chunk_id)` (full
@@ -180,7 +191,7 @@ Implementation log for full detail:
   `POST /agents/me/resume-chat/{chat_id}` - human-only, no tool lets the
   agent un-pause itself. `get_agent_status` (decision 6) and `AgentOut`
   both expose `active_skill`/`paused_chat_ids`.
-- Decision 6 (config-mode tools): `_CONFIG_TOOL_HANDLERS` in `tools.py`
+- Decision 6 (config-mode tools): `_CONFIG_TOOL_HANDLERS` in `tools/`
   holds all six - `set_agent_persona` (validates against
   `personas.STORABLE_SKILLS`), `update_agent_rules`, `set_trigger` (same
   shape/merge as the execution-mode `update_own_triggers`, gated to
@@ -305,7 +316,7 @@ import-smoke-tested only.
 
 **Supervisor can hand off to Help directly (2026-09-25, no ADR - prompt +
 tool-set fix)**: `modules/agents/builder_flow.py::SUPERVISOR_PROMPT` +
-`modules/agents/tools.py` now give the `supervisor` builder-state its own
+`modules/agents/tools/` now give the `supervisor` builder-state its own
 `transfer_to_help` tool (alongside the existing `transfer_to_builder`),
 instead of forcing every "what is this / how does this work" question
 through the Builder first. Requested by the user so a brand-new owner who
@@ -366,7 +377,7 @@ it had ignored what they'd just said. Fixed by moving the
 prompt` derivation inside the round-trip loop (re-read fresh every
 iteration) - a handoff now takes effect on the very next Gemini call within
 the same turn. Also strengthened `_tool_transfer_to_builder`/
-`_tool_transfer_to_help`'s (`modules/agents/tools.py`) return payload with an
+`_tool_transfer_to_help`'s (`modules/agents/tools/`) return payload with an
 explicit `instruction` field telling the model to address the user's
 preceding message directly instead of just acknowledging the transfer - the
 conversation history (including that message) was already present in
@@ -426,7 +437,7 @@ conversation had reached a close (e.g. a sale), but a customer explicitly
 asking for a human/representative mid-conversation was frequently ignored -
 the model would just keep replying itself instead of calling
 `pause_and_escalate`. Root cause: neither the tool's Gemini function-schema
-`description` (`modules/agents/tools.py`) nor any of the four storable
+`description` (`modules/agents/tools/`) nor any of the four storable
 persona prompts (`modules/agents/personas.py::PERSONA_SYSTEM_PROMPTS`) ever
 named "the other party explicitly asks for a human" as a case that must
 trigger the tool - the description only said "stuck, unsure, or asked to do
@@ -459,7 +470,7 @@ and `chat_id` (search only) to the model as plain strings - the same class
 of leak the CLAUDE.md frontend rule (`user_id` is strictly for backend
 logic, never shown to an end user) already forbids in the PoC UI, just
 reached here through the agent's own text output instead of a Vue
-component. New `modules/agents/tools.py::_resolve_sender_labels` (batch
+component. New `modules/agents/tools/common.py::_resolve_sender_labels` (batch
 `modules.users.crud.get_users_by_ids`, new) resolves a list of sender ids to
 `{name, phone_number}` in one query (name = `display_name || username ||
 phone_number`, ADR 0024's convention) - `read_history` now returns
@@ -500,7 +511,7 @@ teaches the model to use in its own replies):
 The agent has paused here until you resume it.
 ```
 
-New `_describe_escalation_counterpart` (`tools.py`) resolves who the paused
+New `_describe_escalation_counterpart` (`tools/`) resolves who the paused
 chat is with: for a 1:1, the other participant's `display_name || username`
 plus their raw `phone_number` in parens (falls back to phone alone if no
 name is set) via `get_chat_participants_with_users`; for a group, the group
@@ -587,7 +598,7 @@ agent. Fixed two things:
   schema `description` and `CHAT_STYLE_RULES` (`personas.py`) now both
   instruct the model to write the *entire* owner notification as a natural
   sentence or two, in whichever language it's been conversing with the owner
-  in - no fixed English wrapper words. `_tool_pause_and_escalate` (`tools.py`)
+  in - no fixed English wrapper words. `_tool_pause_and_escalate` (`tools/`)
   now posts `f"🤝 {reason}\n👤 *{counterpart}*"` - the emoji, 👤 line, and
   *bold* wrapping around the resolved counterpart name/phone (server-side
   data the model doesn't have) are the only fixed parts; everything else is
@@ -614,6 +625,35 @@ agent. Fixed two things:
 No schema/architecture change. No new tests (same gap as every prior
 agents-module step) - import-smoke-tested only.
 
+**New `resolve_user` config tool - mandatory phone/username verification before
+targeting a person (2026-09-25, no ADR - real gap fix, requested by the
+user)**: previously nothing stopped the Builder from confirming a trigger or
+scheduled task "set up" for a person the owner named, without ever checking
+that person actually exists - `set_trigger`/`schedule_one_off_task` only ever
+took a bare `chat_id` the model would have to invent from thin air, since no
+tool could turn "wake up when 0501234567 messages" into a real chat_id.
+`modules/agents/tools/config_mode.py::_tool_resolve_user` (new `_CONFIG_TOOL_HANDLERS`
+entry, so it's picked up automatically by the Builder's dispatch tables via
+the existing `**_CONFIG_TOOL_HANDLERS`/`*CONFIG_TOOL_SCHEMAS` spread - no new
+per-state wiring needed) takes exactly one of `phone_number`/`username`
+(rejects both-or-neither via `ToolDeniedError`) and looks the user up via the
+existing `modules.users.crud.get_user_by_phone`/`get_user_by_username`
+(ADR 0017's exact-match-only lookup - never a display_name/nickname, which
+isn't unique or verifiable); on a hit it resolves/creates the 1:1 chat via
+`chat_service.get_or_create_private_chat` and returns
+`{found: true, chat_id, name, phone_number, username}`, on a miss
+`{found: false}` (not an error - a routine outcome the model must relay to
+the owner). `BUILDER_PROMPT` (`modules/agents/builder_flow.py`) now hard-requires
+this call-and-check before saving anything that targets a named person
+(under checklist item 1, plus a reminder in the "narrate every save" section)
+- if `resolve_user` returns `found: false`, the Builder must tell the owner
+plainly instead of proceeding as if it worked. `HELP_PROMPT` confirmed not to
+need a matching update (too generic to describe targeting mechanics) per the
+standing obligation logged above. Execution-mode tools untouched - this is a
+config-mode-only (Builder-only) concern, since only the config chat sets up
+triggers/schedules. No schema/architecture change, no new tests (same gap as
+every prior agents-module step) - import-smoke-tested only.
+
 ## Current tool registry
 
 **Execution mode** (any chat except `owner_agent_chat_id`, or a
@@ -626,12 +666,12 @@ schedule-fired turn): `send_message`, `reply_message`, `create_chat`,
 
 | `builder_state` | Persona prompt | Tools |
 |---|---|---|
-| `supervisor` (default) | routes only | `transfer_to_builder`, `transfer_to_help` |
-| `builder_agent` | interviews the owner | the 6 ADR 0047 config tools (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`, `schedule_one_off_task`) + `transfer_to_help` + `finish_building_agent` |
+| `supervisor` (default) | routes only | `transfer_to_builder`, `transfer_to_help`, `resume_paused_chat` (ADR 0055) |
+| `builder_agent` | interviews the owner | the 6 ADR 0047 config tools (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`, `schedule_one_off_task`) + `resolve_user` + `resume_paused_chat` (ADR 0055) + `transfer_to_help` + `finish_building_agent` |
 | `help_agent` | explains the system | `transfer_to_builder` |
 
 Selection is purely `chat_id`-then-`builder_state`-driven
-(`modules/agents/tools.py::is_config_mode` + `BuilderState(agent.builder_state)`)
+(`modules/agents/tools/dispatch.py::is_config_mode` + `BuilderState(agent.builder_state)`)
 - never `active_skill`, `system_prompt`, or anything the model says about
 itself. See ADR 0047 decision 4 (outer gate) and ADR 0049 (inner sub-states).
 
@@ -649,7 +689,7 @@ class Agent(Base):
     is_enabled: bool            # kill switch, default False (ADR 0047 decision 2), checked at trigger-eval AND worker-dequeue time
     encrypted_gemini_api_key: bytes | None  # BYOK (ADR 0046 decision 5), Fernet ciphertext, NULL = shared key
     active_skill: str           # persona catalog key (ADR 0047 decision 3), default "one_off_executor"
-    paused_chat_ids: dict       # JSONB list, default [] (ADR 0047 decision 5) - escalated chats, human-resume only
+    paused_chat_ids: dict       # JSONB list, default [] (ADR 0047 decision 5) - escalated chats; ADR 0054: list of {chat_id, paused_at, expires_at}, auto-expires after AGENT_ESCALATION_PAUSE_HOURS (default 24) or on human resume/owner-chat reply
     builder_state: str          # "supervisor"|"builder_agent"|"help_agent" (ADR 0049), default "supervisor" - only meaningful in the config chat
     created_at, updated_at
 
@@ -734,9 +774,21 @@ class AgentKnowledgeChunk(Base):
   result), so the frontend's "always send the full current map" convention
   still deletes entries correctly.
 
-`Agent.paused_chat_ids` (ADR 0047 decision 5): list of chat ids the agent
+`Agent.paused_chat_ids` (ADR 0047 decision 5, shape updated by ADR 0054):
+list of `{chat_id, paused_at, expires_at}` objects for chats the agent
 escalated via `pause_and_escalate` - skipped entirely at trigger-evaluation
-time until a human calls `POST /agents/me/resume-chat/{chat_id}`.
+time (`trigger_engine._active_paused_chat_ids`, lazy expiry checked on
+read) until one of three things happens: `expires_at` lapses
+(`AGENT_ESCALATION_PAUSE_HOURS`, default 24, env-overridable), a human
+calls `POST /agents/me/resume-chat/{chat_id}`, or the owner sends any
+message in their own agent chat (`owner_agent_chat_id`) - which resumes
+only the single most-recently-escalated paused chat
+(`crud.resume_most_recent_pause`), not every paused chat at once, or (ADR
+0055) the owner explicitly names a person via the `resume_paused_chat`
+config tool (Supervisor + Builder states), which resolves phone_number/
+username through the same `resolve_user` contract and un-pauses just that
+chat via `crud.resume_agent_chat` - additive to the most-recent-pause
+heuristic, for when more than one chat is paused concurrently.
 
 ## Rate limits / budgets (all via `infra/ratelimit`, ADR 0012)
 

@@ -49,8 +49,15 @@ async def _get_my_agent_or_404(session: AsyncSession, user_id: int) -> Agent:
 
 def _agent_out(agent: Agent) -> AgentOut:
     """AgentOut.has_custom_key is derived, not a DB column - never echoes the
-    key itself (ADR 0046 decision 5)."""
-    out = AgentOut.model_validate(agent)
+    key itself (ADR 0046 decision 5). paused_chat_ids on the row is now a
+    list of {chat_id, paused_at, expires_at} objects (ADR 0054); the API
+    still exposes a plain list of active chat_ids, so it's projected down
+    before validation."""
+    from modules.agents.crud import _active_pauses
+
+    fields = {name: getattr(agent, name) for name in AgentOut.model_fields if hasattr(agent, name)}
+    fields["paused_chat_ids"] = [entry["chat_id"] for entry in _active_pauses(agent)]
+    out = AgentOut.model_validate(fields)
     out.has_custom_key = agent.encrypted_gemini_api_key is not None
     return out
 

@@ -100,10 +100,11 @@ const AgentChatView = {
     this.scrollToBottom();
   },
   methods: {
-    // Agent replies (type 7) render like "theirs"; everything else (the
-    // owner's own sends) renders like "mine" - same rule AgentChatView has
-    // always used, kept here for the tick/side logic below.
-    isMine(m) { return m.type !== 7; },
+    // Agent replies (type 7) and system messages (type 6, e.g. the
+    // pause_and_escalate handoff notice, sender_id=null) render like
+    // "theirs"; only the owner's own sends (any other type, always
+    // sender_id=owner) render like "mine".
+    isMine(m) { return m.type !== 7 && m.type !== 6; },
     // Global function from composables/messageFormat.js (shared with
     // MessageList.js): WhatsApp-style *bold* + "- " bullet-list rendering.
     formatMessageContent,

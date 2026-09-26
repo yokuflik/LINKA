@@ -135,10 +135,14 @@ class Agent(Base):
 
     # Dynamic runtime state written by the agent itself via pause_and_escalate
     # (ADR 0047 decision 5) - NOT part of restrictions (owner-authored hard
-    # constraints) or triggers (wake conditions). A chat_id in this list is
-    # skipped entirely at trigger-evaluation time until a human clears it via
-    # POST /agents/me/resume-chat/{chat_id} - un-pausing is deliberately not a
-    # tool the agent can call on itself.
+    # constraints) or triggers (wake conditions). List of
+    # {"chat_id": "<id>", "paused_at": "<iso>", "expires_at": "<iso>"}
+    # objects (ADR 0054). A chat_id here is skipped at trigger-evaluation
+    # time until: a human clears it via POST /agents/me/resume-chat/{chat_id}
+    # (un-pausing is deliberately not a tool the agent can call on itself),
+    # the owner replies in their own agent chat (resumes only the
+    # most-recently-escalated entry), or expires_at lapses (lazy expiry,
+    # checked on read - AGENT_ESCALATION_PAUSE_HOURS after paused_at).
     paused_chat_ids = Column(
         JSONB,
         nullable=False,

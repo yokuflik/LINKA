@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Sequence
 
 from sqlalchemy import func, select
@@ -228,14 +228,48 @@ async def get_enabled_agents_for_owners(session: AsyncSession, owner_user_ids: S
     return result.scalars().all()
 
 
+def _active_pauses(agent: Agent) -> list[dict]:
+    """ADR 0054: filters agent.paused_chat_ids down to entries that haven't
+    lapsed yet, tolerating the pre-0054 flat-string shape (treated as already
+    expired - no backfill needed, they just get dropped on first read)."""
+    now = datetime.now(timezone.utc)
+    active = []
+    for entry in agent.paused_chat_ids:
+        if not isinstance(entry, dict):
+            continue
+        expires_at = entry.get("expires_at")
+        if not expires_at:
+            continue
+        try:
+            if datetime.fromisoformat(expires_at) > now:
+                active.append(entry)
+        except ValueError:
+            continue
+    return active
+
+
 async def pause_agent_chat(session: AsyncSession, agent: Agent, chat_id: int) -> Agent:
-    """ADR 0047 decision 5: pause_and_escalate's write path - adds chat_id to
-    paused_chat_ids if not already there. Idempotent (a second escalation on
-    an already-paused chat is a no-op, not an error)."""
-    current = {int(cid) for cid in agent.paused_chat_ids}
-    if chat_id not in current:
-        agent.paused_chat_ids = [*agent.paused_chat_ids, str(chat_id)]
-        await session.flush()
+    """ADR 0047 decision 5 / ADR 0054: pause_and_escalate's write path - adds
+    chat_id to paused_chat_ids (stamped with paused_at/expires_at) if not
+    already actively paused. Idempotent (a second escalation on an
+    already-paused, non-expired chat is a no-op, not an error) - also drops
+    any other already-lapsed entries while it's here."""
+    active = _active_pauses(agent)
+    if any(int(entry["chat_id"]) == chat_id for entry in active):
+        agent.paused_chat_ids = active
+        return agent
+
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=settings.AGENT_ESCALATION_PAUSE_HOURS)
+    agent.paused_chat_ids = [
+        *active,
+        {
+            "chat_id": str(chat_id),
+            "paused_at": now.isoformat(),
+            "expires_at": expires_at.isoformat(),
+        },
+    ]
+    await session.flush()
     return agent
 
 
@@ -243,9 +277,32 @@ async def resume_agent_chat(session: AsyncSession, agent: Agent, chat_id: int) -
     """Human-only un-pause (POST /agents/me/resume-chat/{chat_id}) - the
     agent itself has no tool that can call this (ADR 0047 decision 5:
     un-pausing is deliberately not something an agent can do to itself)."""
-    agent.paused_chat_ids = [cid for cid in agent.paused_chat_ids if int(cid) != chat_id]
+    agent.paused_chat_ids = [
+        entry for entry in _active_pauses(agent) if int(entry["chat_id"]) != chat_id
+    ]
     await session.flush()
     return agent
+
+
+def is_chat_actively_paused(agent: Agent, chat_id: int) -> bool:
+    """ADR 0055: cheap check used by the resume_paused_chat tool to report a
+    plain "not currently paused" outcome instead of silently no-op'ing."""
+    return any(int(entry["chat_id"]) == chat_id for entry in _active_pauses(agent))
+
+
+async def resume_most_recent_pause(session: AsyncSession, agent: Agent) -> Optional[int]:
+    """ADR 0054: an owner message in their own agent chat is presumed to be
+    about whichever escalation is freshest, so it resumes only the
+    most-recently-escalated (max paused_at) active pause - not every paused
+    chat at once. Returns the resumed chat_id, or None if nothing was
+    actively paused."""
+    active = _active_pauses(agent)
+    if not active:
+        return None
+    most_recent = max(active, key=lambda entry: entry["paused_at"])
+    agent.paused_chat_ids = [e for e in active if e is not most_recent]
+    await session.flush()
+    return int(most_recent["chat_id"])
 
 
 async def auto_register_unknown_sender_chat(session: AsyncSession, agent: Agent, chat_id: int) -> Agent:

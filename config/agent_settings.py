@@ -90,6 +90,14 @@ AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS = int(
 # against this cap and are never evicted by it.
 AGENT_MAX_AUTO_CHATS = int(os.environ.get("AGENT_MAX_AUTO_CHATS", "200"))
 
+# ADR 0054: pause_and_escalate freezes a chat for at most this many hours
+# before it auto-resumes on its own (lazy expiry, checked on read in the
+# trigger engine - no cron/sweep). A human resume via
+# POST /agents/me/resume-chat/{id}, or the owner replying in their own agent
+# chat (which resumes only the most-recently-escalated paused chat), still
+# lifts the pause earlier.
+AGENT_ESCALATION_PAUSE_HOURS = int(os.environ.get("AGENT_ESCALATION_PAUSE_HOURS", "24"))
+
 # --- on_schedule trigger (ADR 0046, decision 3) ---
 # Cap on how many schedule entries one agent can hold - enforced at
 # PATCH /agents/me and in the update_own_triggers tool (a self-editing agent
@@ -213,6 +221,7 @@ __all__ = [
     "AGENT_UNKNOWN_SENDER_QUOTA_PER_DAY",
     "AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS",
     "AGENT_MAX_AUTO_CHATS",
+    "AGENT_ESCALATION_PAUSE_HOURS",
     "AGENT_MAX_SCHEDULE_ENTRIES",
     "AGENT_HISTORY_TRANSCRIPT_MAX_CHARS",
     "AGENT_SCHEDULE_DUE_ZSET_KEY",

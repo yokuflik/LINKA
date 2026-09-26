@@ -50,7 +50,7 @@ real pre-existing bug, not limited to the greeting. Fixed by giving
 agent-authored messages a distinct `Message.type` -
 `AGENT_REPLY_MESSAGE_TYPE = 7` (`modules/messaging/common.py`, no migration,
 same pattern as `SYSTEM_MESSAGE_TYPE = 6`) - set by
-`_tool_send_message`/`_tool_reply_message` (`modules/agents/tools.py`) and
+`_tool_send_message`/`_tool_reply_message` (`modules/agents/tools/`) and
 by the greeting insert above. `AgentChatView.js` now keys off `m.type === 7`
 (left/gray) vs everything else (right/teal). `MessageList.js` (the main chat
 pane) has no special case for type 7 - it falls through to plain-text

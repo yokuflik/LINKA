@@ -12,6 +12,9 @@ const AgentChatView = {
   props: {
     currentUser: { type: Object, required: true },
     messages: { type: Array, required: true },
+    // Set briefly by useAgentConfig.js's jumpToAgentMessage (a search hit) to
+    // flash-highlight one bubble, same amber treatment as MessageList.js.
+    highlightedId: { default: null },
     loading: { type: Boolean, default: false },
     hasMore: { type: Boolean, default: false },
     loadingOlder: { type: Boolean, default: false },
@@ -37,6 +40,18 @@ const AgentChatView = {
   },
   beforeUnmount() {
     if (this._tickTimer) clearInterval(this._tickTimer);
+  },
+  watch: {
+    // A search jump can land on a message already scrolled off-screen (e.g.
+    // an around-window replace) - scroll it into view once the DOM updates.
+    highlightedId(id) {
+      if (!id) return;
+      this.pinnedToBottom = false;
+      this.$nextTick(() => {
+        const el = this.$refs.scrollEl && this.$refs.scrollEl.querySelector('[data-msg-id="' + id + '"]');
+        if (el) el.scrollIntoView({ block: 'center' });
+      });
+    },
   },
   computed: {
     // Whichever blocked window resets furthest in the future is the one
@@ -201,7 +216,7 @@ const AgentChatView = {
             <span class="inline-block px-3 py-1 rounded-full text-[11px] font-medium bg-slate-200 text-slate-600 shadow-sm whitespace-nowrap">{{ row.label }}</span>
           </div>
           <template v-else>
-          <div :class="row.groupEnd ? 'mb-2' : 'mb-0.5'">
+          <div :data-msg-id="row.m.id" :class="[row.groupEnd ? 'mb-2' : 'mb-0.5', highlightedId && row.m.id === highlightedId ? 'bg-amber-200/70 rounded-2xl' : '']">
             <div class="max-w-md w-fit flex items-end gap-2 rounded-2xl"
                  :class="isMine(row.m) ? 'ml-auto text-right' : ''">
               <div class="min-w-0">

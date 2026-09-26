@@ -14,6 +14,7 @@ const AgentDrawer = {
     chats: { type: Array, required: true },
     chatDisplayName: { type: Function, required: true },
     messages: { type: Array, required: true },
+    highlightedId: { default: null },
     messagesLoading: { type: Boolean, default: false },
     messagesHasMore: { type: Boolean, default: false },
     messagesLoadingOlder: { type: Boolean, default: false },
@@ -35,7 +36,7 @@ const AgentDrawer = {
     resetBusy: { type: Boolean, default: false },
   },
   emits: [
-    'close', 'activate', 'toggle-enabled', 'open-settings', 'back-to-chat', 'send-chat-message', 'load-older-messages', 'pick-pdf',
+    'close', 'activate', 'toggle-enabled', 'open-settings', 'open-search', 'back-to-chat', 'send-chat-message', 'load-older-messages', 'pick-pdf',
     'prompt-input', 'save-prompt', 'cancel-prompt',
     'set-restriction', 'max-messages-input', 'save-hard-text', 'cancel-hard-text',
     'add-chat-trigger', 'remove-chat-trigger', 'set-time-window', 'set-any-message',
@@ -75,13 +76,32 @@ const AgentDrawer = {
                 <svg viewBox="0 0 24 24" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2"
                      stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
               </button>
+              <!-- Mobile-only: return to the chat list (same affordance as a
+                   normal chat's ChatHeader back arrow). Desktop keeps the
+                   sidebar visible alongside the drawer, so no button there. -->
+              <button v-if="view === 'chat'" @click="$emit('close')" class="md:hidden -ms-1 p-1 text-slate-500 hover:text-slate-800" aria-label="Back">
+                <svg viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+              </button>
               <span class="text-sm font-semibold">{{ view === 'settings' ? 'Agent settings' : 'Your AI Agent' }}</span>
             </div>
-            <div class="flex items-center gap-1">
+            <div class="flex items-center gap-3">
               <!-- Token usage (ADR 0059) - ring fill = 5h window %; the
                    popover it opens is the ONLY place either usage window is
                    shown, per explicit user requirement. -->
               <UsageProgressBar :usage="usage" />
+              <!-- Search within the agent's own chat - same modal/behavior as
+                   a normal chat's ChatHeader search button. Chat view only,
+                   same scoping as the settings-gear icon below. -->
+              <button v-if="view === 'chat'" @click="$emit('open-search')"
+                      class="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-700 shrink-0"
+                      title="Search in this chat">
+                <svg viewBox="0 0 24 24" class="w-4.5 h-4.5" fill="none" stroke="currentColor" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="m20 20-3.2-3.2" />
+                </svg>
+              </button>
               <!-- Reset (ADR 0050) - sits right next to the enable/disable
                    toggle, visible in both the chat and settings views. -->
               <button @click="$emit('reset-agent')" :disabled="resetBusy"
@@ -108,13 +128,12 @@ const AgentDrawer = {
                   <line x1="4" y1="18" x2="20" y2="18"/><circle cx="11" cy="18" r="2" fill="currentColor" stroke="none"/>
                 </svg>
               </button>
-              <button @click="$emit('close')" class="text-slate-400 hover:text-slate-600 text-lg leading-none px-1">&times;</button>
             </div>
           </div>
 
           <div class="flex-1 min-h-0" :class="!form.is_enabled ? 'opacity-50 pointer-events-none' : ''">
             <AgentChatView v-if="view === 'chat'"
-                           :currentUser="currentUser" :messages="messages" :loading="messagesLoading"
+                           :currentUser="currentUser" :messages="messages" :highlightedId="highlightedId" :loading="messagesLoading"
                            :hasMore="messagesHasMore" :loadingOlder="messagesLoadingOlder"
                            :thinkingStatus="thinkingStatus" :usageBlocked="usageBlocked" :usage="usage"
                            @send="(text) => $emit('send-chat-message', text)"

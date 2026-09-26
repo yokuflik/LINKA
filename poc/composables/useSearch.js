@@ -213,8 +213,17 @@ function useSearch(ctx) {
   }
 
   // Tapping a result: close the search modal and open its chat at that message.
+  // A hit inside the owner's own agent chat (ctx.myAgent.owner_agent_chat_id)
+  // is kept out of LinkaChatStore (see ai_agent_frontend.md), so it can't go
+  // through the normal selectChat-based jumpToMessage - reopen the agent
+  // drawer and jump within its own local message list instead.
   async function openSearchResult(result) {
     closeSearchModal();
+    if (ctx.myAgent.value && result.chat_id === ctx.myAgent.value.owner_agent_chat_id) {
+      await ctx.openAgentDrawer();
+      await ctx.jumpToAgentMessage(result.chat_id, result.id);
+      return;
+    }
     await ctx.jumpToMessage(result.chat_id, result.id);
   }
 

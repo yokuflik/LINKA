@@ -222,11 +222,11 @@ AGENT_ESTIMATED_SECONDS_PER_TURN = int(os.environ.get("AGENT_ESTIMATED_SECONDS_P
 # adds exactly 1 and can't be reused for a weighted counter). Independent of
 # AGENT_GEMINI_CALLS_PER_MINUTE/AGENT_DAILY_ACTIVE_SECONDS_BUDGET - those
 # gate call count/wall-clock time, this gates token volume.
-AGENT_TOKEN_BUDGET_5H = int(os.environ.get("AGENT_TOKEN_BUDGET_5H", "500000"))
+AGENT_TOKEN_BUDGET_5H = int(os.environ.get("AGENT_TOKEN_BUDGET_5H", "750000"))
 AGENT_TOKEN_BUDGET_5H_WINDOW_SECONDS = int(
     os.environ.get("AGENT_TOKEN_BUDGET_5H_WINDOW_SECONDS", str(5 * 60 * 60))
 )
-AGENT_TOKEN_BUDGET_7D = int(os.environ.get("AGENT_TOKEN_BUDGET_7D", "3000000"))
+AGENT_TOKEN_BUDGET_7D = int(os.environ.get("AGENT_TOKEN_BUDGET_7D", "4000000"))
 AGENT_TOKEN_BUDGET_7D_WINDOW_SECONDS = int(
     os.environ.get("AGENT_TOKEN_BUDGET_7D_WINDOW_SECONDS", str(7 * 24 * 60 * 60))
 )

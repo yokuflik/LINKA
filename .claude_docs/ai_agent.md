@@ -55,8 +55,14 @@ schedule-fired turn): `send_message`, `reply_message`, `create_chat`,
 | `builder_state` | Persona prompt | Tools |
 |---|---|---|
 | `supervisor` (default) | routes only | `transfer_to_builder`, `transfer_to_help`, `resume_paused_chat` (ADR 0055) |
-| `builder_agent` | interviews the owner | the 6 ADR 0047 config tools (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`, `schedule_one_off_task`) + `resolve_user` + `resume_paused_chat` (ADR 0055) + `get_capacity_status` (ADR 0057) + `transfer_to_help` + `finish_building_agent` |
+| `builder_agent` | interviews the owner | the 6 ADR 0047 config tools (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`, `schedule_one_off_task`) + `resolve_user` + `resume_paused_chat` (ADR 0055) + `transfer_to_help` + `finish_building_agent` |
 | `help_agent` | explains the system | `transfer_to_builder` |
+
+`get_capacity_status` (ADR 0057) is deliberately excluded from the Builder's
+tool set (`schemas.py::_BUILDER_TOOL_SCHEMAS` filters it out of
+`CONFIG_TOOL_SCHEMAS`) and no longer called during `finish_building_agent` -
+removed by user request 2026-09-26; it remains defined/dispatchable for other
+config-mode contexts, just not offered to the interview flow.
 
 Selection is purely `chat_id`-then-`builder_state`-driven
 (`modules/agents/tools/dispatch.py::is_config_mode` + `BuilderState(agent.builder_state)`)
@@ -169,18 +175,34 @@ class AgentKnowledgeChunk(Base):
 list of `{chat_id, paused_at, expires_at}` objects for chats the agent
 escalated via `pause_and_escalate` - skipped entirely at trigger-evaluation
 time (`trigger_engine._active_paused_chat_ids`, lazy expiry checked on
-read) until one of three things happens: `expires_at` lapses
-(`AGENT_ESCALATION_PAUSE_HOURS`, default 24, env-overridable), a human
-calls `POST /agents/me/resume-chat/{chat_id}`, or the owner sends any
-message in their own agent chat (`owner_agent_chat_id`) - which resumes
-only the single most-recently-escalated paused chat
-(`crud.resume_most_recent_pause`), not every paused chat at once, or (ADR
-0055) the owner explicitly names a person via the `resume_paused_chat`
-config tool (Supervisor + Builder states), which resolves phone_number/
-username through the same `resolve_user` contract and un-pauses just that
-chat via `crud.resume_agent_chat` - additive to the most-recent-pause
-heuristic, for when more than one chat is paused concurrently. Full
-escalation/notice detail: `ai_agent_judge_and_escalation.md`.
+read) until one of two things happens: `expires_at` lapses
+(`AGENT_ESCALATION_PAUSE_HOURS`, default 24, env-overridable), or a human
+calls `POST /agents/me/resume-chat/{chat_id}`. **2026-09-26 (no ADR,
+behavior fix):** the original ADR 0054 "any owner message in their own
+agent chat resumes the most-recently-escalated pause" shortcut
+(`crud.resume_most_recent_pause`) was removed from `trigger_engine.py` - it
+fired on message content indiscriminately, so a plain unrelated message to
+the agent silently un-paused an escalation the owner had no intention of
+resuming. `resume_most_recent_pause` itself was deleted from `crud.py` as
+dead code once its only caller was removed. Resuming a paused chat is now
+only ever explicit: (ADR 0055) the owner names a person via the
+`resume_paused_chat` config tool (Supervisor + Builder states), which
+resolves phone_number/username through the `resolve_user` contract and
+un-pauses just that chat via `crud.resume_agent_chat`. Full escalation/
+notice detail: `ai_agent_judge_and_escalation.md`.
+
+**No-code-execution rule (2026-09-26, no ADR, prompt-only)**: added a fixed
+"never run code" clause to the shared style blocks both config-mode
+(`builder_flow.py::STYLE_RULES`, inherited by Supervisor/Builder/Help) and
+execution-mode (`personas.py::CHAT_STYLE_RULES`, inherited by every
+storable skill) prompts inherit - the agent must refuse to run/execute/
+evaluate any code, script, shell command, or similar sent by anyone in a
+message, including its own owner, regardless of framing. This is a soft,
+system-prompt-level instruction only (like `system_prompt` itself, not a
+security boundary enforced in `execute_tool_call`) - the agent has no
+code-execution tool in the registry to begin with, so this is defense in
+depth against the model being talked into simulating/roleplaying execution,
+not a fix for an actual capability.
 
 ## Rate limits / budgets (all via `infra/ratelimit`, ADR 0012)
 

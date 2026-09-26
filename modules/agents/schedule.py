@@ -44,6 +44,14 @@ async def sync_schedule_zset(agent: Agent) -> None:
     failure here must never fail the write it's attached to."""
     try:
         entries = agent.triggers.get("on_schedule", []) or []
+        # Defense in depth: _check_schedule_quota (modules/agents/crud.py)
+        # already rejects a patch that would push on_schedule past
+        # AGENT_MAX_SCHEDULE_ENTRIES before it's ever persisted, but this
+        # sync runs against whatever is already on the row - never trust
+        # that to stay within the cap and ZADD an unbounded number of
+        # entries into the shared ZSET. Only the first N (row order) become
+        # live members; the rest are silently excluded from due-firing.
+        entries = entries[: settings.AGENT_MAX_SCHEDULE_ENTRIES]
         live_members = set()
         async with redis_client.pipeline(transaction=True) as pipe:
             for entry in entries:

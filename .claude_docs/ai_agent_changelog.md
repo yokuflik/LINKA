@@ -443,3 +443,29 @@ now tells the model never to mention or invent any internal id to anyone.
 target, never rendered as text) and `title`/`body` never contained a raw id.
 No schema/architecture change. No new tests (same gap as every prior
 agents-module step) - import-smoke-tested only.
+
+**Trigger Rule Engine: missing commits + ADR 0054 auto-resume removed
+(2026-09-26, found via new test coverage):** the first real test suite for
+`trigger_engine.py` (`tests/modules/agents/test_trigger_engine.py`, 29
+tests, real Postgres/Redis, no LLM mocking needed since this engine never
+calls Gemini) surfaced that `evaluate_triggers`'s `session_scope()` block
+never called `session.commit()` on the happy path - unlike every other
+`session_scope()`/`get_db()` call site in the codebase. Two writes were
+silently rolled back in production: (1) ADR 0051's
+`auto_register_unknown_sender_chat` (the chat never actually got folded
+into `on_specific_chats` after `on_unknown_sender` fired), and (2) the old
+ADR 0054 `resume_most_recent_pause` call. Fixed by adding explicit
+`await session.commit()` after each of those writes and after the
+activation-quota-exceeded notice path in `_evaluate_triggers` (the
+quota-notice message itself happened to survive before the fix only
+because `send_system_message`'s `create_message` commits internally - that
+was incidental, not a real fix). Separately, testing this surfaced that the
+ADR 0054 auto-resume was itself the wrong behavior: it resumed the
+most-recently-escalated paused chat on **any** owner message in their own
+agent chat, regardless of content - so an unrelated message to the agent
+silently un-paused an escalation the owner never meant to touch. Removed
+that call entirely from `trigger_engine.py` and deleted
+`crud.resume_most_recent_pause` (dead code once its only caller was gone).
+Resuming a paused chat is now exclusively explicit via the `resume_paused_chat`
+config tool (ADR 0055). See `ai_agent.md`'s `paused_chat_ids` section for
+the corrected behavior description. All 466 tests pass after the change.

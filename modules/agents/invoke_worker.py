@@ -398,6 +398,20 @@ async def _run_turn(
                 content = result.content
                 if result.usage is not None:
                     await record_tokens(agent_id, result.usage.total_tokens)
+                    # Notify as soon as a window is exhausted, regardless of
+                    # which chat this call was serving or whether this
+                    # particular call itself got truncated - a call that
+                    # tips used>=limit but still finishes with a normal
+                    # STOP (rather than MAX_TOKENS) previously left the
+                    # owner with no notice at all (2026-09-26, user-
+                    # reported: ran out mid-conversation with someone else
+                    # and got nothing). Same once-per-exhaustion cooldown as
+                    # the MAX_TOKENS path below, so this and that path never
+                    # double-send for the same exhaustion event.
+                    usage = await peek_usage(agent_id)
+                    for window, window_usage in usage.items():
+                        if window_usage.is_blocked:
+                            await _notify_token_budget_exhausted(session, agent, window)
 
                 if result.finish_reason == "MAX_TOKENS":
                     # ADR 0059: stop the turn immediately, no further
@@ -415,15 +429,8 @@ async def _run_turn(
                         if partial_text:
                             await _post_config_reply(session, agent, chat_id, partial_text)
                             await session.commit()
-                    # Only notify for the window(s) actually exhausted right
-                    # now - MAX_TOKENS on a single call doesn't mean both the
-                    # 5h and 7d budgets are out, and sending the identical
-                    # generic notice for each unconditionally duplicated it
-                    # in the owner's agent chat.
-                    usage = await peek_usage(agent_id)
-                    for window, window_usage in usage.items():
-                        if window_usage.is_blocked:
-                            await _notify_token_budget_exhausted(session, agent, window)
+                    # Notification for the exhausted window(s) already fired
+                    # right above, from the same record_tokens check.
                     ended_status = "done"
                     return
 
@@ -611,9 +618,18 @@ async def _fire_schedule_entry(session: AsyncSession, agent_id: int, schedule_id
     else:
         # "once": mark fired (visible in the UI, not silently gone) and drop
         # the ZSET member - one small DB write, same as any other trigger
-        # config change.
-        entry["enabled"] = False
-        agent.triggers = {**agent.triggers, "on_schedule": entries}
+        # config change. Builds a fresh entry dict rather than mutating
+        # `entry` in place before reassigning agent.triggers - `entries` is
+        # the same list object already referenced from agent.triggers, so an
+        # in-place mutation followed by `agent.triggers = {...}` makes the
+        # "old" and "new" JSONB values compare equal (both already reflect
+        # the mutation), and SQLAlchemy's plain `==` change detection on the
+        # JSONB column then skips the UPDATE entirely - the enabled=false
+        # flip silently never reaches Postgres.
+        updated_entries = [
+            {**e, "enabled": False} if e.get("id") == schedule_id else e for e in entries
+        ]
+        agent.triggers = {**agent.triggers, "on_schedule": updated_entries}
         await session.flush()
         await remove_due_member(agent_id, schedule_id)
 

@@ -32,7 +32,6 @@ from modules.agents.crud import (
     get_agent_by_id,
     get_agent_by_owner_chat,
     get_enabled_agents_for_owners,
-    resume_most_recent_pause,
 )
 from modules.agents.invoke_queue import enqueue_invocation
 from modules.chats.crud.crud_chat import get_chat_by_id
@@ -220,14 +219,14 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
     # checks as any other trigger match.
     owner_agent = await get_agent_by_owner_chat(session, message.chat_id)
     if owner_agent is not None and owner_agent.owner_user_id == message.sender_id:
-        # ADR 0054: any message from the owner in their own agent chat is
-        # presumed to be about whichever escalation is freshest, so it
-        # resumes just that one paused chat (not every paused chat at once)
-        # before the owner's own turn is evaluated below.
-        resumed_chat_id = await resume_most_recent_pause(session, owner_agent)
-        if resumed_chat_id is not None:
-            await sync_agent_cache(owner_agent)
-
+        # ADR 0054 (revised): no implicit auto-resume here anymore - any
+        # message in the owner's own agent chat used to resume the most-
+        # recently-escalated pause regardless of content, which silently
+        # un-paused a chat even when the owner was just asking the agent
+        # something unrelated. Resuming a paused chat is now only ever done
+        # explicitly, via the resume_paused_chat config tool (ADR 0055,
+        # named phone/username) - a normal Gemini turn below can still
+        # reach that tool if the owner actually asks to resume something.
         if owner_agent.is_enabled:
             allowed = await check_and_increment(
                 owner_agent.id,
@@ -241,6 +240,7 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
                 )
             else:
                 await _notify_activation_quota_exceeded(session, owner_agent.owner_agent_chat_id)
+                await session.commit()
         return
 
     participants = await get_chat_participants(session, message.chat_id)
@@ -296,6 +296,7 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
             # delivered normally; no backlog/queueing of missed triggers per
             # ADR 0045), but let the owner know via their own agent chat.
             await _notify_activation_quota_exceeded(session, agent.owner_agent_chat_id)
+            await session.commit()
             continue
 
         if matched_unknown_sender:
@@ -315,7 +316,10 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
             # ADR 0051: first-contact reply just cleared every gate - keep
             # the agent responding to this same person going forward by
             # folding the chat into on_specific_chats (FIFO-capped at
-            # AGENT_MAX_AUTO_CHATS).
+            # AGENT_MAX_AUTO_CHATS). auto_register_unknown_sender_chat only
+            # flushes, so this session must commit or the registration is
+            # silently rolled back when session_scope() closes.
             await auto_register_unknown_sender_chat(session, agent, message.chat_id)
+            await session.commit()
 
         await enqueue_invocation(agent_id=agent.id, chat_id=message.chat_id, message_id=message.id)

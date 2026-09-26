@@ -28,7 +28,7 @@ function formatMessageContent(text) {
   for (const line of lines) {
     const bulletMatch = /^-\s+(.*)$/.exec(line);
     if (bulletMatch) {
-      if (!inList) { html += '<ul class="list-disc pl-6 my-0.5">'; inList = true; }
+      if (!inList) { html += '<ul class="list-disc ps-6 my-0.5">'; inList = true; }
       html += '<li>' + applyInlineBold(bulletMatch[1]) + '</li>';
     } else {
       if (inList) { html += '</ul>'; inList = false; }

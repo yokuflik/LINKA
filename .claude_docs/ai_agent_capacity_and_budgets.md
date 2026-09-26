@@ -167,3 +167,16 @@ every existing call-count/wall-clock limit in `ai_agent.md`'s rate-limit
 table. The LLM Judge (`generate_structured`) is deliberately **not** metered
 against these windows - same reasoning ADR 0053 already used to keep it off
 `agent_gemini_calls`.
+
+**Bug fix (2026-09-26, user-reported):** the exhaustion notice originally
+only fired inside the `finish_reason == "MAX_TOKENS"` branch - i.e. only
+when the *triggering* call itself got truncated. A call that pushed
+`used >= limit` but still finished with a normal `STOP` (the common case)
+left the owner with zero notice, discovered when a window ran out entirely
+inside a turn against a third-party chat. Fixed by moving the
+`peek_usage`/`_notify_token_budget_exhausted` check to run unconditionally
+right after every `record_tokens` call in `invoke_worker.py::_run_turn`
+(not just the `MAX_TOKENS` branch, which now just reuses the same
+already-fired notice via the existing per-window `SET NX` cooldown key -
+no double-send). Notice still always lands in the owner's own
+`owner_agent_chat_id` regardless of which chat the turn was serving.

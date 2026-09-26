@@ -208,9 +208,12 @@ CONFIG_TOOL_SCHEMAS = [
 
 # --- Builder sub-state schema sets (ADR 0049) --------------------------------
 _RESUME_PAUSED_CHAT_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "resume_paused_chat")
+# get_capacity_status is deliberately excluded from the Builder interview flow (not called
+# during finishing, per user request) - it stays available to other config-mode contexts.
+_BUILDER_TOOL_SCHEMAS = [s for s in CONFIG_TOOL_SCHEMAS if s["name"] != "get_capacity_status"]
 
 BUILDER_STATE_TOOL_SCHEMAS = {
     BuilderState.SUPERVISOR: [TRANSFER_TO_BUILDER_SCHEMA, TRANSFER_TO_HELP_SCHEMA, _RESUME_PAUSED_CHAT_SCHEMA],
-    BuilderState.BUILDER: [*CONFIG_TOOL_SCHEMAS, TRANSFER_TO_HELP_SCHEMA, FINISH_BUILDING_AGENT_SCHEMA],
+    BuilderState.BUILDER: [*_BUILDER_TOOL_SCHEMAS, TRANSFER_TO_HELP_SCHEMA, FINISH_BUILDING_AGENT_SCHEMA],
     BuilderState.HELP: [TRANSFER_TO_BUILDER_SCHEMA],
 }

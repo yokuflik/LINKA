@@ -290,21 +290,6 @@ def is_chat_actively_paused(agent: Agent, chat_id: int) -> bool:
     return any(int(entry["chat_id"]) == chat_id for entry in _active_pauses(agent))
 
 
-async def resume_most_recent_pause(session: AsyncSession, agent: Agent) -> Optional[int]:
-    """ADR 0054: an owner message in their own agent chat is presumed to be
-    about whichever escalation is freshest, so it resumes only the
-    most-recently-escalated (max paused_at) active pause - not every paused
-    chat at once. Returns the resumed chat_id, or None if nothing was
-    actively paused."""
-    active = _active_pauses(agent)
-    if not active:
-        return None
-    most_recent = max(active, key=lambda entry: entry["paused_at"])
-    agent.paused_chat_ids = [e for e in active if e is not most_recent]
-    await session.flush()
-    return int(most_recent["chat_id"])
-
-
 async def auto_register_unknown_sender_chat(session: AsyncSession, agent: Agent, chat_id: int) -> Agent:
     """ADR 0051: called once on_unknown_sender has actually fired and the
     turn is enqueued - merges chat_id into on_specific_chats (empty keywords,

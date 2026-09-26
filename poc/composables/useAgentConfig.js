@@ -116,6 +116,34 @@ function useAgentConfig(ctx) {
     if (m) { m.pending = false; m.send_failed = true; }
   }
 
+  // Jump to a search hit inside the agent's own chat (see useSearch.js /
+  // AgentDrawer's search button). Mirrors useChatOpen.js's jumpToMessage, but
+  // operates on the local agentMessages list instead of LinkaChatStore, since
+  // the agent chat is deliberately kept out of the store (see file header).
+  const agentHighlightedId = ref(null);
+  let agentHighlightTimer = null;
+
+  async function jumpToAgentMessage(chatId, messageId) {
+    if (!myAgent.value || chatId !== myAgent.value.owner_agent_chat_id) return;
+    const alreadyLoaded = agentMessages.value.some((m) => m.id === messageId);
+    if (!alreadyLoaded) {
+      try {
+        const window_ = await ctx.apiFetch(`/chats/${chatId}/messages/around/${messageId}`);
+        if (Array.isArray(window_)) {
+          agentMessages.value = window_.slice().reverse();
+          agentHasMoreMessages.value = true;
+        }
+      } catch (err) {
+        ctx.logError && ctx.logError('agent chat jump to message failed for', messageId, err);
+        ctx.showToast(ctx.friendlyError(err, "Couldn't open that message."));
+        return;
+      }
+    }
+    if (agentHighlightTimer) clearTimeout(agentHighlightTimer);
+    agentHighlightedId.value = messageId;
+    agentHighlightTimer = setTimeout(() => { agentHighlightedId.value = null; }, 1600);
+  }
+
   // null = not loaded yet / caller has no agent. Shape mirrors AgentOut.
   const myAgent = ref(null);
   const agentLoading = ref(false);
@@ -145,7 +173,7 @@ function useAgentConfig(ctx) {
   // variable and clear it explicitly, which this follows).
   const agentUsage = ref(null); // null = not loaded yet. Shape: {window_5h, window_7d}
   let usagePollTimer = null;
-  const AGENT_USAGE_POLL_INTERVAL_MS = 30000;
+  const AGENT_USAGE_POLL_INTERVAL_MS = 10000;
 
   async function loadAgentUsage() {
     try {
@@ -668,6 +696,7 @@ function useAgentConfig(ctx) {
     agentMessages, agentMessagesLoading, agentMessagesLoaded,
     agentHasMoreMessages, agentLoadingOlderMessages,
     loadAgentMessages, loadOlderAgentMessages, onAgentChatMessage, onAgentChatMessageFailed,
+    agentHighlightedId, jumpToAgentMessage,
     showAgentDrawer, agentDrawerView, agentForm, agentBusy, agentError,
     agentThinkingStatus, applyAgentThinking, applyAgentConfigChanged,
     agentUsage, agentUsageBlocked, loadAgentUsage,

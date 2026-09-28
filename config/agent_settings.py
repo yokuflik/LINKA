@@ -55,6 +55,34 @@ AGENT_INVOKE_DEBOUNCE_POLL_INTERVAL_SECONDS = float(
 # the same bound the turn itself is already capped at.
 AGENT_TURN_LOCK_KEY_PREFIX = os.environ.get("AGENT_TURN_LOCK_KEY_PREFIX", "agent_turn_lock")
 
+# ADR 00732: set alongside the re-arm above when a new message lands while a
+# previous turn for the same pair is already running - the in-flight turn
+# checks this flag and ends without delivering its (now-stale) reply instead
+# of letting it reach the chat. TTL equals the turn timeout, same self-healing
+# reasoning as the turn lock itself.
+AGENT_TURN_SUPERSEDED_KEY_PREFIX = os.environ.get(
+    "AGENT_TURN_SUPERSEDED_KEY_PREFIX", "agent_turn_superseded"
+)
+
+# ADR 0075: SET NX marker so the peer-visible typing loop's lifetime spans
+# "there is unanswered agent activity for this chat" rather than "this one
+# turn object is still alive" - a superseded turn's replacement can pick up
+# an already-running indicator instead of leaving a gap while it waits for
+# its own loop to start. TTL equals the turn timeout, same self-healing
+# reasoning as the turn lock/supersede flag above.
+AGENT_TYPING_ACTIVE_KEY_PREFIX = os.environ.get(
+    "AGENT_TYPING_ACTIVE_KEY_PREFIX", "agent_typing_active"
+)
+
+# ADR 0077: flat token-usage penalty charged when a turn is cancelled while
+# a Gemini call is genuinely in flight (_TurnSuperseded in invoke_worker.py) -
+# no real TurnResult/usageMetadata comes back from a cancelled call, so this
+# is an estimate standing in for tokens plausibly still spent on Google's
+# side, not a measurement. Small relative to AGENT_TOKEN_BUDGET_5H/_7D below.
+AGENT_SUPERSEDED_CALL_TOKEN_PENALTY = int(
+    os.environ.get("AGENT_SUPERSEDED_CALL_TOKEN_PENALTY", "500")
+)
+
 # Daily active-processing-time budget (seconds), ADR 0045. 1 hour default.
 AGENT_DAILY_ACTIVE_SECONDS_BUDGET = int(
     os.environ.get("AGENT_DAILY_ACTIVE_SECONDS_BUDGET", str(60 * 60))
@@ -70,6 +98,15 @@ AGENT_DAILY_ACTIVE_SECONDS_BUDGET = int(
 # real bill), not quota protection.
 AGENT_GEMINI_CALLS_PER_MINUTE = int(os.environ.get("AGENT_GEMINI_CALLS_PER_MINUTE", "30"))
 AGENT_GEMINI_CALLS_WINDOW_SECONDS = int(os.environ.get("AGENT_GEMINI_CALLS_WINDOW_SECONDS", "60"))
+
+# A turn that hits the per-minute call budget mid-turn backs off and retries
+# in-place (fixed-window resets within a minute, so this is a transient
+# stall, not a real failure) instead of ending the turn with no notice and no
+# retry. Bounded by a small retry cap so a persistently-exhausted budget (a
+# real abuse/bug case, not just a burst) still falls through to the existing
+# owner-facing notice rather than looping forever.
+AGENT_GEMINI_BUDGET_RETRY_SECONDS = float(os.environ.get("AGENT_GEMINI_BUDGET_RETRY_SECONDS", "5"))
+AGENT_GEMINI_BUDGET_MAX_RETRIES = int(os.environ.get("AGENT_GEMINI_BUDGET_MAX_RETRIES", "6"))
 
 # Function-calling round-trips per turn. ADR 0047 decision 1: raised 4 -> 8 -
 # Agentic RAG (get_knowledge_index followed by one or more fetch_chunk calls)
@@ -148,6 +185,26 @@ AGENT_EPHEMERAL_TASK_DEFAULT_MINUTES = int(
 # on an owner reply), still lifts the pause earlier.
 AGENT_ESCALATION_PAUSE_HOURS = int(os.environ.get("AGENT_ESCALATION_PAUSE_HOURS", "24"))
 
+# ADR 0072: hard ceiling on a single bulk_fetch_messages call - a chat with
+# more messages than this in the requested range cannot be bulk-summarized at
+# all (the owner must narrow by date range or count), never silently
+# truncated. Enforced server-side in the tool handler, not just the prompt.
+AGENT_BULK_FETCH_MAX_MESSAGES = int(os.environ.get("AGENT_BULK_FETCH_MAX_MESSAGES", "1000"))
+
+# Shared upper bound on the optional per-call `limit` argument the model can
+# pass to read_history/search_messages/search_semantic - lets the model ask
+# for fewer or more results than each tool's own default in one call, without
+# ever exceeding this ceiling regardless of what it requests. Does not apply
+# to bulk_fetch_messages, which has its own much larger, confirmation-gated
+# ceiling above.
+AGENT_TOOL_RESULT_MAX_LIMIT = int(os.environ.get("AGENT_TOOL_RESULT_MAX_LIMIT", "50"))
+
+# ADR 0072: how long a stashed bulk_fetch_messages confirmation request
+# (Agent.pending_confirmation) stays valid before it lazily expires unanswered.
+AGENT_PENDING_CONFIRMATION_TTL_MINUTES = int(
+    os.environ.get("AGENT_PENDING_CONFIRMATION_TTL_MINUTES", "60")
+)
+
 # --- on_schedule trigger (ADR 0046, decision 3) ---
 # Cap on how many schedule entries one agent can hold - enforced at
 # PATCH /agents/me and in the update_own_triggers tool (a self-editing agent
@@ -210,17 +267,38 @@ AGENT_HISTORY_TRANSCRIPT_MAX_CHARS = int(
     os.environ.get("AGENT_HISTORY_TRANSCRIPT_MAX_CHARS", "4000")
 )
 
-# --- LLM Judge / Semantic Router gate (ADR 0053) ---
-# Separate, cheaper model than GEMINI_CHAT_MODEL - own constant so a future
-# vendor rename/deprecation of the judge model doesn't touch the main turn
-# model (gemini_client.py::GEMINI_CHAT_MODEL) or vice versa.
-AGENT_JUDGE_MODEL = os.environ.get("AGENT_JUDGE_MODEL", "gemini-flash-lite-latest")
+# --- LLM Judge / Semantic Router gate (ADR 0053, backend split in ADR 0076) ---
+# Classification backend: TypeSafe `jev` (modules/agents/typesafe_client.py) -
+# a dedicated structured-classification model, not a generative one. Own API
+# key, already provisioned in .env.
+JEV_API_KEY = os.environ.get("JEV_API_KEY", "")
+JEV_MODEL = os.environ.get("JEV_MODEL", "jev-latest")
+JEV_HTTP_TIMEOUT_SECONDS = float(os.environ.get("JEV_HTTP_TIMEOUT_SECONDS", "10"))
+
+# Noul score cutoffs converting jev's [0, 1] confidence into the judge's
+# boolean decisions. Separate constants (not a single shared threshold) so
+# on_topic vs. the three malicious sub-checks can be tuned independently
+# after looking at AgentJudgeLog data.
+JEV_ON_TOPIC_THRESHOLD = float(os.environ.get("JEV_ON_TOPIC_THRESHOLD", "0.5"))
+JEV_MALICIOUS_THRESHOLD = float(os.environ.get("JEV_MALICIOUS_THRESHOLD", "0.5"))
+
+# Redirect-text generation backend (Gemini, reject path only - ADR 0076): a
+# minimal, tool-free, history-free call that only fires for the (small)
+# rejected fraction of judged messages, to author a same-language polite
+# reply. Was AGENT_JUDGE_MODEL pre-ADR-0076, when Gemini also did the
+# classification itself; kept as its own constant so a future vendor
+# rename/deprecation doesn't touch the main turn model
+# (gemini_client.py::GEMINI_CHAT_MODEL) or vice versa.
+AGENT_JUDGE_REDIRECT_MODEL = os.environ.get("AGENT_JUDGE_REDIRECT_MODEL", "gemini-flash-lite-latest")
 
 # Own rate bucket (agent_judge_calls:{agent_id}), never shared with
 # agent_gemini_calls (ADR 0047 decision 1) - a judge call consuming from the
 # main budget would let hostile/off-topic traffic starve real turns, defeating
 # the denial-of-wallet protection this gate exists for. Sized generously since
 # each call is cheap/fast - this bucket exists for cost ceiling, not scarcity.
+# Consumed once per judged message by the jev classification call (ADR 0076) -
+# the conditional Gemini redirect-text call has no separate bucket, since it's
+# inherently bounded by how often messages are actually rejected.
 AGENT_JUDGE_CALLS_PER_MINUTE = int(os.environ.get("AGENT_JUDGE_CALLS_PER_MINUTE", "60"))
 AGENT_JUDGE_CALLS_WINDOW_SECONDS = int(os.environ.get("AGENT_JUDGE_CALLS_WINDOW_SECONDS", "60"))
 
@@ -302,9 +380,14 @@ __all__ = [
     "AGENT_INVOKE_DEBOUNCE_SECONDS",
     "AGENT_INVOKE_DEBOUNCE_POLL_INTERVAL_SECONDS",
     "AGENT_TURN_LOCK_KEY_PREFIX",
+    "AGENT_TURN_SUPERSEDED_KEY_PREFIX",
+    "AGENT_TYPING_ACTIVE_KEY_PREFIX",
+    "AGENT_SUPERSEDED_CALL_TOKEN_PENALTY",
     "AGENT_DAILY_ACTIVE_SECONDS_BUDGET",
     "AGENT_GEMINI_CALLS_PER_MINUTE",
     "AGENT_GEMINI_CALLS_WINDOW_SECONDS",
+    "AGENT_GEMINI_BUDGET_RETRY_SECONDS",
+    "AGENT_GEMINI_BUDGET_MAX_RETRIES",
     "AGENT_TURN_MAX_TOOL_ROUNDTRIPS",
     "AGENT_TURN_TIMEOUT_SECONDS",
     "AGENT_SEND_RATE_LIMIT_BACKOFF_MS",
@@ -315,6 +398,9 @@ __all__ = [
     "AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS",
     "AGENT_MAX_AUTO_CHATS",
     "AGENT_ESCALATION_PAUSE_HOURS",
+    "AGENT_BULK_FETCH_MAX_MESSAGES",
+    "AGENT_TOOL_RESULT_MAX_LIMIT",
+    "AGENT_PENDING_CONFIRMATION_TTL_MINUTES",
     "AGENT_MAX_SCHEDULE_ENTRIES",
     "AGENT_HISTORY_TRANSCRIPT_MAX_CHARS",
     "AGENT_SCHEDULE_DUE_ZSET_KEY",
@@ -329,7 +415,12 @@ __all__ = [
     "AGENT_KNOWLEDGE_MAX_UPLOAD_BYTES",
     "AGENT_ESTIMATED_SECONDS_PER_TURN",
     "AGENT_BYOK_ENCRYPTION_KEY",
-    "AGENT_JUDGE_MODEL",
+    "JEV_API_KEY",
+    "JEV_MODEL",
+    "JEV_HTTP_TIMEOUT_SECONDS",
+    "JEV_ON_TOPIC_THRESHOLD",
+    "JEV_MALICIOUS_THRESHOLD",
+    "AGENT_JUDGE_REDIRECT_MODEL",
     "AGENT_JUDGE_CALLS_PER_MINUTE",
     "AGENT_JUDGE_CALLS_WINDOW_SECONDS",
     "AGENT_JUDGE_SYSTEM_PROMPT_PREVIEW_CHARS",

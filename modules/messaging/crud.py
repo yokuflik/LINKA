@@ -3,7 +3,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.sql import func
 from sqlalchemy.exc import IntegrityError
 from typing import Sequence, Optional
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 
 from modules.messaging.models import AUDIO_MESSAGE_TYPE
@@ -302,6 +302,56 @@ async def count_unread_messages(session: AsyncSession, chat_id: int, last_read_m
 
     result = await session.execute(stmt)
     return result.scalar_one()
+
+
+async def count_messages_in_range(
+    session: AsyncSession,
+    chat_id: int,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
+) -> int:
+    """ADR 0072: cheap count (no rows fetched) used both by the agent's
+    count_messages_in_range tool and as bulk_fetch_messages's own hard
+    server-side recheck before it actually returns any content. Real
+    (non-system, non-deleted) messages only, same shape as
+    count_unread_messages above."""
+    stmt = select(func.count()).select_from(Message).where(
+        Message.chat_id == chat_id, Message.deleted_at.is_(None), Message.sender_id.is_not(None)
+    )
+    if start_at is not None:
+        stmt = stmt.where(Message.created_at >= start_at)
+    if end_at is not None:
+        stmt = stmt.where(Message.created_at <= end_at)
+
+    result = await session.execute(stmt)
+    return result.scalar_one()
+
+
+async def get_messages_in_range(
+    session: AsyncSession,
+    chat_id: int,
+    start_at: Optional[datetime] = None,
+    end_at: Optional[datetime] = None,
+    limit: int = 1000,
+) -> Sequence[Message]:
+    """ADR 0072: bulk_fetch_messages's own query - a single-shot fetch (not a
+    cursor page like get_chat_messages), oldest first, capped at `limit`
+    (the caller, bulk_fetch_messages, always passes
+    AGENT_BULK_FETCH_MAX_MESSAGES and has already confirmed via
+    count_messages_in_range that the true count is within that cap - this
+    limit is a backstop, not the primary guard)."""
+    stmt = select(Message).where(
+        Message.chat_id == chat_id, Message.deleted_at.is_(None), Message.sender_id.is_not(None)
+    )
+    if start_at is not None:
+        stmt = stmt.where(Message.created_at >= start_at)
+    if end_at is not None:
+        stmt = stmt.where(Message.created_at <= end_at)
+
+    stmt = stmt.order_by(Message.id.asc()).limit(limit)
+
+    result = await session.execute(stmt)
+    return result.scalars().all()
 
 
 async def edit_message_content(

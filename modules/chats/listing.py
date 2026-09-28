@@ -55,6 +55,36 @@ async def get_chat_list(
     return participants
 
 
+async def get_chat_titles_for_user(session: AsyncSession, user_id: int) -> list[dict]:
+    """
+    Every chat this user is in, with the same display title they'd see in
+    their own chat list: Chat.title for groups, the peer's
+    display_name||username||phone_number (ADR 0024) for 1:1s. Used by the AI
+    agent's find_chat_by_name tool (ADR 0073) to match a name the owner
+    mentions against their own chats - never a table-wide user search.
+
+    Uses get_user_chats' single page (MAX_PAGE_SIZE) rather than pagination -
+    the candidate set for name-matching is meant to be "the chats this
+    owner actually has", which in practice never approaches that cap.
+    """
+    from modules.chats.crud.crud_participant import MAX_PAGE_SIZE
+
+    participants = await get_user_chats(session, user_id, limit=MAX_PAGE_SIZE)
+    titles = []
+    for participant in participants:
+        chat = participant.chat
+        if chat.is_group:
+            name = chat.title or "Unnamed group"
+        else:
+            members = await get_chat_participants_with_users(session, chat.id)
+            peer = next((m.user for m in members if m.user_id != user_id), None)
+            if peer is None:
+                continue
+            name = peer.display_name or peer.username or peer.phone_number
+        titles.append({"chat_id": chat.id, "name": name, "is_group": chat.is_group})
+    return titles
+
+
 async def get_chat_members(session: AsyncSession, requester_id: int, chat_id: int) -> Sequence[Participant]:
     """
     Every participant of a chat, each with their User eagerly loaded - e.g.

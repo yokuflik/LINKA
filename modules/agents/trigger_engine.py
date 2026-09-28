@@ -18,6 +18,16 @@ messages for the same (agent_id, chat_id) into a single turn fired
 AGENT_INVOKE_DEBOUNCE_SECONDS after the *last* one, instead of racing one
 Gemini turn per message. All quota/permission checks below still happen at
 match time, per message, exactly as before.
+
+ADR 0077: before arming the debounce, ``_arm_debounce_eager`` checks whether
+a turn for this (agent_id, chat_id) pair is already running
+(``invoke_debounce.is_turn_running``, a read-only check against the ADR 0063
+turn lock). If so, it marks the in-flight turn superseded and re-fires
+immediately (``arm_debounce_now``) right here, instead of waiting for the
+next debounce cycle's ``acquire_turn_lock`` failure in
+``invoke_worker.process_entry`` to discover the conflict - cuts detection
+latency from ~AGENT_INVOKE_DEBOUNCE_POLL_INTERVAL_SECONDS +
+AGENT_INVOKE_DEBOUNCE_SECONDS (~3s) down to a single Redis round-trip.
 """
 import logging
 from datetime import datetime, timezone
@@ -46,7 +56,12 @@ from modules.agents.ephemeral_tasks import (
     is_task_complete,
     record_reply,
 )
-from modules.agents.invoke_debounce import arm_debounce
+from modules.agents.invoke_debounce import (
+    arm_debounce,
+    arm_debounce_now,
+    is_turn_running,
+    mark_superseded,
+)
 from modules.chats.crud.crud_chat import get_chat_by_id
 from modules.chats.crud.crud_participant import get_chat_participants
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE, SYSTEM_MESSAGE_TYPE
@@ -198,6 +213,23 @@ def _active_paused_chat_ids(paused_chat_ids: list) -> set[int]:
     return active
 
 
+async def _arm_debounce_eager(agent_id: int, chat_id: int, message_id: int) -> None:
+    """ADR 0077: checks the turn lock before arming the debounce - if a turn
+    for this (agent_id, chat_id) pair is already running, mark it superseded
+    and re-fire immediately (arm_debounce_now) instead of waiting out a full
+    debounce window before the consumer side would otherwise rediscover the
+    conflict via a failed acquire_turn_lock. Still stashes message_id exactly
+    as arm_debounce does (via the plain arm_debounce call below), so the
+    replacement turn - or the in-flight one, if it's still pre-first-call and
+    merges in place per ADR 0075 case A - sees the newest message."""
+    if await is_turn_running(agent_id, chat_id):
+        await mark_superseded(agent_id, chat_id)
+        await arm_debounce(agent_id, chat_id, message_id)
+        await arm_debounce_now(agent_id, chat_id)
+    else:
+        await arm_debounce(agent_id, chat_id, message_id)
+
+
 async def evaluate_triggers(message: Message) -> None:
     """Fire-and-forget: exceptions are logged, never raised, so a bug here
     can never take down message delivery. Skips system messages outright.
@@ -248,7 +280,7 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
                 settings.AGENT_ACTIVATION_QUOTA_WINDOW_SECONDS,
             )
             if allowed:
-                await arm_debounce(owner_agent.id, message.chat_id, message.id)
+                await _arm_debounce_eager(owner_agent.id, message.chat_id, message.id)
             else:
                 await _notify_activation_quota_exceeded(session, owner_agent.owner_agent_chat_id)
                 await session.commit()
@@ -354,4 +386,4 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
             await auto_register_unknown_sender_chat(session, agent, message.chat_id)
             await session.commit()
 
-        await arm_debounce(agent.id, message.chat_id, message.id)
+        await _arm_debounce_eager(agent.id, message.chat_id, message.id)

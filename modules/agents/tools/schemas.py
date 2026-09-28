@@ -64,11 +64,11 @@ TOOL_SCHEMAS = [
     {
         "name": "read_history",
         "description": (
-            "Read up to 20 messages of a chat at a time, oldest first, each with "
-            "sender_id/timestamp/content. The result includes has_more: if true, this is "
-            "only part of the history - call again with before_id set to next_before_id to "
-            "go further back in parts. Never claim you've seen the whole conversation when "
-            "has_more is true."
+            "Read up to 20 messages of a chat at a time (up to 50 if you pass a higher limit), "
+            "oldest first, each with sender_id/timestamp/content. The result includes has_more: "
+            "if true, this is only part of the history - call again with before_id set to "
+            "next_before_id to go further back in parts. Never claim you've seen the whole "
+            "conversation when has_more is true."
         ),
         "parameters": {
             "type": "object",
@@ -77,6 +77,83 @@ TOOL_SCHEMAS = [
                 "before_id": {
                     "type": "string",
                     "description": "Optional: pass the previous result's next_before_id to fetch the next older page",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional: how many messages to return in this call (default 20, max 50)",
+                },
+            },
+            "required": ["chat_id"],
+        },
+    },
+    {
+        "name": "count_messages_in_range",
+        "description": (
+            "Cheap, free count of how many messages exist in a chat (optionally within a date "
+            "range) - no message content returned. Always call this BEFORE bulk_fetch_messages "
+            "for the same chat/range, never call bulk_fetch_messages first. If the result's "
+            "too_large is true, do not attempt bulk_fetch_messages at all - instead tell the "
+            "owner the chat is too large (mention the count) and ask them to narrow the range "
+            "by date or by picking a smaller window. If too_large is false, needs_confirmation "
+            "is true: do NOT call bulk_fetch_messages yet - first ask the owner to confirm, "
+            "explaining this pulls in the whole range (mention the count) and is an expensive "
+            "operation. Only call bulk_fetch_messages in a LATER turn, after the owner has "
+            "actually confirmed, and only with the exact same chat_id/date range you just checked."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string"},
+                "start_date": {
+                    "type": "string",
+                    "description": (
+                        "Optional: only messages on/after this date/time. Format YYYY-MM-DD "
+                        "(midnight assumed) or YYYY-MM-DDTHH:MM:SS for a specific time"
+                    ),
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": (
+                        "Optional: only messages on/before this date/time. Format YYYY-MM-DD "
+                        "(end of day assumed) or YYYY-MM-DDTHH:MM:SS for a specific time"
+                    ),
+                },
+            },
+            "required": ["chat_id"],
+        },
+    },
+    {
+        "name": "bulk_fetch_messages",
+        "description": (
+            "Fetch up to 1000 messages of a chat in one call (oldest first, or fewer if you pass "
+            "a lower limit), for summarizing a whole chat or a whole date range at once - unlike "
+            "read_history, this is NOT paginated and returns everything in range in a single "
+            "result. You MUST have already called count_messages_in_range for this exact "
+            "chat_id/date range in an earlier turn AND gotten the owner's explicit "
+            "confirmation first - calling this without that will be denied. Never call this on "
+            "your own initiative right after count_messages_in_range in the same turn."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string"},
+                "start_date": {
+                    "type": "string",
+                    "description": (
+                        "Optional: only messages on/after this date/time. Must match what was "
+                        "passed to count_messages_in_range. Format YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS"
+                    ),
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": (
+                        "Optional: only messages on/before this date/time. Must match what was "
+                        "passed to count_messages_in_range. Format YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS"
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional: cap the number of messages fetched (default/max 1000)",
                 },
             },
             "required": ["chat_id"],
@@ -100,9 +177,10 @@ TOOL_SCHEMAS = [
         "name": "search_messages",
         "description": (
             "Keyword-search the owner's own messages, optionally scoped to one chat and/or a "
-            "date range. Returns up to 10 matches at a time. The result includes has_more: if "
-            "true, call again with cursor set to next_cursor to get more matches. Never claim "
-            "you've found everything when has_more is true."
+            "date range. Returns up to 10 matches at a time (up to 50 if you pass a higher "
+            "limit). The result includes has_more: if true, call again with cursor set to "
+            "next_cursor to get more matches. Never claim you've found everything when has_more "
+            "is true."
         ),
         "parameters": {
             "type": "object",
@@ -112,6 +190,10 @@ TOOL_SCHEMAS = [
                 "cursor": {
                     "type": "string",
                     "description": "Optional: pass the previous result's next_cursor to fetch the next page",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional: how many matches to return in this call (default 10, max 50)",
                 },
                 "start_date": {
                     "type": "string",
@@ -145,6 +227,10 @@ TOOL_SCHEMAS = [
             "properties": {
                 "query": {"type": "string"},
                 "chat_id": {"type": "string", "description": "Optional: restrict the search to this chat"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional: how many matches to return (default 10, max 50)",
+                },
                 "start_date": {
                     "type": "string",
                     "description": (
@@ -164,8 +250,20 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "search_knowledge_semantic",
+        "description": "Meaning-based ranked search over this agent's own knowledge base (saved reference info like inventory, price lists, policies, FAQs) - finds the most relevant chunks directly, even if they don't share exact words with the query. Prefer this over get_knowledge_index/fetch_chunk whenever a knowledge base exists: it's faster and doesn't require browsing the whole index first. Returns a flat list of the best matches, not paginated.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to look up, in natural language"},
+                "limit": {"type": "integer", "description": "Optional: how many matches to return (default 5, max 20)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "get_knowledge_index",
-        "description": "List every chunk of this agent's own uploaded knowledge-base documents as {document_id, filename, chunk_id, excerpt}. Browse this first, then call fetch_chunk on the chunk_id(s) that look relevant.",
+        "description": "List every chunk of this agent's own uploaded knowledge-base documents as {document_id, filename, chunk_id, excerpt}. Fallback for a small knowledge base, or for chunks with no embedding yet - prefer search_knowledge_semantic first when a knowledge base exists. Browse this, then call fetch_chunk on the chunk_id(s) that look relevant.",
     },
     {
         "name": "fetch_chunk",
@@ -260,6 +358,15 @@ CONFIG_TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "find_chat_by_name",
+        "description": "Find which of the owner's own chats a name/nickname they mentioned refers to (e.g. 'message Dana', 'what did mom say') - matches against chat titles (group names, or the other person's display name/username), NOT message content. Use this instead of resolve_user whenever the owner names someone informally rather than giving an exact phone number or username. Returns 0-5 candidate matches, best first. If it returns 0 matches, tell the owner you couldn't find a chat by that name and offer resolve_user (exact phone/username) as a fallback. If it returns exactly 1 match, proceed with that chat_id directly. If it returns 2+ matches, NEVER guess - list the candidate names back to the owner and ask which one they meant before doing anything with a chat_id.",
+        "parameters": {
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "The name/nickname the owner used, as they said it"}},
+            "required": ["name"],
+        },
+    },
+    {
         "name": "get_capacity_status",
         "description": "Get every rate limit relevant to this agent (activation quota, Gemini calls/min, daily active-time budget, per-sender unknown-contact quota, knowledge base size, schedule entries) alongside current usage, plus a rough estimate of how many new conversations per hour the agent can currently handle. Read-only, does not consume any quota. Use this near the end of setup, before finish_building_agent, so you can tell the owner roughly what to expect - phrase the estimate as approximate, never as a guarantee.",
     },
@@ -291,15 +398,45 @@ CONFIG_TOOL_SCHEMAS = [
         "name": "no_reply_needed",
         "description": "Call this instead of replying when the owner's latest message doesn't need a new response - e.g. it already answers a question you just asked and are waiting on, it's a brief acknowledgement with nothing left to add, or a burst of coalesced messages turned out not to change anything since your last turn. Ends the turn silently with no message posted to the chat.",
     },
+    {
+        "name": "save_knowledge_from_text",
+        "description": (
+            "Save a block of text the owner just sent as permanent, searchable background "
+            "knowledge (e.g. an inventory list, price list, policy document, FAQ) instead of "
+            "letting it sit inline in this conversation forever. Use this ONLY for reference/lookup "
+            "data that should never need to be re-read verbatim on every future turn - never for "
+            "normal conversational instructions, questions, or one-off requests, which should just "
+            "stay inline as usual. After calling this, you MUST tell the owner in this same turn "
+            "what you saved and briefly why (e.g. that this keeps it out of every future message so "
+            "it doesn't get re-sent and burn tokens on every turn, and that they can ask you to "
+            "remove or update it anytime) - never save silently."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source_label": {
+                    "type": "string",
+                    "description": "A short human-readable label for this content (e.g. 'Store inventory', 'Refund policy')",
+                },
+                "content": {"type": "string", "description": "The full text to save, verbatim"},
+            },
+            "required": ["source_label", "content"],
+        },
+    },
 ]
 
 # --- Builder sub-state schema sets (ADR 0049) --------------------------------
 _RESUME_PAUSED_CHAT_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "resume_paused_chat")
 _RESOLVE_USER_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "resolve_user")
+_FIND_CHAT_BY_NAME_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "find_chat_by_name")
 _SPAWN_EPHEMERAL_TASK_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "spawn_ephemeral_task")
 # ADR 0065: every builder_state - including the two zero-action Help states -
 # needs a way to end a turn without posting a message.
 _NO_REPLY_NEEDED_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "no_reply_needed")
+# ADR 0078: config-mode-only, decided by the model mid-turn - needed in the
+# Supervisor's à-la-carte list the same way resolve_user/spawn_ephemeral_task
+# are (Builder already gets it via the full _BUILDER_TOOL_SCHEMAS union below).
+_SAVE_KNOWLEDGE_FROM_TEXT_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "save_knowledge_from_text")
 # get_capacity_status is deliberately excluded from the Builder interview flow (not called
 # during finishing, per user request) - it stays available to other config-mode contexts.
 _BUILDER_TOOL_SCHEMAS = [s for s in CONFIG_TOOL_SCHEMAS if s["name"] != "get_capacity_status"]
@@ -317,8 +454,10 @@ BUILDER_STATE_TOOL_SCHEMAS = {
         TRANSFER_TO_HELP_GENERAL_SCHEMA,
         _RESUME_PAUSED_CHAT_SCHEMA,
         _RESOLVE_USER_SCHEMA,
+        _FIND_CHAT_BY_NAME_SCHEMA,
         _SPAWN_EPHEMERAL_TASK_SCHEMA,
         _NO_REPLY_NEEDED_SCHEMA,
+        _SAVE_KNOWLEDGE_FROM_TEXT_SCHEMA,
         *TOOL_SCHEMAS,
     ],
     BuilderState.BUILDER: [

@@ -421,8 +421,10 @@ def test_supervisor_handler_set_is_exactly_the_expected_tools():
         "transfer_to_help_general",
         "resume_paused_chat",
         "resolve_user",
+        "find_chat_by_name",
         "spawn_ephemeral_task",
         "no_reply_needed",
+        "save_knowledge_from_text",
         *EXECUTION_TOOL_HANDLERS,
     }
 
@@ -440,10 +442,12 @@ def test_builder_handler_set_includes_every_expected_config_and_handoff_tool():
         "estimate_api_usage",
         "schedule_one_off_task",
         "resolve_user",
+        "find_chat_by_name",
         "resume_paused_chat",
         "get_capacity_status",
         "spawn_ephemeral_task",
         "no_reply_needed",
+        "save_knowledge_from_text",
         "transfer_to_help_building",
         "transfer_to_help_general",
         "transfer_to_supervisor",

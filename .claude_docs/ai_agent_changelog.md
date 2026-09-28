@@ -491,3 +491,77 @@ that call entirely from `trigger_engine.py` and deleted
 Resuming a paused chat is now exclusively explicit via the `resume_paused_chat`
 config tool (ADR 0055). See `ai_agent.md`'s `paused_chat_ids` section for
 the corrected behavior description. All 466 tests pass after the change.
+
+**Eager supersede detection + cancelled-call token penalty (ADR 0077,
+2026-09-28):** closes the detection-latency gap left by ADR 0063/0073/0075 -
+`trigger_engine._evaluate_triggers` previously always called plain
+`arm_debounce` with no turn-state check, so a message landing while a turn
+for the same `(agent_id, chat_id)` was already mid-Gemini-call was only
+discovered on the *next* debounce cycle's `acquire_turn_lock` failure in
+`invoke_worker.process_entry` - up to
+`AGENT_INVOKE_DEBOUNCE_POLL_INTERVAL_SECONDS + AGENT_INVOKE_DEBOUNCE_SECONDS`
+(~3s) after the second message was actually sent. New
+`invoke_debounce.py::is_turn_running` (read-only `EXISTS` against the ADR
+0063 turn-lock key, never acquires/releases it) is now checked by a new
+`trigger_engine.py::_arm_debounce_eager` wrapper (both call sites -
+owner-chat and normal - now go through it instead of calling `arm_debounce`
+directly): if a turn is already running, it calls `mark_superseded` +
+`arm_debounce` (to stash the message_id) + `arm_debounce_now` immediately,
+instead of the plain 2s-delayed `arm_debounce`. Cuts detection latency to a
+single Redis round-trip; the in-flight turn's existing checkpoints
+(round-trip top, the 0.5s `_generate_turn_or_supersede` poll, or the
+pre-send gate) then catch it right away. No change to the not-yet-running
+case, the turn mutex, or either of ADR 0075's case A/B merge branches.
+
+Separately: a mid-call cancellation (`_TurnSuperseded` in
+`invoke_worker.py`) never returns a `TurnResult`/`usageMetadata`, so
+`record_tokens` was never called for it even though real input+output
+tokens were plausibly still spent on Google's side (no real cancellation
+exists, per ADR 00732). New `AGENT_SUPERSEDED_CALL_TOKEN_PENALTY` setting
+(default 500, flat estimate, small against the 5h/1,000,000 and
+7d/5,000,000 windows) is now charged via `record_tokens` in the
+`except _TurnSuperseded:` block, right before `arm_debounce_now`. Does not
+apply to a turn caught superseded between round-trips or pre-send - those
+already have a real `TurnResult.usage` recorded via the normal flow. Full
+`tests/modules/agents/` suite (234 tests) green after landing; no new tests
+added (same gap as every prior agents-module step in this file).
+
+**ADR 0079 (2026-09-28), user-reported: 3 messages sent back-to-back in the
+owner's own agent chat got zero response, zero notice, zero UI change.**
+Found two genuine silent dead-ends in `invoke_worker.py`, distinct from the
+supersede-chain's by-design silence (ADR 00732/0075/0077 - a stale turn
+correctly yielding to a newer one is *supposed* to say nothing):
+
+1. `_run_turn`'s per-minute Gemini call budget check
+   (`AGENT_GEMINI_CALLS_PER_MINUTE`) ended the turn on a bare `return` with
+   no retry and no notice - the one exhaustion path in this file that had
+   neither, unlike `GeminiChatError`/`MAX_TOKENS`/the round-trip cap/the
+   outer timeout, which all post an owner-facing notice. Since this is a
+   fixed window that resets within a minute on its own, giving up
+   immediately was also the wrong call, not just an unreported one. Now
+   retries in place: `AGENT_GEMINI_BUDGET_RETRY_SECONDS` (5) x
+   `AGENT_GEMINI_BUDGET_MAX_RETRIES` (6), re-checking `is_superseded` on
+   every wake-up (falls through to the normal top-of-loop supersede branch
+   if a newer message landed while asleep), never consuming a `round_trip`
+   slot (a `while`-style sub-loop, not a `continue` on the outer
+   `for round_trip in range(...)`). Exhausting all retries now falls
+   through to the same `_post_config_reply` pattern every other exhaustion
+   path uses.
+2. That retry's supersede-while-waiting path re-enters the top-of-loop
+   ADR 0075 case-A/case-B branch, which previously used `round_trip == 0`
+   as a proxy for "no Gemini call made yet" - a proxy the retry's `continue`
+   silently broke (it can advance `round_trip` before any call happens).
+   Replaced with an explicit `gemini_call_made` flag, set immediately before
+   the one place `_generate_turn_or_supersede` is actually invoked.
+3. `process_entry`'s daily active-time budget check
+   (`time_budget.has_budget_remaining`) runs *before* `_run_turn` even
+   starts, so it wasn't just missing a notice - the drawer's
+   `agent_thinking` never fires either, nothing anywhere. New
+   `time_budget.seconds_until_reset` reads the counter key's own Redis TTL
+   (this window is rolling-from-first-use, TTL set once on the first
+   increment of the day - not a calendar-day reset, so there's no fixed
+   reset time to compute from) and a new cooldown-gated
+   `_notify_daily_budget_exhausted` (same `SET NX` pattern as ADR 0059's
+   token-budget notice) posts one "pause responding for up to N hours"
+   notice per exhaustion event into the owner's agent chat. No retry here
+   (unlike the per-minute budget, this window won't clear again soon).

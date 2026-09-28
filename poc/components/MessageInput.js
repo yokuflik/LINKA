@@ -9,6 +9,9 @@
 // The [+] button opens a small WhatsApp-style attach menu: "Photos & Videos"
 // (native picker filtered to image/video types -> pick-media) and "Documents"
 // (unfiltered picker, any file type -> pick-document).
+// Keep in sync with config/app_settings.py::MAX_MESSAGE_CONTENT_LENGTH (server-enforced).
+const MAX_MESSAGE_LENGTH = 8192;
+
 const MessageInput = {
   emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'cancel-edit', 'pick-media', 'pick-document', 'start-recording', 'stop-recording', 'clear-attach-error', 'open-schedule'],
   props: {
@@ -28,11 +31,14 @@ const MessageInput = {
     liveWaveform: { type: Array, default: () => [] },
   },
   data() {
-    return { attachMenuOpen: false };
+    return { attachMenuOpen: false, maxMessageLength: MAX_MESSAGE_LENGTH };
   },
   methods: {
     onInput(event) {
-      this.$emit('update:messageInput', event.target.value);
+      // Defensive clamp: maxlength doesn't stop every paste/IME path.
+      const value = event.target.value.slice(0, MAX_MESSAGE_LENGTH);
+      if (value !== event.target.value) event.target.value = value;
+      this.$emit('update:messageInput', value);
       this.$emit('typing');
       this.autoGrow(event.target);
     },
@@ -231,6 +237,7 @@ const MessageInput = {
         <template v-else>
           <textarea ref="textInput" :value="messageInput" @input="onInput" @focus="closeAttachMenu"
                  @keydown.enter="onEnterKeydown" placeholder="Message…" dir="auto" rows="1"
+                 :maxlength="maxMessageLength"
                  class="flex-1 min-w-0 px-3 py-1.5 text-sm border border-slate-300 rounded-2xl resize-none leading-normal"
                  style="max-height:150px; overflow-y:auto;"></textarea>
           <button v-if="messageInput.trim()" @click="$emit('send-message')"

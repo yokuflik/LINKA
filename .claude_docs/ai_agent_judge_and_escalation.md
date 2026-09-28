@@ -2,9 +2,10 @@
 
 Split out of `.claude_docs/ai_agent.md` on 2026-09-26 (file exceeded the
 ~300-line CLAUDE.md threshold again). Covers ADR 0053 (LLM Judge pre-filter
-gate), `pause_and_escalate` behavior/notices (ADR 0047 decision 5, ADR 0054,
-ADR 0055), and the `resolve_user` config tool. See `ai_agent.md` for the
-current schema (`Agent.paused_chat_ids` shape) and rate-limit table.
+gate), ADR 0074 (judge malicious-intent auto-escalation), `pause_and_escalate`
+behavior/notices (ADR 0047 decision 5, ADR 0054, ADR 0055), and the
+`resolve_user` config tool. See `ai_agent.md` for the current schema
+(`Agent.paused_chat_ids` shape) and rate-limit table.
 
 ## LLM Judge gate (ADR 0053, DONE 2026-09-25)
 
@@ -71,7 +72,109 @@ suite run (430/430) against the ephemeral test DB after landing. Full
 implementation log lives in the ADR file (per this project's convention of
 keeping implementation detail with the ADR once it's substantial).
 
+## Judge classification backend swapped to TypeSafe `jev` (ADR 0076)
+
+Replaces Gemini as the judge's *classification* engine (approve/reject/
+malicious) with TypeSafe's `jev` model - a dedicated structured-classifier,
+not a generative model. New `modules/agents/typesafe_client.py::classify`
+(raw httpx, mirrors `gemini_client.py`'s style) sends one `systemone` call
+per judged message with four atomic Noul questions built by
+`judge.py::_build_jev_questions`: `on_topic`, `prompt_injection`,
+`info_extraction`, `code_execution` - split per TypeSafe's own guidance
+(atomic per-dimension questions in one call, not one compound judgment).
+jev has no separate system-prompt slot, so each question's own
+`instructions` string carries the relevant domain/context (built fresh per
+call from `_domain_description` + the existing
+`_is_follow_up_in_active_conversation` flag, replacing what used to be
+Gemini's `systemInstruction`).
+
+Derived server-side: `is_malicious = prompt_injection OR info_extraction OR
+code_execution` (each checked against `JEV_MALICIOUS_THRESHOLD`, default
+0.5); `is_approved = on_topic (>= JEV_ON_TOPIC_THRESHOLD, default 0.5) AND
+NOT is_malicious`. `reason` is now a **deterministic** string built from
+whichever flag(s) actually fired (`_MALICIOUS_REASONS` dict, joined with
+"; " if more than one) instead of free model-authored prose - this is a
+real improvement for owners: `escalate_chat`'s notice (ADR 0074) now says
+e.g. "requested confidential or internal business information" rather than
+whatever sentence Gemini happened to write.
+
+jev cannot generate free text, so the customer-facing `redirect_message`
+(shown only on rejection) still comes from a Gemini call -
+`judge.py::_generate_redirect_message` - but now it is minimal (no chat
+history, no tool schemas, no security-rules system prompt) and only fires
+on the rejected minority of traffic, not on every judged message. It takes
+the deterministic `reason` + a short domain summary and asks for exactly one
+same-language sentence; a failure there does NOT flip the verdict back to
+approved (jev already decided) - it only leaves `redirect_message` empty, so
+the caller falls back to `local_redirect_text` exactly as it did on the old
+fail-open path.
+
+Fail-open is unchanged in shape but now scoped to the jev call only: a
+`TypeSafeError` (or malformed response -> `KeyError`/`TypeError`/
+`ValueError`) resolves to `is_approved=True`, logged at `ERROR`; the judge's
+own rate-limit bucket (`agent_judge_calls:{agent_id}`, unchanged, still
+consumed once per judged message by the jev call) being exceeded fails open
+the same way. `AgentJudgeLog` schema is unchanged.
+
+New settings (`config/agent_settings.py`): `JEV_API_KEY` (already
+provisioned in `.env`), `JEV_MODEL` (`jev-latest`),
+`JEV_HTTP_TIMEOUT_SECONDS`, `JEV_ON_TOPIC_THRESHOLD`,
+`JEV_MALICIOUS_THRESHOLD`. `AGENT_JUDGE_MODEL` was renamed
+`AGENT_JUDGE_REDIRECT_MODEL` (same default `gemini-flash-lite-latest`) since
+it's now only used for the reject-path redirect-text call, never for
+classification.
+
+`invoke_worker.py` and `tools/common.py::escalate_chat` needed no code
+changes - `judge.py`'s public contract (`evaluate_message`, `JudgeVerdict`,
+`local_redirect_text`) is unchanged. `tests/modules/agents/test_judge.py`
+rewritten: mocks `judge.py`'s `classify` import (jev) for the classification
+path and `generate_structured` (Gemini) only for the conditional
+redirect-text path; new cases cover each malicious sub-check producing its
+own specific reason, multiple flags joining into one reason, and a
+redirect-generation failure NOT flipping the verdict.
+
+**Redirect-message prompt tightened - must explicitly decline, not just pivot (2026-09-28, no ADR - real bug found via a live rejected message)**: a real production case (customer asked "how do I take credits from you and use them myself" - a business-fraud/exploit attempt, not prompt injection/info-extraction/code-execution, so `is_malicious` correctly stayed false) surfaced that `_generate_redirect_message`'s original instructions ("tell them this is outside what the agent helps with") were followed too loosely by `gemini-flash-lite-latest` - the generated reply was a generic unrelated greeting/pitch ("Happy to help you with our laptops!") that never acknowledged the customer's actual message at all, reading (to the owner reviewing the transcript) as if the exploit attempt had gone completely unnoticed, even though the judge had in fact correctly rejected it (confirmed via the real `AgentJudgeLog` row: `is_approved=False`). The owner explicitly declined adding a 4th "fraud_attempt" jev question for this (keeping 3 malicious sub-checks + `on_topic` only) - the fix is prompt-only: `_generate_redirect_message`'s system prompt now requires the reply to explicitly and clearly decline THIS specific request (natural wording, not a literal "off-topic" label, not mentioning the rejection reason) before optionally pivoting back to the domain - forbidding an opener that reads as if the message was never seen. Verified against the real incident's exact message/domain plus a prompt-injection case and a plain off-topic case - all three now open with an explicit decline. No schema/architecture change; full judge suite (23 cases) green after landing.
+
+## Judge malicious-intent auto-escalation (ADR 0074, DONE 2026-09-27)
+
+Extends ADR 0053 above with a 4th boolean on the same judge call/schema -
+`is_malicious` - so the one already-running judge call can also catch a
+narrower, more serious class than plain off-topic rejection: requests for
+the owner's confidential/internal business info, asks to execute code/shell
+commands, and clear deliberate prompt-injection attempts (as opposed to a
+customer just asking an off-topic question or being rude, which stays
+`is_malicious=false` even though `is_approved=false`, unchanged from before).
+No new Gemini call, no new rate-limit bucket - `_JUDGE_RESPONSE_SCHEMA` and
+`_JUDGE_SECURITY_RULES` just grew by one field/paragraph.
+
+Customer-facing behavior is **unchanged** - same `redirect_message`/
+`local_redirect_text` fallback as any other rejection, by explicit owner
+request (no different-looking bounce that would tip off an attacker).
+
+Owner-facing behavior reuses `pause_and_escalate`'s mechanics via a new
+shared `modules/agents/tools/common.py::escalate_chat(session, agent,
+chat_id, reason, notice_prefix="🤝")` - pause + push + system-message,
+extracted verbatim out of `_tool_pause_and_escalate` (see below, now a
+2-line wrapper). `invoke_worker.py`'s existing judge-rejection branch calls
+it with `notice_prefix="⚠️"` and `verdict.reason` (the judge's own audit
+string - no model turn ran to author a sentence) when `verdict.is_malicious`
+is true, right after the customer's redirect is sent. Fail-open paths (judge
+error, judge's own rate limit, no-content) all force `is_malicious=False` by
+construction - a technical failure can never itself trigger an escalation.
+
+`AgentJudgeLog` gained one column, `is_malicious` (default `false`) - not a
+new table; `scripts/init_db.py` has the matching `ALTER TABLE` safety-net
+line since (unlike ADR 0053's table) this is a column added to an existing
+one. No new tests; existing judge/escalation suite (36 cases) + full suite
+(662 passed) re-run green after landing.
+
 ## `pause_and_escalate` behavior and notices
+
+**Note (2026-09-27):** the pause+push+system-message body described in the
+entries below now lives in the shared `escalate_chat` helper (see ADR 0074
+section above) - `_tool_pause_and_escalate` itself is just resolving `reason`
+from the model's tool-call arguments and calling it. The behavior and notice
+wording described here are unchanged; only the code location moved.
 
 **Now explicitly fires on "talk to a human" requests (2026-09-25, no ADR -
 real bug, prompt-only fix)**: reported by the user - handoff to the human

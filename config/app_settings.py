@@ -43,7 +43,7 @@ APP_LIVENESS_TTL_SECONDS = int(os.environ.get("APP_LIVENESS_TTL_SECONDS", "10"))
 # accidents of infrastructure, not a real limit, and a huge payload here
 # gets replicated to every subscriber via Redis PUBLISH and to every
 # recipient's WebSocket, in addition to bloating storage at billion-row scale.
-MAX_MESSAGE_CONTENT_LENGTH = int(os.environ.get("MAX_MESSAGE_CONTENT_LENGTH", "4096"))
+MAX_MESSAGE_CONTENT_LENGTH = int(os.environ.get("MAX_MESSAGE_CONTENT_LENGTH", "8192"))
 
 # --- Group creation cap ---
 # create_group_chat() adds members one at a time (one DB round trip each);

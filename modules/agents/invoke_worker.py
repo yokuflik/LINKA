@@ -22,12 +22,20 @@ a second concurrent turn. `_invoke_debounce_poll_loop` (alongside
 `_schedule_poll_loop`, same due-ZSET-poll pattern) is what actually turns a
 coalesced burst of trigger matches into the single `enqueue_invocation` call
 that lands on this stream in the first place.
+
+That same re-arm path also marks the in-flight turn `superseded` (ADR 00732):
+`_run_turn` checks this flag at the top of every round-trip and again right
+before dispatching send_message/reply_message, ending the turn without
+delivering its reply if a newer message has already taken its place. This
+does not cancel the underlying Gemini call - it only stops a now-stale
+answer from reaching the chat.
 """
 import asyncio
 import contextlib
 import logging
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from redis.exceptions import ResponseError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,23 +50,31 @@ from modules.agents.ephemeral_tasks import fire_summary_and_complete, sweep_expi
 from modules.agents.invoke_debounce import (
     acquire_turn_lock,
     arm_debounce,
+    arm_debounce_now,
+    claim_typing_indicator,
     due_pairs,
+    is_superseded,
+    mark_superseded,
     pop_latest_message_id,
+    refresh_typing_indicator,
     release_turn_lock,
+    release_typing_indicator,
 )
 from modules.agents.invoke_queue import enqueue_invocation, enqueue_schedule_fire
 from modules.agents.gemini_client import (
     GeminiChatError,
+    TurnResult,
     extract_function_call,
     extract_text,
     function_response_part,
     generate_turn,
 )
 from modules.agents.judge import evaluate_message, local_redirect_text
+from modules.agents.tools.common import escalate_chat
 from modules.agents.models import Agent
 from modules.agents.personas import get_persona_system_prompt
 from modules.agents.schedule import due_members, remove_due_member, reschedule_recurring
-from modules.agents.time_budget import has_budget_remaining, record_active_seconds
+from modules.agents.time_budget import has_budget_remaining, record_active_seconds, seconds_until_reset
 from modules.agents.token_budget import peek_usage, record_tokens
 from modules.agents.tools import execute_tool_call, get_tool_schemas_for_chat, is_config_mode
 from modules.messaging import service as message_service
@@ -69,6 +85,35 @@ from realtime import realtime_service
 from realtime.fanout.base_worker import BaseStreamConsumer
 
 logger = logging.getLogger(__name__)
+
+
+def _pending_confirmation_note(agent: Agent) -> str:
+    """ADR 0072: re-derived every round-trip alongside system_prompt itself
+    (same pattern as builder_state) - carries a stashed bulk_fetch_messages
+    request across the turn boundary that count_messages_in_range's handler
+    created it on. Purely advisory context for the model; the actual gate is
+    server-side in bulk_fetch_messages's handler (modules/agents/tools/execution.py),
+    which independently re-checks this same field before running."""
+    pending = agent.pending_confirmation
+    if not isinstance(pending, dict) or pending.get("tool") != "bulk_fetch_messages":
+        return ""
+    created_at = pending.get("created_at")
+    try:
+        if created_at is None or datetime.now(timezone.utc) - datetime.fromisoformat(created_at) > timedelta(
+            minutes=settings.AGENT_PENDING_CONFIRMATION_TTL_MINUTES
+        ):
+            return ""
+    except ValueError:
+        return ""
+
+    return (
+        "\n\nYou previously asked the owner to confirm a bulk_fetch_messages request for "
+        f"chat_id {pending.get('chat_id')} (start_date={pending.get('start_at') or 'none'}, "
+        f"end_date={pending.get('end_at') or 'none'}, {pending.get('count')} messages). If the "
+        "owner's latest message confirms it, call bulk_fetch_messages now with that exact "
+        "chat_id/date range. If they declined or moved on to something else, do not call it - "
+        "just continue normally."
+    )
 
 # Short human labels for the agent drawer's live "thinking" indicator
 # (AGENT_DRAWER_UI_PLAN.md Wave 2) - purposely coarse (tool name only, no
@@ -150,14 +195,23 @@ _PEER_TYPING_REFRESH_SECONDS = 3.0
 _MESSAGE_SENDING_TOOL_NAMES = frozenset({"send_message", "reply_message"})
 
 
-async def _publish_peer_typing_loop(chat_id: int, sender_id: int) -> None:
+async def _publish_peer_typing_loop(chat_id: int, sender_id: int, *, owns_indicator: bool) -> None:
     """Real `typing` event fanned out to the chat's other participants (same
     `publish_event` a genuine user's WS `typing` frame goes through) - runs
     for the lifetime of an execution-mode turn targeting a real chat, so
     whoever the agent is about to message sees an ordinary "typing…"
     indicator instead of nothing, until the reply itself lands. Distinct from
     `_publish_agent_thinking`, which is a private, owner-only signal for the
-    agent drawer and is never seen by other chat members."""
+    agent drawer and is never seen by other chat members.
+
+    `owns_indicator` (ADR 0075): True when this call's `claim_typing_indicator`
+    won the race for this chat - only the owning loop actually refreshes the
+    shared marker and releases it on exit. A non-owning loop (this turn was
+    superseded and its replacement already holds the marker) still publishes
+    the real `typing` WS event on the same cadence - the frontend indicator
+    itself is per-publish, not keyed off the marker - it just never touches
+    the marker's lifecycle, so a superseded turn's own cancellation can never
+    tear down the replacement turn's ownership of it."""
     try:
         while True:
             # user_id must be a string, matching every other id in every
@@ -172,11 +226,62 @@ async def _publish_peer_typing_loop(chat_id: int, sender_id: int) -> None:
             await realtime_service.publish_event(
                 chat_id, {"event": "typing", "user_id": str(sender_id), "kind": "typing"}
             )
+            if owns_indicator:
+                await refresh_typing_indicator(chat_id)
             await asyncio.sleep(_PEER_TYPING_REFRESH_SECONDS)
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.exception("agent_worker: failed to publish peer typing for chat %s", chat_id)
+
+
+class _TurnSuperseded(Exception):
+    """ADR 00732: raised internally by `_generate_turn_or_supersede` when the
+    supersede flag fires while a Gemini call is in flight - caught right
+    where it's raised, never escapes `_run_turn`."""
+
+
+# How often to poll the supersede flag while a Gemini call is in flight
+# (ADR 00732) - short enough that a superseded turn's outbound HTTP request
+# gets cancelled quickly instead of running to completion and contending
+# with the replacement turn's own call to the same API.
+_SUPERSEDE_POLL_SECONDS = 0.5
+
+
+async def _generate_turn_or_supersede(agent_id: int, chat_id: int | None, **kwargs) -> TurnResult:
+    """Wraps generate_turn so a turn that gets superseded (ADR 00732) mid-call
+    actually stops talking to Gemini instead of running the request to
+    completion in the background - two real back-to-back generateContent
+    calls for the same agent (the stale one finishing, then the replacement
+    starting right after) was observed to make the outbound connection to
+    Gemini time out under that back-to-back load. Cancelling the stale call's
+    task also cancels its underlying httpx request.
+
+    chat_id=None (schedule/ephemeral-task turns) never contends with
+    anything, so it always just awaits generate_turn directly."""
+    if chat_id is None:
+        return await generate_turn(**kwargs)
+
+    call_task = asyncio.ensure_future(generate_turn(**kwargs))
+    try:
+        while True:
+            done, _ = await asyncio.wait({call_task}, timeout=_SUPERSEDE_POLL_SECONDS)
+            if done:
+                return call_task.result()
+            if await is_superseded(agent_id, chat_id):
+                # Re-mark it - is_superseded is a get-and-delete and the
+                # round-trip-top/pre-send checks elsewhere in _run_turn still
+                # need to see it, but this path returns straight out of
+                # _run_turn instead of reaching either of them.
+                call_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await call_task
+                raise _TurnSuperseded()
+    finally:
+        if not call_task.done():
+            call_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await call_task
 
 
 async def _check_gemini_call_budget(agent_id: int) -> bool:
@@ -226,17 +331,61 @@ async def _notify_token_budget_exhausted(session: AsyncSession, agent: Agent, wi
         logger.exception("failed to notify owner of agent %s token budget exhaustion", agent.id)
 
 
+async def _notify_daily_budget_exhausted(session: AsyncSession, agent: Agent) -> None:
+    """Daily active-processing-time budget (has_budget_remaining) exhausted -
+    checked in process_entry *before* _run_turn is ever called, so unlike
+    every other exhaustion path above this one previously had no notice path
+    at all (not even the owner-only agent_thinking 'error' status, since that
+    lives inside _run_turn). Same SET NX cooldown pattern as
+    _notify_token_budget_exhausted, one notice per exhaustion event. Unlike
+    the per-minute Gemini call budget (invoke_worker._run_turn's in-place
+    retry above), this window doesn't reset again soon, so there is nothing
+    to usefully retry - only a notice makes sense here."""
+    cooldown_key = f"agent_daily_budget_notice_sent:{agent.id}"
+    try:
+        remaining = await seconds_until_reset(agent.id)
+        # remaining can be 0 right at the boundary (key just expired) -
+        # cooldown TTL still needs a positive value, so floor it.
+        cooldown_seconds = max(remaining, 60)
+        acquired = await redis_client.set(cooldown_key, "1", nx=True, ex=cooldown_seconds)
+        if not acquired:
+            return
+        hours = max(1, round(remaining / 3600))
+        notice = (
+            "Your agent has used up its processing time budget for today and "
+            f"will pause responding for up to {hours} hour{'s' if hours != 1 else ''}. "
+            "It'll pick back up automatically."
+        )
+        from modules.messaging.send import send_system_message
+
+        await send_system_message(session, agent.owner_agent_chat_id, notice)
+        await session.commit()
+    except Exception:
+        logger.exception("failed to notify owner of agent %s daily budget exhaustion", agent.id)
+
+
 def _format_history_transcript(history) -> str | None:
     """Formats a message history window into a single 'Agent: ...' /
     'Customer: ...' transcript block (oldest first) - the explicit role
     label (rather than a raw sender_id) reads far better to Gemini than a
     numeric id, and matches how a human would paste a chat log. Truncated to
     AGENT_HISTORY_TRANSCRIPT_MAX_CHARS from the start (oldest lines dropped
-    first) so the most recent context always survives a long/verbose chat."""
+    first) so the most recent context always survives a long/verbose chat.
+
+    Customer/Owner lines followed later in the transcript by an Agent line
+    are marked '[already handled]' (ADR 0071) - the agent would not have
+    replied without having acted on them, so re-seeing them unmarked on a
+    later, unrelated turn otherwise reads to Gemini as still-pending and can
+    trigger a re-execution of whatever tool call handled them the first time.
+    Only the trailing run of Customer/Owner lines with no Agent reply after
+    them - the genuinely unanswered tail - is left unmarked."""
+    ordered = [m for m in reversed(list(history)) if m.content]
+    is_agent = [m.type == AGENT_REPLY_MESSAGE_TYPE for m in ordered]
+    handled = [any(is_agent[i + 1:]) for i in range(len(ordered))]
     lines = [
-        f'{"Agent" if m.type == AGENT_REPLY_MESSAGE_TYPE else "Customer"}: {m.content}'
-        for m in reversed(list(history))
-        if m.content
+        f'{"Agent" if is_agent[i] else "Customer"}: {m.content}'
+        + ("" if is_agent[i] or not handled[i] else " [already handled]")
+        for i, m in enumerate(ordered)
     ]
     if not lines:
         return None
@@ -327,8 +476,19 @@ async def _run_turn(
         # drawer chat (that already gets agent_thinking) and never a
         # schedule-fired turn with chat_id=None.
         peer_typing_task: asyncio.Task | None = None
+        owns_typing_indicator = False
         if chat_id is not None and not is_config_mode(agent, chat_id):
-            peer_typing_task = asyncio.create_task(_publish_peer_typing_loop(chat_id, owner_user_id))
+            # ADR 0075: claim_typing_indicator is a SET NX - only the first
+            # turn touching this chat while activity is unanswered actually
+            # owns (refreshes/releases) the shared marker; a turn that starts
+            # while a prior turn for the same chat already owns it (this
+            # turn is itself the replacement for a mid-turn supersede) still
+            # runs its own publish loop, just without touching the marker's
+            # lifecycle - see _publish_peer_typing_loop's owns_indicator arg.
+            owns_typing_indicator = await claim_typing_indicator(chat_id)
+            peer_typing_task = asyncio.create_task(
+                _publish_peer_typing_loop(chat_id, owner_user_id, owns_indicator=owns_typing_indicator)
+            )
         try:
             # LLM Judge gate (ADR 0053) - execution-mode, message-fired turns
             # only (on_specific_chats/on_unknown_sender/on_any_message alike,
@@ -357,6 +517,24 @@ async def _run_turn(
                         sender_agent_id=agent.id,
                     )
                     await session.commit()
+                    # ADR 0074: a message the judge flags as a deliberate
+                    # attack (trade-secret probing, code-execution asks,
+                    # targeted prompt-injection) - as opposed to ordinary
+                    # off-topic drift - additionally gets the same
+                    # freeze-and-notify treatment as a model-initiated
+                    # pause_and_escalate, using the judge's own `reason` as
+                    # the notice text (no conversational turn ran to author
+                    # one). Customer-facing behavior above is unchanged.
+                    if verdict.is_malicious:
+                        logger.warning(
+                            "agent_worker: judge flagged malicious intent, "
+                            "agent %s chat %s message %s: %s",
+                            agent_id, chat_id, message_id, verdict.reason,
+                        )
+                        await escalate_chat(
+                            session, agent, chat_id, verdict.reason, notice_prefix="⚠️"
+                        )
+                        await session.commit()
                     ended_status = "done"
                     return
 
@@ -371,11 +549,110 @@ async def _run_turn(
             # this was turned off. Decrypt logic (crypto.py) is left in place
             # so re-enabling later is just removing this early return.
             api_key: str | None = None
+            # Explicit flag rather than `round_trip == 0` - the Gemini call
+            # budget retry below can advance round_trip via `continue` while
+            # still on the *first* iteration's Gemini call (never made yet),
+            # which would otherwise make the case A/case B check below think
+            # a call already happened when none has.
+            gemini_call_made = False
 
             for round_trip in range(settings.AGENT_TURN_MAX_TOOL_ROUNDTRIPS + 1):
-                if api_key is None and not await _check_gemini_call_budget(agent_id):
-                    logger.info("agent_worker: agent %s over Gemini call budget, ending turn", agent_id)
+                # ADR 00732/0075: a new message matched a trigger for this
+                # same (agent_id, chat_id) while this turn was still running.
+                if chat_id is not None and await is_superseded(agent_id, chat_id):
+                    if not gemini_call_made and message_id is not None and schedule_instruction is None:
+                        # ADR 0075, case A: no Gemini call has been made yet
+                        # for this turn (the debounce window alone already
+                        # ate the latency, so a fast second message often
+                        # lands before the first round-trip even starts) -
+                        # merging is free. Re-read history now (it already
+                        # includes the newer message, since trigger_engine
+                        # only calls mark_superseded after the message that
+                        # triggered it has been persisted) and keep running
+                        # this same turn/lock/typing-loop instead of
+                        # discarding it - one reply that addresses
+                        # everything, never two replies and never a reply
+                        # that silently ignores the newer message.
+                        logger.info(
+                            "agent_worker: turn for agent %s chat %s superseded pre-call, "
+                            "merging newer history into this turn instead of discarding it",
+                            agent_id, chat_id,
+                        )
+                        contents = await _build_initial_contents(session, agent, chat_id)
+                        continue
+                    # Case B: this turn already made at least one Gemini
+                    # call - merging into a live tool-calling loop isn't
+                    # safe (functionCall/thoughtSignature state is
+                    # mid-sequence), so end here without delivering anything
+                    # (no send_message/reply_message/_post_config_reply).
+                    # Does not attempt to cancel the Gemini call itself -
+                    # see ADR 00732's Context. Skip the replacement's own
+                    # debounce wait (case B already implicitly merges via
+                    # the replacement's fresh _build_initial_contents read,
+                    # so there is nothing left to gain by waiting again) -
+                    # arm_debounce_now only sets the ZSET due-score to now,
+                    # it does not touch the turn lock, so the replacement
+                    # still waits behind this turn's own process_entry
+                    # releasing it normally on return (no double-release
+                    # race between this and the caller's finally).
+                    logger.info(
+                        "agent_worker: turn for agent %s chat %s superseded mid-turn, ending turn "
+                        "and re-firing the replacement immediately",
+                        agent_id, chat_id,
+                    )
+                    await arm_debounce_now(agent_id, chat_id)
+                    ended_status = "done"
                     return
+
+                if api_key is None and not await _check_gemini_call_budget(agent_id):
+                    # The per-minute call budget is a fixed window that resets
+                    # within a minute on its own - a turn hitting it mid-flight
+                    # is a transient stall, not a real failure, so back off and
+                    # retry in place a few times before giving up (previously
+                    # this ended the turn immediately with no retry and no
+                    # notice - user-reported: messages in the owner's own
+                    # agent chat went completely unanswered with no error
+                    # shown anywhere). A `while` sub-loop rather than `continue`
+                    # on the outer `for round_trip in range(...)` - `continue`
+                    # would advance `round_trip` and consume one of its slots
+                    # for a rate-limit backoff, an unrelated budget.
+                    budget_ok = False
+                    superseded_while_waiting = False
+                    for _ in range(settings.AGENT_GEMINI_BUDGET_MAX_RETRIES):
+                        logger.info(
+                            "agent_worker: agent %s over Gemini call budget, retrying in %ss",
+                            agent_id, settings.AGENT_GEMINI_BUDGET_RETRY_SECONDS,
+                        )
+                        await asyncio.sleep(settings.AGENT_GEMINI_BUDGET_RETRY_SECONDS)
+                        # A newer message may have superseded this turn while
+                        # it was asleep (ADR 00732) - break out to the normal
+                        # supersede handling at the top of the loop instead of
+                        # wasting further retries/a notice on a now-stale turn.
+                        if chat_id is not None and await is_superseded(agent_id, chat_id):
+                            await mark_superseded(agent_id, chat_id)
+                            superseded_while_waiting = True
+                            break
+                        if api_key is not None or await _check_gemini_call_budget(agent_id):
+                            budget_ok = True
+                            break
+                    if superseded_while_waiting:
+                        continue
+                    if not budget_ok:
+                        logger.warning(
+                            "agent_worker: agent %s still over Gemini call budget after %d retries, "
+                            "ending turn",
+                            agent_id, settings.AGENT_GEMINI_BUDGET_MAX_RETRIES,
+                        )
+                        await _post_config_reply(
+                            session,
+                            agent,
+                            agent.owner_agent_chat_id,
+                            "Your agent is handling a lot of requests right now. "
+                            "Please try again in a moment.",
+                        )
+                        await session.commit()
+                        ended_status = "done"
+                        return
 
                 # Re-derived every round-trip, not just once before the loop:
                 # a config-mode handoff tool (transfer_to_builder/
@@ -405,6 +682,7 @@ async def _run_turn(
                 elif is_config_mode(agent, chat_id):
                     persona_prompt = get_builder_state_prompt(BuilderState(agent.builder_state))
                     system_prompt = f"{persona_prompt}\n\n{agent.system_prompt}" if agent.system_prompt else persona_prompt
+                    system_prompt += _pending_confirmation_note(agent)
                 else:
                     persona_prompt = get_persona_system_prompt(agent.active_skill)
                     system_prompt = f"{persona_prompt}\n\n{agent.system_prompt}" if agent.system_prompt else persona_prompt
@@ -423,14 +701,40 @@ async def _run_turn(
                 # owner's own Gemini quota, not this project's budget.
                 max_output_tokens = settings.AGENT_MAX_OUTPUT_TOKENS_CEILING
 
+                gemini_call_made = True
                 try:
-                    result = await generate_turn(
+                    result = await _generate_turn_or_supersede(
+                        agent_id,
+                        chat_id,
                         system_prompt=system_prompt,
                         contents=contents,
                         tool_schemas=tool_schemas,
                         api_key=api_key,
                         max_output_tokens=max_output_tokens,
                     )
+                except _TurnSuperseded:
+                    # ADR 00732/0075: a newer message took over mid-call - the
+                    # in-flight Gemini request was just cancelled. End
+                    # cleanly, no owner-facing notice (unlike GeminiChatError
+                    # below, this isn't a failure). Always case B (a call was
+                    # already in flight) - re-fire the replacement
+                    # immediately rather than waiting out another full
+                    # debounce window.
+                    logger.info(
+                        "agent_worker: turn for agent %s chat %s superseded mid-call, ending turn "
+                        "and re-firing the replacement immediately",
+                        agent_id, chat_id,
+                    )
+                    # ADR 0077: no TurnResult/usageMetadata ever comes back
+                    # from a cancelled call, so record_tokens never runs for
+                    # it via the normal path below - charge a flat estimate
+                    # instead, since real input+output tokens were plausibly
+                    # still spent on Google's side (no real cancellation
+                    # exists, per ADR 00732's Context).
+                    await record_tokens(agent_id, settings.AGENT_SUPERSEDED_CALL_TOKEN_PENALTY)
+                    await arm_debounce_now(agent_id, chat_id)
+                    ended_status = "done"
+                    return
                 except GeminiChatError:
                     logger.exception("agent_worker: Gemini call failed for agent %s", agent_id)
                     # Same owner-facing UX as the outer asyncio.TimeoutError
@@ -542,6 +846,31 @@ async def _run_turn(
                     ended_status = "done"
                     return
 
+                # ADR 00732/0075: last checkpoint before anything actually
+                # leaves the process - closes the race where the flag was
+                # set while this round-trip's Gemini call was already in
+                # flight (caught on return, not before the call was made)
+                # and the model came back wanting to call send_message/
+                # reply_message. Every other tool has no externally-visible
+                # side effect worth gating on this same check. Always case B
+                # (a call has necessarily already happened to reach a
+                # function-call result) - discard and re-fire the
+                # replacement immediately, same as the top-of-loop mid-turn
+                # branch.
+                if (
+                    chat_id is not None
+                    and call["name"] in _MESSAGE_SENDING_TOOL_NAMES
+                    and await is_superseded(agent_id, chat_id)
+                ):
+                    logger.info(
+                        "agent_worker: turn for agent %s chat %s superseded just before %s, ending turn "
+                        "and re-firing the replacement immediately",
+                        agent_id, chat_id, call["name"],
+                    )
+                    await arm_debounce_now(agent_id, chat_id)
+                    ended_status = "done"
+                    return
+
                 if config_mode_turn:
                     await _publish_agent_thinking(
                         owner_user_id, "tool_call", _TOOL_THINKING_LABELS.get(call["name"], "Working…")
@@ -579,6 +908,14 @@ async def _run_turn(
                 peer_typing_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await peer_typing_task
+            if owns_typing_indicator:
+                # ADR 0075: only the owning turn tears the marker down - if
+                # this turn was mid-turn superseded, the replacement it
+                # triggers (via arm_debounce_now) claims a fresh marker of
+                # its own rather than inheriting this one, so releasing here
+                # is always safe (never races a still-running replacement's
+                # ownership).
+                await release_typing_indicator(chat_id)
             if config_mode_turn:
                 await _publish_agent_thinking(owner_user_id, ended_status)
 
@@ -622,6 +959,7 @@ class AgentInvokeConsumer(BaseStreamConsumer):
 
             if not await has_budget_remaining(agent_id):
                 logger.info("agent_worker: agent %s over daily time budget, skipping", agent_id)
+                await _notify_daily_budget_exhausted(session, agent)
                 return
 
             if kind == "schedule":
@@ -660,10 +998,16 @@ class AgentInvokeConsumer(BaseStreamConsumer):
             # never contends with anything.
             if not await acquire_turn_lock(agent_id, chat_id):
                 logger.info(
-                    "agent_worker: turn already running for agent %s %s, re-arming debounce",
+                    "agent_worker: turn already running for agent %s %s, marking superseded "
+                    "and re-arming debounce",
                     agent_id, log_target,
                 )
                 if chat_id is not None:
+                    # ADR 00732: the in-flight turn for this pair checks this
+                    # flag and ends without delivering its (now-stale) reply,
+                    # instead of letting it reach the chat before the new
+                    # message gets its own turn.
+                    await mark_superseded(agent_id, chat_id)
                     await arm_debounce(agent_id, chat_id)
                 return
 

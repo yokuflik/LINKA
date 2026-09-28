@@ -1,6 +1,7 @@
-"""Message-batch debounce/coalescing + per-chat turn mutex (ADR 0063).
+"""Message-batch debounce/coalescing + per-chat turn mutex (ADR 0063), plus
+the in-flight-turn supersede flag (ADR 00732).
 
-Two independent pieces, both scoped to (agent_id, chat_id):
+Three independent pieces, all scoped to (agent_id, chat_id):
 
 - `invoke_debounce.arm_debounce`/`due_pairs`/`pop_latest_message_id`: a
   matched trigger arms a due-ZSET member instead of enqueueing directly; a
@@ -10,6 +11,9 @@ Two independent pieces, both scoped to (agent_id, chat_id):
   `invoke_worker.process_entry`: a debounced fire landing while a previous
   turn for the same (agent_id, chat_id) is still running must not start a
   second concurrent turn - it re-arms the debounce timer instead.
+- `invoke_debounce.mark_superseded`/`is_superseded` (ADR 00732), set by that
+  same re-arm path: the in-flight turn checks this flag and ends without
+  delivering its reply if a newer message has already taken its place.
 
 Runs against real Redis (`redis_db`) and real ephemeral Postgres (ADR 0032)
 where a live Agent row is needed for process_entry. Gemini is never called
@@ -29,6 +33,8 @@ from modules.agents.invoke_debounce import (
     acquire_turn_lock,
     arm_debounce,
     due_pairs,
+    is_superseded,
+    mark_superseded,
     pop_latest_message_id,
     release_turn_lock,
 )
@@ -177,6 +183,9 @@ async def test_process_entry_skips_and_rearms_when_a_turn_is_already_running(db_
     # once the in-flight turn's lock is released.
     assert await due_pairs(now=time.time() + 3600) == [(agent.id, target_chat)]
     assert await pop_latest_message_id(agent.id, target_chat) is None  # no message_id carried by re-arm
+    # ADR 00732: the in-flight turn is also flagged superseded, so it can stop
+    # itself before delivering a now-stale reply.
+    assert await is_superseded(agent.id, target_chat) is True
 
 
 async def test_process_entry_acquires_and_releases_the_lock_around_a_normal_turn(db_session, redis_db):
@@ -196,3 +205,25 @@ async def test_process_entry_acquires_and_releases_the_lock_around_a_normal_turn
     # Lock released once the turn (mocked, completes instantly) finishes - a
     # follow-up fire for the same pair must be able to acquire it again.
     assert await acquire_turn_lock(agent.id, target_chat) is True
+
+
+# --- supersede flag (ADR 00732) --------------------------------------------
+
+async def test_is_superseded_is_false_when_never_marked(redis_db):
+    assert await is_superseded(1, 2) is False
+
+
+async def test_mark_superseded_then_is_superseded_returns_true_once(redis_db):
+    await mark_superseded(1, 2)
+
+    assert await is_superseded(1, 2) is True
+    # Get-and-delete - a second read must not resurrect it for a later,
+    # unrelated turn on the same pair.
+    assert await is_superseded(1, 2) is False
+
+
+async def test_superseded_flag_is_scoped_per_chat_not_just_per_agent(redis_db):
+    await mark_superseded(1, 100)
+
+    assert await is_superseded(1, 200) is False
+    assert await is_superseded(1, 100) is True

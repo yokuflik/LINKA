@@ -238,6 +238,20 @@ async def main(drop: bool) -> None:
                 # per-agent value to preserve, same as active_skill above).
                 "ALTER TABLE agents ADD COLUMN IF NOT EXISTS builder_state VARCHAR(32) "
                 "NOT NULL DEFAULT 'supervisor'",
+                # ADR 0072: stashed bulk_fetch_messages confirmation request,
+                # nullable (no prior value, absent = no pending confirmation).
+                "ALTER TABLE agents ADD COLUMN IF NOT EXISTS pending_confirmation JSONB",
+                # ADR 0074: judge malicious-intent flag, existing table -
+                # prior rows default to false (never evaluated for this
+                # category before this column existed).
+                "ALTER TABLE agent_judge_log ADD COLUMN IF NOT EXISTS is_malicious "
+                "BOOLEAN NOT NULL DEFAULT false",
+                # ADR 0078: a document created via save_knowledge_from_text has
+                # nothing uploaded to S3 - existing NOT NULL constraint on an
+                # already-initialised DB must be dropped (create_all never
+                # ALTERs an existing column). Every prior row keeps its real
+                # s3_key untouched.
+                "ALTER TABLE agent_knowledge_documents ALTER COLUMN s3_key DROP NOT NULL",
             ):
                 await conn.execute(text(ddl))
             # Semantic vector search (ADR 0042): embedding column safety net

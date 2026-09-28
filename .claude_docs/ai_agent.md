@@ -1,4 +1,4 @@
-# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051 / ADR 0053 / ADR 0057 / ADR 0059 / ADR 0063 / ADR 0064 / ADR 0065 / ADR 0066 / ADR 0067
+# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051 / ADR 0053 / ADR 0057 / ADR 0059 / ADR 0063 / ADR 0064 / ADR 0065 / ADR 0066 / ADR 0067 / ADR 0071 / ADR 0072 / ADR 0073 / ADR 00732 / ADR 0075 / ADR 0077 / ADR 0078
 
 Full design rationale: `docs/adr/0045-ai-agent-service-account-tool-calling.md`
 (base design), `docs/adr/0046-agent-schedules-knowledge-base-and-byok.md`
@@ -60,10 +60,11 @@ interface-only (never mention backend/infra/model/mechanism terms - see ADR
 **Execution mode** (any chat except `owner_agent_chat_id`, or a
 schedule-fired turn): `send_message`, `reply_message`, `create_chat`,
 `leave_group`, `read_history`, `update_own_triggers`, `search_messages`,
-`search_semantic` (ADR 0069), `get_knowledge_index`, `fetch_chunk`,
-`pause_and_escalate` - 11 tools. `search_messages`/`search_semantic` both take
-optional `start_date`/`end_date` (ADR 0068), which now also accept a specific
-time of day, not just a calendar date (ADR 0070).
+`search_semantic` (ADR 0069), `search_knowledge_semantic` (ADR 0078),
+`get_knowledge_index`, `fetch_chunk`, `pause_and_escalate` - 12 tools.
+`search_messages`/`search_semantic` both take optional `start_date`/`end_date`
+(ADR 0068), which now also accept a specific time of day, not just a calendar
+date (ADR 0070).
 
 **Config mode** (`chat_id == owner_agent_chat_id` only) further branches on
 `Agent.builder_state` (ADR 0049, ADR 0064) into four sub-sets (supervisor/
@@ -72,8 +73,8 @@ neither Help state does):
 
 | `builder_state` | Persona prompt | Tools |
 |---|---|---|
-| `supervisor` (default) | routes, AND acts directly for the owner (ADR 0062) | `transfer_to_builder`, `transfer_to_help_building`, `transfer_to_help_general` (ADR 0064), `resume_paused_chat` (ADR 0055), `resolve_user`, `spawn_ephemeral_task` (ADR 0061), `no_reply_needed` (ADR 0065), **plus the full execution-mode toolset** (`send_message`, `reply_message`, `create_chat`, `leave_group`, `read_history`, `update_own_triggers`, `search_messages`, `search_semantic`, `get_knowledge_index`, `fetch_chunk`, `pause_and_escalate`) |
-| `builder_agent` | interviews the owner, AND acts directly for the owner too (2026-09-26) | the 6 ADR 0047 config tools (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`, `schedule_one_off_task`) + `resolve_user` + `resume_paused_chat` (ADR 0055) + `no_reply_needed` (ADR 0065) + `transfer_to_help_building` + `transfer_to_help_general` (ADR 0064) + `transfer_to_supervisor` + `finish_building_agent`, **plus the full execution-mode toolset** (same 11 tools as supervisor) |
+| `supervisor` (default) | routes, AND acts directly for the owner (ADR 0062) | `transfer_to_builder`, `transfer_to_help_building`, `transfer_to_help_general` (ADR 0064), `resume_paused_chat` (ADR 0055), `resolve_user`, `find_chat_by_name` (ADR 0073), `spawn_ephemeral_task` (ADR 0061), `no_reply_needed` (ADR 0065), `save_knowledge_from_text` (ADR 0078), **plus the full execution-mode toolset** (`send_message`, `reply_message`, `create_chat`, `leave_group`, `read_history`, `update_own_triggers`, `search_messages`, `search_semantic`, `search_knowledge_semantic`, `get_knowledge_index`, `fetch_chunk`, `pause_and_escalate`) |
+| `builder_agent` | interviews the owner, AND acts directly for the owner too (2026-09-26) | the 6 ADR 0047 config tools (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`, `schedule_one_off_task`) + `resolve_user` + `find_chat_by_name` (ADR 0073) + `resume_paused_chat` (ADR 0055) + `no_reply_needed` (ADR 0065) + `save_knowledge_from_text` (ADR 0078) + `transfer_to_help_building` + `transfer_to_help_general` (ADR 0064) + `transfer_to_supervisor` + `finish_building_agent`, **plus the full execution-mode toolset** (same 12 tools as supervisor) |
 | `help_agent_building` (ADR 0064) | explains building/configuring an agent | `transfer_to_builder`, `transfer_to_help_general`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065) |
 | `help_general` (ADR 0064) | explains using the Linka platform | `transfer_to_help_building`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065) |
 
@@ -190,10 +191,16 @@ class AgentToolCallLog(Base):
 class AgentKnowledgeDocument(Base):
     __tablename__ = "agent_knowledge_documents"  # ADR 0046 decision 4
     id, agent_id, filename, s3_key, mime_type, status ("processing"|"ready"|"failed"), created_at
+    # s3_key is nullable (ADR 0078) - a document created via save_knowledge_from_text
+    # has nothing uploaded to S3; delete_knowledge_document skips the S3 call for it.
 
 class AgentKnowledgeChunk(Base):
     __tablename__ = "agent_knowledge_chunks"  # ADR 0046 decision 4
-    id, agent_id, document_id, chunk_index, content, content_tsv, created_at
+    id, agent_id, document_id, chunk_index, content, content_tsv, embedding, created_at
+    # embedding vector(768), nullable (ADR 0078) - own IVFFlat index
+    # (ix_agent_knowledge_chunks_embedding_ivfflat), separate from messages.embedding's
+    # (ADR 0042) - unrelated table, unrelated growth curve/tenant scoping, deferred-build
+    # the same way (see modules/agents/knowledge_ddl.py::ensure_knowledge_ivfflat_index).
 ```
 
 `Agent.restrictions` default (`DEFAULT_AGENT_RESTRICTIONS` in
@@ -335,6 +342,56 @@ code-execution tool in the registry to begin with, so this is defense in
 depth against the model being talked into simulating/roleplaying execution,
 not a fix for an actual capability.
 
+**Agent-decided knowledge-base ingestion + semantic retrieval (ADR 0078,
+2026-09-28)**: new config-mode tool `save_knowledge_from_text` (Supervisor +
+Builder, `modules/agents/tools/config_mode.py::_tool_save_knowledge_from_text`)
+lets the model itself decide, within a normal tool-calling turn, that the
+owner's latest message is reference/lookup data (inventory, price lists,
+policies, FAQs) that should never re-enter the prompt verbatim - an
+owner-invoked command was deliberately rejected (the owner isn't expected to
+know when the mechanism applies). Known, accepted risk: this is a
+classification judgment, not a size threshold, and can misfire either way;
+mitigated by prompt wording + a hard **transparency requirement** (the tool's
+schema description requires the agent to tell the owner what it saved and why,
+in the same turn - never silently). New text-only ingestion path,
+`modules/agents/knowledge_service.py::commit_knowledge_text` - same
+chunk -> quota-check -> document -> chunk-rows sequence as
+`commit_knowledge_document`, skipping the S3 fetch since the text arrives
+directly as a tool-call argument (`AgentKnowledgeDocument.s3_key=None`,
+`mime_type="text/plain"`, now nullable on the model).
+
+Both commit paths (`commit_knowledge_document` too) now embed their chunks
+**synchronously** right after the rows are written
+(`knowledge_service.py::_embed_chunks_best_effort`, one `gemini_client.
+embed_batch` call per document) - deliberately not the flush-on-demand Redis
+queue ADR 0042 uses for messages, since knowledge documents are created rarely
+(an occasional action) rather than on every send, so there's no hot-path
+latency to defer around, and immediate searchability (the owner's very next
+message could already retrieve it) outweighs the batching win. A Gemini
+failure mirrors ADR 0042's posture - logs a warning, leaves `embedding` NULL,
+never blocks/rolls back the document commit.
+
+New execution-mode tool `search_knowledge_semantic`
+(`modules/agents/tools/execution.py::_tool_search_knowledge_semantic` ->
+`knowledge_service.py::search_knowledge_semantic` ->
+`modules/agents/knowledge_crud.py::semantic_search_knowledge_chunks`): embeds
+the query via the same live query-embedding LRU (`vector_search.query_cache`,
+ADR 0044, agent-agnostic cache key) and cosine-searches
+`agent_knowledge_chunks` scoped hard to `agent_id`, returning top matches'
+content directly - no index-then-fetch two-hop. `get_knowledge_index`/
+`fetch_chunk` are **not removed** - they stay the fallback for a small
+knowledge base and for chunks with no embedding (an embed failure mid-ingest).
+Both prompts (`SUPERVISOR_PROMPT`/execution `TOOL_SCHEMAS` description) steer
+the model to prefer `search_knowledge_semantic` once a KB exists.
+
+New `AgentKnowledgeChunk.embedding vector(768)` column + its own deferred-build
+IVFFlat index (`modules/agents/knowledge_ddl.py::ensure_knowledge_ivfflat_index`,
+NOT auto-run by `apply_knowledge_ddl`/`init_db.py` - same "empty-table
+centroids are useless" reasoning as ADR 0042 for messages) - a second,
+independent IVFFlat index alongside `ix_messages_embedding_ivfflat`, never
+sharing the messages table's index or ADR 0042's Redis queue. Reuses 100% of
+existing chunking/quota/Gemini-embedding infra, no new external dependency.
+
 ## Rate limits / budgets (all via `infra/ratelimit`, ADR 0012)
 
 | Limit | Scope | Mechanism |
@@ -385,6 +442,28 @@ Complementary prompt-level instruction (not a substitute for the above):
 messages backwards and let the latest one override an earlier, contradicted
 one, replying naturally to the final ask without mentioning the correction.
 
+**Superseding an in-flight turn (ADR 00732, 2026-09-27):** ADR 0063's turn-mutex
+fallback (a debounced fire landing while a previous turn is still running)
+only re-armed the debounce - the in-flight turn itself was left untouched and
+could still call `send_message`/`reply_message` before the mutex released,
+producing a stale reply followed by a second, real one. `process_entry`'s
+same re-arm call site now also calls `invoke_debounce.mark_superseded(agent_id,
+chat_id)` (`agent_turn_superseded:{agent_id}:{chat_id}`, TTL =
+`AGENT_TURN_TIMEOUT_SECONDS`, same self-healing bound as the turn lock).
+`_run_turn` checks `is_superseded` (atomic `GETDEL`) at two points: the top of
+every round-trip loop iteration, and again immediately before dispatching
+`send_message`/`reply_message` specifically (closes the race where the flag
+was set while that round-trip's Gemini call was already in flight). Either
+hit ends the turn with no reply delivered and no re-arm (the message that set
+the flag already re-armed); every other tool call already made by the
+superseded turn (e.g. `read_history`) is simply wasted, not merged into the
+replacement turn. **Does not attempt real Gemini request cancellation** -
+confirmed via `ai.google.dev` docs that no cancellation/billing-on-early-stop
+contract is documented; the underlying HTTP call runs to completion or
+timeout exactly as before, this only gates whether its result ever reaches a
+chat. No new owner-facing notice; `agent_thinking` stays in whatever state it
+was in when superseded.
+
 **History/search pagination + truncation notice (ADR 0067, 2026-09-26)**:
 `read_history` (still 20 messages/call) and `search_messages` (still 10
 results/call) now accept `before_id`/`cursor` respectively and return
@@ -396,6 +475,71 @@ to say plainly that there's more than it pulled in one call whenever
 `has_more: true`, and offer to continue in parts, rather than answering as if
 the page were the whole history/result set. Caps themselves are unchanged;
 this is pagination + disclosure, not a bigger single-call limit.
+
+**Per-call `limit` argument (2026-09-27, no ADR)**: `read_history`,
+`search_messages`, `search_semantic`, and `bulk_fetch_messages` now all
+accept an optional `limit` in their tool-call arguments, letting the model
+ask for fewer or more results than each tool's own default in a single call
+instead of always getting the fixed page size. New shared
+`execution.py::_clamp_tool_limit(requested, default, max_limit=None)` always
+clamps to `[1, max_limit]` server-side regardless of what the model passes
+(never trusted as-is, same posture as every other restriction/quota check in
+this module) - a malformed value raises `ToolDeniedError`, not a 500.
+`read_history`/`search_messages` default to their existing 20/10 page sizes,
+capped at the new shared `AGENT_TOOL_RESULT_MAX_LIMIT` (50,
+`config/agent_settings.py`, env-overridable). `search_semantic` defaults to
+`DEFAULT_VECTOR_SEARCH_LIMITS.default_limit`, capped at
+`min(AGENT_TOOL_RESULT_MAX_LIMIT, DEFAULT_VECTOR_SEARCH_LIMITS.max_limit)` -
+never lets an agent call exceed the vector-search service's own ceiling.
+`bulk_fetch_messages` keeps its own much larger ceiling
+(`AGENT_BULK_FETCH_MAX_MESSAGES`, 1000) untouched - its `limit` (if passed)
+is clamped to `[1, AGENT_BULK_FETCH_MAX_MESSAGES]`, independent of the shared
+50 cap, since it's already gated behind `count_messages_in_range` +
+owner confirmation (ADR 0072). `count_messages_in_range` itself takes no
+`limit` (it returns a plain count, not a list). No schema/architecture
+change, no new tests (same gap as every prior agents-module step) - full
+agents suite re-run green after landing.
+
+**History transcript `[already handled]` marker (ADR 0071, 2026-09-26)**:
+`_format_history_transcript` (`invoke_worker.py`) marks any Customer/Owner
+line that is followed later in the same flattened transcript by an Agent
+line as `[already handled]` - a structural, order-based signal (no new
+schema/state) fixing a bug where an old owner instruction (e.g. "summarize
+the chat with Yossi") sitting unmarked in the transcript on a later,
+unrelated turn read to Gemini as still-pending and could trigger a
+re-execution of the tool call that already handled it. Only the trailing run
+of unanswered lines (no Agent line after them yet) stays unmarked. A matching
+`STYLE_RULES` rule in `builder_flow.py` tells the model to treat marked lines
+as past context only, never to re-act on them.
+
+**Bulk chat summarization with a hard confirmation gate (ADR 0072,
+2026-09-27)**: two new execution-mode tools (auto-unioned into
+Supervisor/Builder per ADR 0062) let the agent summarize a whole chat/date
+range in one call instead of paging `read_history` 20 rows at a time -
+`count_messages_in_range(chat_id, start_date?, end_date?)` (free
+`SELECT COUNT(*)`, `modules/messaging/crud.py`) and
+`bulk_fetch_messages(chat_id, start_date?, end_date?)` (up to
+`AGENT_BULK_FETCH_MAX_MESSAGES` = 1000 messages, single shot, no pagination
+envelope). The model must call the count first: `too_large: true` (count
+>1000) -> tell the owner to narrow the range, never attempt the fetch;
+`needs_confirmation: true` (count <=1000) -> ask the owner to confirm the
+"expensive operation" and end the turn - never call `bulk_fetch_messages` in
+that same turn. `count_messages_in_range`'s handler stashes the request on a
+new nullable `Agent.pending_confirmation` JSONB column
+(`{tool, chat_id, start_at, end_at, count, created_at}`, single dict like
+`paused_chat_ids`'s per-entry shape but not a list - only one owner
+conversation at a time), lazily expiring after
+`AGENT_PENDING_CONFIRMATION_TTL_MINUTES` (60). The *next* turn (seeded by the
+owner's actual reply) gets a reminder appended to its system prompt by
+`_pending_confirmation_note()` (`invoke_worker.py`, re-derived every
+round-trip exactly like `builder_state`'s prompt already is). Hard,
+server-side enforcement (ADR 0045 posture, not prompt-only):
+`bulk_fetch_messages`'s handler (`modules/agents/tools/execution.py`)
+independently re-checks `pending_confirmation` matches the call's exact
+chat_id/date range and hasn't expired, and re-counts at call time in case
+messages arrived in the gap - a `ToolDeniedError` either way, regardless of
+what the model claims. `reset_agent_to_default` (ADR 0050) clears
+`pending_confirmation` too. `docs/adr/0072-bulk-message-fetch-with-confirmation-gate.md`.
 
 **Activation quota exceeded -> owner notice (2026-09-25, no ADR)**: unlike the
 daily time budget above, exceeding the hourly activation quota does post a

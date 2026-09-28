@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from infra.ids.client import next_id
 from infra.ratelimit.service import check_and_increment, check_sliding_window
+from modules.agents.cache import sync_agent_cache
+from modules.agents.crud import pause_agent_chat
 from modules.agents.models import Agent, AgentToolCallLog
 
 logger = logging.getLogger(__name__)
@@ -149,3 +151,43 @@ async def _describe_escalation_counterpart(session: AsyncSession, chat_id: int, 
             return f"{name} ({user.phone_number})"
         return user.phone_number
     return "a customer"
+
+
+async def escalate_chat(
+    session: AsyncSession, agent: Agent, chat_id: int, reason: str, notice_prefix: str = "\U0001f91d"
+) -> None:
+    """Shared freeze-and-notify body behind `pause_and_escalate`
+    (`tools/execution.py::_tool_pause_and_escalate`) and the judge's
+    malicious-intent auto-escalation (ADR 0074, `judge.py`) - pauses the
+    given chat, pushes the owner, and posts a formatted system message into
+    their agent chat. `reason` is used verbatim as both the push body and the
+    system-message text; `notice_prefix` lets callers distinguish a
+    model-initiated handoff (default \U0001f91d) from an auto-detected
+    security escalation with a different glyph, without changing anything
+    else about the sequence. Both notification calls are independently
+    try/excepted so a failure in one never blocks the other or the pause
+    itself."""
+    from realtime.notification_service import send_push
+
+    updated = await pause_agent_chat(session, agent, chat_id)
+    await sync_agent_cache(updated)
+
+    counterpart = await _describe_escalation_counterpart(session, chat_id, agent.owner_user_id)
+
+    try:
+        await send_push(
+            agent.owner_user_id,
+            title="Your agent needs you",
+            body=reason,
+            data={"chat_id": str(chat_id)},
+        )
+    except Exception:
+        logger.exception("agent %s: send_push failed for escalation on chat %s", agent.id, chat_id)
+
+    try:
+        from modules.messaging.send import send_system_message
+
+        notice = f"{notice_prefix} {reason}\n\U0001f464 *{counterpart}*"
+        await send_system_message(session, agent.owner_agent_chat_id, notice)
+    except Exception:
+        logger.exception("agent %s: failed to post handoff system message for chat %s", agent.id, chat_id)

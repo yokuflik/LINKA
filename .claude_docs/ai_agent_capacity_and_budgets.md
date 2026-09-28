@@ -164,9 +164,24 @@ gate above (same convention as every other limit in this file).
 No backward compatibility - applies from deploy time forward, all agents
 start at zero usage in both windows. Additive to, not a replacement for,
 every existing call-count/wall-clock limit in `ai_agent.md`'s rate-limit
-table. The LLM Judge (`generate_structured`) is deliberately **not** metered
-against these windows - same reasoning ADR 0053 already used to keep it off
-`agent_gemini_calls`.
+table.
+
+**LLM Judge metering (2026-09-28, user-requested, extends ADR 0076):** the
+jev classification call IS metered into these same two windows -
+`judge.py::evaluate_message` calls `token_budget.record_tokens` right after
+a successful `classify()`, using a new `judge.py::_estimate_jev_input_tokens`
+helper (same `len(text) // 4` heuristic as the pre-flight estimate above,
+over `message_content + json.dumps(questions)`). jev bills **input tokens
+only** (it returns structured answers, not generated text - no completion
+side to bill), so only that estimate is recorded, never an output-token
+term; jev's HTTP response carries no usage/token count to measure this
+exactly, hence the estimate. The reject-path `_generate_redirect_message`
+Gemini call (small, minority-of-traffic, ADR 0076) is deliberately left
+**un-metered** - it has real `usage.total_tokens` available but recording it
+was judged not worth the extra coupling for a call that only fires on
+rejected messages; revisit if that changes. Judge-call failures (rate-limit/
+fail-open path) never reach the `classify()` call, so nothing is recorded
+for those.
 
 **Bug fix (2026-09-26, user-reported):** the exhaustion notice originally
 only fired inside the `finish_reason == "MAX_TOKENS"` branch - i.e. only

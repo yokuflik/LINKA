@@ -13,9 +13,11 @@ from modules.agents.crud import update_agent_config
 from modules.agents.models import Agent
 from modules.agents.tools.config_mode import (
     CONFIG_TOOL_HANDLERS,
+    _tool_find_chat_by_name,
     _tool_no_reply_needed,
     _tool_resolve_user,
     _tool_resume_paused_chat,
+    _tool_save_knowledge_from_text,
     _tool_spawn_ephemeral_task,
 )
 from modules.agents.tools.execution import EXECUTION_TOOL_HANDLERS
@@ -119,8 +121,10 @@ BUILDER_STATE_HANDLERS = {
         # EXECUTION_TOOL_HANDLERS - added explicitly so Supervisor's
         # "message X and tell me what they say" path actually has both ends.
         "resolve_user": _tool_resolve_user,
+        "find_chat_by_name": _tool_find_chat_by_name,
         "spawn_ephemeral_task": _tool_spawn_ephemeral_task,
         "no_reply_needed": _tool_no_reply_needed,
+        "save_knowledge_from_text": _tool_save_knowledge_from_text,
     },
     BuilderState.BUILDER: {
         # Same ADR 0062 reasoning as Supervisor: the Builder is talking to

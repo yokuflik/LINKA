@@ -8,7 +8,7 @@ prompt (see docs/adr/0045).
 """
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,9 +19,9 @@ from modules.agents.crud import (
     ScheduleQuotaExceededError,
     get_knowledge_chunk,
     list_knowledge_index,
-    pause_agent_chat,
     update_agent_triggers,
 )
+from modules.agents.knowledge_service import KnowledgeValidationError, search_knowledge_semantic
 from modules.agents.models import Agent
 from modules.agents.schedule import sync_schedule_zset
 from modules.agents.tools.common import (
@@ -29,13 +29,14 @@ from modules.agents.tools.common import (
     _check_daily_send_quota,
     _chat_is_group,
     _consume_owner_send_budget,
-    _describe_escalation_counterpart,
     _resolve_sender_labels,
+    escalate_chat,
 )
 from modules.chats import service as chat_service
 from modules.chats.crud.crud_participant import is_participant
 from modules.messaging import service as message_service
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
+from modules.messaging.crud import count_messages_in_range, get_messages_in_range
 from modules.messaging.read_api import get_message_history
 from modules.search import service as search_service
 from modules.search.errors import SearchQueryTooShortError
@@ -46,7 +47,6 @@ from modules.vector_search.errors import (
     EmbeddingProviderUnavailableError,
     VectorSearchQueryTooShortError,
 )
-from realtime.notification_service import send_push
 
 logger = logging.getLogger(__name__)
 
@@ -159,10 +159,26 @@ async def _tool_leave_group(session: AsyncSession, agent: Agent, arguments: dict
 READ_HISTORY_PAGE_SIZE = 20
 
 
+def _clamp_tool_limit(requested: Optional[object], *, default: int, max_limit: Optional[int] = None) -> int:
+    """Model-requested `limit` for a paginated/top-K tool: falls back to
+    `default` when omitted, always clamped to [1, max_limit] regardless of
+    what the model asks for - never trusted as-is (same posture as every
+    other Agent.restrictions/quota check in this module)."""
+    max_limit = settings.AGENT_TOOL_RESULT_MAX_LIMIT if max_limit is None else max_limit
+    if requested is None:
+        return default
+    try:
+        value = int(requested)
+    except (TypeError, ValueError):
+        raise ToolDeniedError(f"invalid limit '{requested}', expected a positive integer")
+    return max(1, min(value, max_limit))
+
+
 async def _tool_read_history(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
     chat_id = int(arguments["chat_id"])
     before_id = arguments.get("before_id")
     before_id = int(before_id) if before_id is not None else None
+    page_size = _clamp_tool_limit(arguments.get("limit"), default=READ_HISTORY_PAGE_SIZE)
 
     if chat_id in {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}:
         raise ToolDeniedError("chat_id is in blocked_read_chat_ids")
@@ -171,11 +187,11 @@ async def _tool_read_history(session: AsyncSession, agent: Agent, arguments: dic
     # (ADR 0067) - same trick cursor-paginated endpoints use elsewhere.
     messages = list(
         await get_message_history(
-            session, agent.owner_user_id, chat_id, before_id=before_id, limit=READ_HISTORY_PAGE_SIZE + 1
+            session, agent.owner_user_id, chat_id, before_id=before_id, limit=page_size + 1
         )
     )
-    has_more = len(messages) > READ_HISTORY_PAGE_SIZE
-    messages = messages[:READ_HISTORY_PAGE_SIZE]
+    has_more = len(messages) > page_size
+    messages = messages[:page_size]
     next_before_id = str(messages[-1].id) if has_more else None
 
     labels = await _resolve_sender_labels(session, [m.sender_id for m in messages])
@@ -196,6 +212,130 @@ async def _tool_read_history(session: AsyncSession, agent: Agent, arguments: dic
         # ADR 0067: has_more tells the model this page isn't the whole chat.
         "has_more": has_more,
         "next_before_id": next_before_id,
+    }
+
+
+async def _tool_count_messages_in_range(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0072: cheap pre-check the model must call before bulk_fetch_messages.
+    Decides and stashes the confirmation itself (rather than leaving that to
+    the prompt alone) so a mismatched/skipped confirmation is structurally
+    impossible, not just discouraged: bulk_fetch_messages's hard gate only
+    ever honors a pending_confirmation written by this handler."""
+    chat_id = int(arguments["chat_id"])
+    start_at = _parse_tool_datetime(arguments.get("start_date"), is_end=False)
+    end_at = _parse_tool_datetime(arguments.get("end_date"), is_end=True)
+
+    if chat_id in {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}:
+        raise ToolDeniedError("chat_id is in blocked_read_chat_ids")
+    if not await is_participant(session, chat_id, agent.owner_user_id):
+        raise ToolDeniedError("owner is not a participant of chat_id")
+
+    count = await count_messages_in_range(session, chat_id, start_at=start_at, end_at=end_at)
+
+    if count > settings.AGENT_BULK_FETCH_MAX_MESSAGES:
+        agent.pending_confirmation = None
+        return {
+            "count": count,
+            "too_large": True,
+            "max_allowed": settings.AGENT_BULK_FETCH_MAX_MESSAGES,
+        }
+
+    now = datetime.now(timezone.utc)
+    agent.pending_confirmation = {
+        "tool": "bulk_fetch_messages",
+        "chat_id": str(chat_id),
+        "start_at": start_at.isoformat() if start_at else None,
+        "end_at": end_at.isoformat() if end_at else None,
+        "count": count,
+        "created_at": now.isoformat(),
+    }
+    await session.flush()
+    return {
+        "count": count,
+        "too_large": False,
+        "needs_confirmation": True,
+    }
+
+
+def _pending_confirmation_matches(
+    agent: Agent, chat_id: int, start_at: Optional[datetime], end_at: Optional[datetime]
+) -> bool:
+    pending = agent.pending_confirmation
+    if not isinstance(pending, dict) or pending.get("tool") != "bulk_fetch_messages":
+        return False
+
+    created_at = pending.get("created_at")
+    try:
+        if created_at is None or datetime.now(timezone.utc) - datetime.fromisoformat(created_at) > timedelta(
+            minutes=settings.AGENT_PENDING_CONFIRMATION_TTL_MINUTES
+        ):
+            return False
+    except ValueError:
+        return False
+
+    if pending.get("chat_id") != str(chat_id):
+        return False
+    pending_start = pending.get("start_at")
+    pending_end = pending.get("end_at")
+    call_start = start_at.isoformat() if start_at else None
+    call_end = end_at.isoformat() if end_at else None
+    return pending_start == call_start and pending_end == call_end
+
+
+async def _tool_bulk_fetch_messages(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0072: single-shot fetch of up to AGENT_BULK_FETCH_MAX_MESSAGES
+    messages, for whole-chat summarization. Hard-gated, server-side, on an
+    exactly-matching, unexpired Agent.pending_confirmation written by
+    count_messages_in_range - never runs off the model's say-so alone, and
+    re-verifies the true count at call time (closes the race where messages
+    arrived between the confirmation and this call)."""
+    chat_id = int(arguments["chat_id"])
+    start_at = _parse_tool_datetime(arguments.get("start_date"), is_end=False)
+    end_at = _parse_tool_datetime(arguments.get("end_date"), is_end=True)
+    fetch_limit = _clamp_tool_limit(
+        arguments.get("limit"),
+        default=settings.AGENT_BULK_FETCH_MAX_MESSAGES,
+        max_limit=settings.AGENT_BULK_FETCH_MAX_MESSAGES,
+    )
+
+    if chat_id in {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}:
+        raise ToolDeniedError("chat_id is in blocked_read_chat_ids")
+    if not await is_participant(session, chat_id, agent.owner_user_id):
+        raise ToolDeniedError("owner is not a participant of chat_id")
+
+    if not _pending_confirmation_matches(agent, chat_id, start_at, end_at):
+        raise ToolDeniedError(
+            "no matching confirmed request - call count_messages_in_range for this exact "
+            "chat_id/date range first and get the owner's explicit confirmation before "
+            "calling bulk_fetch_messages"
+        )
+
+    count = await count_messages_in_range(session, chat_id, start_at=start_at, end_at=end_at)
+    if count > settings.AGENT_BULK_FETCH_MAX_MESSAGES:
+        agent.pending_confirmation = None
+        raise ToolDeniedError(
+            f"chat now has {count} messages in range, over the {settings.AGENT_BULK_FETCH_MAX_MESSAGES} limit "
+            "- narrow the range and confirm again"
+        )
+
+    messages = await get_messages_in_range(
+        session, chat_id, start_at=start_at, end_at=end_at, limit=fetch_limit
+    )
+    agent.pending_confirmation = None
+    await session.flush()
+
+    labels = await _resolve_sender_labels(session, [m.sender_id for m in messages])
+    return {
+        "messages": [
+            {
+                "sender_name": labels.get(str(m.sender_id), {}).get("name") if m.sender_id is not None else None,
+                "sender_phone_number": labels.get(str(m.sender_id), {}).get("phone_number") if m.sender_id is not None else None,
+                "timestamp": m.created_at.isoformat(),
+                "content": m.content,
+            }
+            for m in messages
+        ],
+        "count": len(messages),
     }
 
 
@@ -246,6 +386,7 @@ async def _tool_search_messages(session: AsyncSession, agent: Agent, arguments: 
     query = str(arguments["query"])
     chat_id = arguments.get("chat_id")
     cursor = arguments.get("cursor")
+    limit = _clamp_tool_limit(arguments.get("limit"), default=10)
     start_at = _parse_tool_datetime(arguments.get("start_date"), is_end=False)
     end_at = _parse_tool_datetime(arguments.get("end_date"), is_end=True)
 
@@ -262,7 +403,7 @@ async def _tool_search_messages(session: AsyncSession, agent: Agent, arguments: 
                 chat_id=chat_id,
                 raw_query=query,
                 cursor=cursor,
-                limit=10,
+                limit=limit,
                 start_at=start_at,
                 end_at=end_at,
             )
@@ -272,7 +413,7 @@ async def _tool_search_messages(session: AsyncSession, agent: Agent, arguments: 
                 user_id=agent.owner_user_id,
                 raw_query=query,
                 cursor=cursor,
-                limit=10,
+                limit=limit,
                 start_at=start_at,
                 end_at=end_at,
             )
@@ -310,6 +451,12 @@ async def _tool_search_semantic(session: AsyncSession, agent: Agent, arguments: 
     support. Flat top-K list, no cursor (semantic search isn't paginated)."""
     query = str(arguments["query"])
     chat_id = arguments.get("chat_id")
+    vector_limits = vector_search_service.DEFAULT_VECTOR_SEARCH_LIMITS
+    limit = _clamp_tool_limit(
+        arguments.get("limit"),
+        default=vector_limits.default_limit,
+        max_limit=min(settings.AGENT_TOOL_RESULT_MAX_LIMIT, vector_limits.max_limit),
+    )
     start_at = _parse_tool_datetime(arguments.get("start_date"), is_end=False)
     end_at = _parse_tool_datetime(arguments.get("end_date"), is_end=True)
 
@@ -324,7 +471,7 @@ async def _tool_search_semantic(session: AsyncSession, agent: Agent, arguments: 
             user_id=agent.owner_user_id,
             raw_query=query,
             chat_id=chat_id,
-            limit=vector_search_service.DEFAULT_VECTOR_SEARCH_LIMITS.default_limit,
+            limit=limit,
             start_at=start_at,
             end_at=end_at,
         )
@@ -350,6 +497,33 @@ async def _tool_search_semantic(session: AsyncSession, agent: Agent, arguments: 
             }
             for r in result.results
         ],
+    }
+
+
+async def _tool_search_knowledge_semantic(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0078: ranked chunk retrieval over this agent's own knowledge base -
+    embeds the query, cosine-searches agent_knowledge_chunks, returns the top
+    matches' content directly (no index-then-fetch two-hop). Chunks lacking an
+    embedding (e.g. an embed failure mid-ingest) never surface here - they
+    remain reachable only via get_knowledge_index/fetch_chunk, which stay
+    registered as the fallback."""
+    query = str(arguments["query"])
+    limit = _clamp_tool_limit(arguments.get("limit"), default=settings.AGENT_KNOWLEDGE_SEARCH_LIMIT, max_limit=20)
+    try:
+        matches = await search_knowledge_semantic(session, agent, query=query, limit=limit)
+    except KnowledgeValidationError as exc:
+        raise ToolDeniedError(str(exc))
+    return {
+        "matches": [
+            {
+                "document_id": str(m["document_id"]),
+                "filename": m["filename"],
+                "chunk_id": str(m["chunk_id"]),
+                "content": m["content"],
+                "distance": m["distance"],
+            }
+            for m in matches
+        ]
     }
 
 
@@ -393,40 +567,12 @@ async def _tool_pause_and_escalate(session: AsyncSession, agent: Agent, argument
     if chat_id is None:
         raise ToolDeniedError("pause_and_escalate requires a triggering chat")
 
-    updated = await pause_agent_chat(session, agent, chat_id)
-    await sync_agent_cache(updated)
-
+    # reason is written by the model itself, in whatever language it's been
+    # conversing with the owner in (CHAT_STYLE_RULES instructs it to write
+    # the full notice, not a fill-in-the-blank fragment) - escalate_chat
+    # posts it verbatim behind the fixed 🤝/counterpart formatting.
     reason = str(arguments.get("reason") or "The agent needs your input to continue.")
-    counterpart = await _describe_escalation_counterpart(session, chat_id, agent.owner_user_id)
-
-    try:
-        await send_push(
-            agent.owner_user_id,
-            title="Your agent needs you",
-            body=reason,
-            data={"chat_id": str(chat_id)},
-        )
-    except Exception:
-        logger.exception("agent %s: send_push failed for pause_and_escalate on chat %s", agent.id, chat_id)
-
-    try:
-        from modules.messaging.send import send_system_message
-
-        # reason is written by the model itself, in whatever language it's
-        # been conversing with the owner in (CHAT_STYLE_RULES instructs it to
-        # write the full notice, not a fill-in-the-blank fragment). The only
-        # fixed part is the counterpart line - deliberately label-free (👤
-        # rather than an English word like "With:") since it's built
-        # server-side with no language context to translate a label into.
-        # *bold* renders in the PoC (poc/composables/messageFormat.js),
-        # matching the WhatsApp-style formatting CHAT_STYLE_RULES already
-        # teaches the model to use in its own replies - the counterpart name
-        # is the one part worth making visually stand out (bold), not a
-        # dash/bullet list.
-        notice = f"🤝 {reason}\n👤 *{counterpart}*"
-        await send_system_message(session, agent.owner_agent_chat_id, notice)
-    except Exception:
-        logger.exception("agent %s: failed to post handoff system message for chat %s", agent.id, chat_id)
+    await escalate_chat(session, agent, chat_id, reason)
 
     return {"paused_chat_id": str(chat_id)}
 
@@ -443,9 +589,12 @@ EXECUTION_TOOL_HANDLERS = {
     "create_chat": _tool_create_chat,
     "leave_group": _tool_leave_group,
     "read_history": _tool_read_history,
+    "count_messages_in_range": _tool_count_messages_in_range,
+    "bulk_fetch_messages": _tool_bulk_fetch_messages,
     "update_own_triggers": _tool_update_own_triggers,
     "search_messages": _tool_search_messages,
     "search_semantic": _tool_search_semantic,
+    "search_knowledge_semantic": _tool_search_knowledge_semantic,
     "get_knowledge_index": _tool_get_knowledge_index,
     "fetch_chunk": _tool_fetch_chunk,
     "pause_and_escalate": _tool_pause_and_escalate,

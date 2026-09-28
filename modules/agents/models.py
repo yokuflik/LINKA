@@ -1,9 +1,11 @@
 import json
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Column, BigInteger, Boolean, LargeBinary, String, Text, DateTime, ForeignKey, text
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.sql import func
 
+from config import settings
 from infra.db.base import Base
 
 # Default shape of Agent.restrictions - a denylist over the messaging domain
@@ -172,6 +174,16 @@ class Agent(Base):
         server_default=text(f"'{DEFAULT_AGENT_BUILDER_STATE}'"),
     )
 
+    # ADR 0072: a single stashed bulk_fetch_messages request awaiting the
+    # owner's yes/no in the Supervisor chat - {"tool", "chat_id", "start_at",
+    # "end_at", "count", "created_at"} or NULL. Single dict, not a list, like
+    # paused_chat_ids - only one owner conversation happens at a time. Lazy
+    # expiry (AGENT_PENDING_CONFIRMATION_TTL_MINUTES after created_at), checked
+    # on read. Written only by count_messages_in_range's handler, read/cleared
+    # only by bulk_fetch_messages's hard gate (modules/agents/tools/execution.py)
+    # - never a security boundary on its own without that server-side recheck.
+    pending_confirmation = Column(JSONB, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(
         DateTime(timezone=True),
@@ -200,7 +212,10 @@ class AgentKnowledgeDocument(Base):
     )
 
     filename = Column(String(255), nullable=False)
-    s3_key = Column(Text, nullable=False)
+    # Nullable (ADR 0078): a document created via save_knowledge_from_text has
+    # nothing uploaded to S3 - there is no object to delete on removal, so
+    # delete_knowledge_document's best-effort S3 delete just short-circuits.
+    s3_key = Column(Text, nullable=True)
     mime_type = Column(String(128), nullable=False)
 
     # "processing" | "ready" | "failed"
@@ -244,6 +259,14 @@ class AgentKnowledgeChunk(Base):
     # Computed/TSVectorType so a plain column here matches the ALTER-based
     # deployed-DB safety net in scripts/init_db.py.
     content_tsv = Column(TSVECTOR, nullable=True)
+
+    # Per-chunk embedding (ADR 0078) - mirrors messages.embedding (ADR 0042)
+    # in miniature, but on a separate column/index: this table's growth curve
+    # and tenant scoping (per-agent, not per-user-across-chats) are unrelated
+    # to messages'. Nullable - populated synchronously at chunk-creation time
+    # (modules/agents/knowledge_service.py); a chunk whose Gemini embed call
+    # failed mid-ingest just falls back to the FTS/browse tools.
+    embedding = Column(Vector(settings.VECTOR_EMBEDDING_DIM), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -302,5 +325,6 @@ class AgentJudgeLog(Base):
     is_approved = Column(Boolean, nullable=False)
     reason = Column(Text, nullable=False)
     is_follow_up_flag = Column(Boolean, nullable=False)
+    is_malicious = Column(Boolean, nullable=False, server_default="false")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

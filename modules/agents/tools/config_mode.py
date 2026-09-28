@@ -7,6 +7,7 @@ system_prompt/active_skill mutation + cache-invalidation path as
 PATCH /agents/me and update_own_triggers - one write path, multiple entry
 points.
 """
+import difflib
 import uuid
 from datetime import datetime, timezone
 
@@ -16,6 +17,7 @@ from config import settings
 from infra.ratelimit.service import peek_fixed_window, peek_sliding_window
 from modules.agents.cache import sync_agent_cache
 from modules.agents.crud import (
+    KnowledgeQuotaExceededError,
     ScheduleQuotaExceededError,
     count_knowledge_chunks,
     count_knowledge_documents,
@@ -28,6 +30,7 @@ from modules.agents.ephemeral_tasks import (
     EphemeralTaskQuotaExceededError,
     spawn_ephemeral_task,
 )
+from modules.agents.knowledge_service import KnowledgeValidationError, commit_knowledge_text
 from modules.agents.models import Agent
 from modules.agents.personas import STORABLE_SKILLS
 from modules.agents.schedule import sync_schedule_zset
@@ -102,6 +105,59 @@ async def _tool_resolve_user(session: AsyncSession, agent: Agent, arguments: dic
         "phone_number": user.phone_number,
         "username": user.username,
     }
+
+
+# ADR 0073: how similar a chat title must be to the owner's typed name to be
+# offered as a candidate at all - below this, silently drop it rather than
+# padding the result with noise the model would have to filter itself.
+_FIND_CHAT_MIN_SIMILARITY = 0.5
+_FIND_CHAT_MAX_MATCHES = 5
+
+
+async def _tool_find_chat_by_name(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0073: resolves a free-form name/nickname the owner mentions to one
+    of THEIR OWN chats, by matching against chat titles as the owner would
+    see them in their own chat list (group Chat.title, or the 1:1 peer's
+    display_name||username||phone_number) - never a table-wide user search
+    (ADR 0017/0024 ban fuzzy matching over the unbounded users table). The
+    candidate set is always the owner's own bounded chat list, fetched fresh
+    per call; matching happens in Python over that already-small,
+    already-authorized list, not via a DB-level ILIKE/trigram query.
+
+    Returns {"matches": [...]}, 0 to _FIND_CHAT_MAX_MATCHES entries,
+    best-first. Deliberately never collapses close matches into one pick -
+    the caller (prompt) is responsible for asking the owner to disambiguate
+    when there's more than one candidate, and for falling back to
+    resolve_user (exact phone/username) when there are none."""
+    name = str(arguments.get("name") or "").strip()
+    if not name:
+        raise ToolDeniedError("name must not be empty")
+
+    from modules.chats import service as chat_service_module
+
+    titles = await chat_service_module.get_chat_titles_for_user(session, agent.owner_user_id)
+
+    needle = name.casefold()
+    scored = []
+    for entry in titles:
+        haystack = (entry["name"] or "").casefold()
+        if not haystack:
+            continue
+        if needle == haystack:
+            score = 1.0
+        elif needle in haystack or haystack in needle:
+            score = 0.9
+        else:
+            score = difflib.SequenceMatcher(None, needle, haystack).ratio()
+        if score >= _FIND_CHAT_MIN_SIMILARITY:
+            scored.append((score, entry))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    matches = [
+        {"chat_id": str(entry["chat_id"]), "name": entry["name"], "is_group": entry["is_group"]}
+        for _score, entry in scored[:_FIND_CHAT_MAX_MATCHES]
+    ]
+    return {"matches": matches}
 
 
 async def _tool_resume_paused_chat(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
@@ -318,6 +374,29 @@ async def _tool_no_reply_needed(session: AsyncSession, agent: Agent, arguments: 
     return {"status": "ok"}
 
 
+async def _tool_save_knowledge_from_text(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0078: agent-decided ingestion of reference/lookup text (inventory,
+    price lists, policies, FAQs) into the knowledge base, so it stops being
+    replayed verbatim on every future config-mode turn. The model decides
+    within the normal tool-calling turn whether the owner's latest message is
+    this kind of data - see the ADR for the accepted classification-risk
+    tradeoff. Text-only, no S3 involved (commit_knowledge_text)."""
+    source_label = str(arguments.get("source_label") or "").strip()
+    content = str(arguments.get("content") or "").strip()
+    if not source_label:
+        raise ToolDeniedError("source_label must not be empty")
+    if not content:
+        raise ToolDeniedError("content must not be empty")
+
+    try:
+        document = await commit_knowledge_text(session, agent, source_label=source_label, raw_text=content)
+    except KnowledgeQuotaExceededError as exc:
+        raise ToolDeniedError(str(exc))
+    except KnowledgeValidationError as exc:
+        raise ToolDeniedError(str(exc))
+    return {"status": "saved", "document_id": str(document.id), "filename": document.filename}
+
+
 CONFIG_TOOL_HANDLERS = {
     "set_agent_persona": _tool_set_agent_persona,
     "update_agent_rules": _tool_update_agent_rules,
@@ -326,8 +405,10 @@ CONFIG_TOOL_HANDLERS = {
     "estimate_api_usage": _tool_estimate_api_usage,
     "schedule_one_off_task": _tool_schedule_one_off_task,
     "resolve_user": _tool_resolve_user,
+    "find_chat_by_name": _tool_find_chat_by_name,
     "resume_paused_chat": _tool_resume_paused_chat,
     "get_capacity_status": _tool_get_capacity_status,
     "spawn_ephemeral_task": _tool_spawn_ephemeral_task,
     "no_reply_needed": _tool_no_reply_needed,
+    "save_knowledge_from_text": _tool_save_knowledge_from_text,
 }

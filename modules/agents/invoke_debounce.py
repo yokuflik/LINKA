@@ -7,6 +7,26 @@ now + AGENT_INVOKE_DEBOUNCE_SECONDS. A second match for the same
 ZADD), coalescing a fast burst/self-correction into a single turn instead of
 two racing ones. Same due-ZSET pattern as modules.agents.schedule's
 AGENT_SCHEDULE_DUE_ZSET_KEY, polled by its own tight loop in invoke_worker.
+
+Also holds the ADR 00732 supersede flag: set alongside the turn-mutex re-arm
+path when a new message arrives while a previous turn for the same pair is
+already running, so that in-flight turn can notice and end without
+delivering its (now-stale) reply.
+
+ADR 0075 adds two things on top: `arm_debounce_now` (re-fire immediately
+instead of waiting out another full debounce window - used once a
+mid-turn supersede has already implicitly merged the newer message via the
+replacement turn's own fresh history read) and the `agent_typing_active`
+marker, which lets the peer-visible typing indicator's lifetime span
+"there is unanswered agent activity for this chat" rather than "this one
+turn object is still alive" - so a superseded turn's indicator hand-off to
+its replacement has no visible gap.
+
+ADR 0077 adds `is_turn_running`, a read-only check against the turn lock -
+trigger_engine._evaluate_triggers calls it before arming the debounce so a
+second message can detect an already-running turn immediately (one Redis
+GET) instead of waiting for the next debounce cycle's acquire_turn_lock
+failure in process_entry to discover the conflict.
 """
 import logging
 import time
@@ -59,6 +79,23 @@ async def arm_debounce(agent_id: int, chat_id: int, message_id: Optional[int] = 
         logger.exception("agent invoke debounce arm failed for agent %s chat %s", agent_id, chat_id)
 
 
+async def arm_debounce_now(agent_id: int, chat_id: int) -> None:
+    """ADR 0075: re-fires this pair immediately (score = now) instead of
+    waiting out another full AGENT_INVOKE_DEBOUNCE_SECONDS window - used only
+    right after a mid-turn supersede (case B), where the replacement turn's
+    own `_build_initial_contents` will already read history fresh (including
+    whatever newer message caused the supersede), so there is nothing left
+    to gain by coalescing further. Never touches the stashed message_id
+    (whatever `mark_superseded`'s caller already stored via a plain
+    `arm_debounce` call stays as-is)."""
+    try:
+        await redis_client.zadd(
+            settings.AGENT_INVOKE_DEBOUNCE_ZSET_KEY, {_member(agent_id, chat_id): time.time()}
+        )
+    except Exception:
+        logger.exception("agent invoke immediate re-arm failed for agent %s chat %s", agent_id, chat_id)
+
+
 async def due_pairs(now: Optional[float] = None) -> list[tuple[int, int]]:
     """Pops (atomically removes + returns) every (agent_id, chat_id) pair due
     to fire at or before `now` (default: current time)."""
@@ -104,8 +141,90 @@ async def acquire_turn_lock(agent_id: int, chat_id: Optional[int]) -> bool:
     )
 
 
+async def is_turn_running(agent_id: int, chat_id: Optional[int]) -> bool:
+    """ADR 0077: read-only existence check against the turn lock, called from
+    trigger_engine._evaluate_triggers before arming the debounce - lets a
+    second message detect an already-running turn immediately (a single
+    Redis GET) instead of waiting for the next debounce cycle to rediscover
+    it via a failed acquire_turn_lock in process_entry. Never acquires or
+    releases the lock itself - only the worker does that."""
+    try:
+        return bool(await redis_client.exists(_lock_key(agent_id, chat_id)))
+    except Exception:
+        logger.exception("agent turn running check failed for agent %s chat %s", agent_id, chat_id)
+        return False
+
+
 async def release_turn_lock(agent_id: int, chat_id: Optional[int]) -> None:
     try:
         await redis_client.delete(_lock_key(agent_id, chat_id))
     except Exception:
         logger.exception("agent turn lock release failed for agent %s chat %s", agent_id, chat_id)
+
+
+def _superseded_key(agent_id: int, chat_id: Optional[int]) -> str:
+    return f"{settings.AGENT_TURN_SUPERSEDED_KEY_PREFIX}:{agent_id}:{chat_id}"
+
+
+async def mark_superseded(agent_id: int, chat_id: Optional[int]) -> None:
+    """ADR 00732: set the moment a new message matches a trigger while the
+    turn lock for this pair is already held - the in-flight turn checks this
+    flag and, if set, ends without delivering its reply (does not attempt to
+    cancel the underlying Gemini call itself). TTL mirrors the turn lock so a
+    flag nobody ever reads self-heals on the same bound."""
+    try:
+        await redis_client.set(
+            _superseded_key(agent_id, chat_id),
+            "1",
+            ex=int(settings.AGENT_TURN_TIMEOUT_SECONDS),
+        )
+    except Exception:
+        logger.exception("agent turn supersede mark failed for agent %s chat %s", agent_id, chat_id)
+
+
+async def is_superseded(agent_id: int, chat_id: Optional[int]) -> bool:
+    """Atomic get-and-delete so the flag can never leak into a later,
+    unrelated turn for the same pair."""
+    try:
+        value = await redis_client.getdel(_superseded_key(agent_id, chat_id))
+    except Exception:
+        logger.exception("agent turn supersede check failed for agent %s chat %s", agent_id, chat_id)
+        return False
+    return value is not None
+
+
+def _typing_active_key(chat_id: int) -> str:
+    return f"{settings.AGENT_TYPING_ACTIVE_KEY_PREFIX}:{chat_id}"
+
+
+async def claim_typing_indicator(chat_id: int) -> bool:
+    """ADR 0075: SET NX so only the first turn touching this chat while
+    activity is unanswered starts (and owns) the peer-visible typing loop -
+    a turn that gets superseded before delivering anything must not tear the
+    indicator down and leave a gap before its replacement's own loop spins
+    up. TTL is a self-healing bound in case the owning turn crashes before
+    releasing it; the owning loop refreshes it on every publish tick so it
+    never expires mid-turn."""
+    try:
+        return bool(
+            await redis_client.set(
+                _typing_active_key(chat_id), "1", nx=True, ex=int(settings.AGENT_TURN_TIMEOUT_SECONDS)
+            )
+        )
+    except Exception:
+        logger.exception("agent typing indicator claim failed for chat %s", chat_id)
+        return True  # fail open: better a duplicate loop than none at all
+
+
+async def refresh_typing_indicator(chat_id: int) -> None:
+    try:
+        await redis_client.expire(_typing_active_key(chat_id), int(settings.AGENT_TURN_TIMEOUT_SECONDS))
+    except Exception:
+        logger.exception("agent typing indicator refresh failed for chat %s", chat_id)
+
+
+async def release_typing_indicator(chat_id: int) -> None:
+    try:
+        await redis_client.delete(_typing_active_key(chat_id))
+    except Exception:
+        logger.exception("agent typing indicator release failed for chat %s", chat_id)

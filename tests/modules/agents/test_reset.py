@@ -160,7 +160,7 @@ async def _add_knowledge_document(session, agent: Agent, *, filename="doc.pdf"):
     # application/pdf: chunks are supplied pre-computed (client-side parsing
     # in real life), so this never touches S3/httpx, unlike the text/
     # markdown path which fetches the raw file server-side.
-    return await commit_knowledge_document(
+    document, _chunks = await commit_knowledge_document(
         session,
         agent,
         filename=filename,
@@ -168,6 +168,7 @@ async def _add_knowledge_document(session, agent: Agent, *, filename="doc.pdf"):
         mime_type="application/pdf",
         chunks=["chunk one", "chunk two"],
     )
+    return document
 
 
 # --- reset_agent_to_default: message purge -----------------------------------

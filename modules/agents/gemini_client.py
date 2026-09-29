@@ -103,8 +103,6 @@ async def generate_turn(
     if max_output_tokens is not None:
         body["generationConfig"] = {"maxOutputTokens": max_output_tokens}
 
-    logger.info("Gemini generateContent request body: %s", json.dumps(body, ensure_ascii=False))
-
     try:
         async with httpx.AsyncClient(timeout=settings.GEMINI_HTTP_TIMEOUT_SECONDS) as client:
             resp = await client.post(url, params={"key": api_key}, json=body)
@@ -185,8 +183,6 @@ async def generate_structured(
     }
     if system_prompt:
         body["systemInstruction"] = {"parts": [{"text": system_prompt}]}
-
-    logger.info("Gemini structured generateContent request body: %s", json.dumps(body, ensure_ascii=False))
 
     try:
         async with httpx.AsyncClient(timeout=settings.GEMINI_HTTP_TIMEOUT_SECONDS) as client:

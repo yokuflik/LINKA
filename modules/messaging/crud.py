@@ -307,6 +307,7 @@ async def count_unread_messages(session: AsyncSession, chat_id: int, last_read_m
 async def count_messages_in_range(
     session: AsyncSession,
     chat_id: int,
+    user_id: int,
     start_at: Optional[datetime] = None,
     end_at: Optional[datetime] = None,
 ) -> int:
@@ -314,9 +315,15 @@ async def count_messages_in_range(
     count_messages_in_range tool and as bulk_fetch_messages's own hard
     server-side recheck before it actually returns any content. Real
     (non-system, non-deleted) messages only, same shape as
-    count_unread_messages above."""
-    stmt = select(func.count()).select_from(Message).where(
-        Message.chat_id == chat_id, Message.deleted_at.is_(None), Message.sender_id.is_not(None)
+    count_unread_messages above. `user_id` membership is enforced via a
+    participants JOIN (same pattern as vector_search.semantic_search_messages)
+    so a wrong/guessed chat_id structurally counts zero rows, on top of - not
+    instead of - the caller's own is_participant pre-check."""
+    stmt = (
+        select(func.count())
+        .select_from(Message)
+        .join(Participant, (Participant.chat_id == Message.chat_id) & (Participant.user_id == user_id))
+        .where(Message.chat_id == chat_id, Message.deleted_at.is_(None), Message.sender_id.is_not(None))
     )
     if start_at is not None:
         stmt = stmt.where(Message.created_at >= start_at)
@@ -330,6 +337,7 @@ async def count_messages_in_range(
 async def get_messages_in_range(
     session: AsyncSession,
     chat_id: int,
+    user_id: int,
     start_at: Optional[datetime] = None,
     end_at: Optional[datetime] = None,
     limit: int = 1000,
@@ -339,9 +347,13 @@ async def get_messages_in_range(
     (the caller, bulk_fetch_messages, always passes
     AGENT_BULK_FETCH_MAX_MESSAGES and has already confirmed via
     count_messages_in_range that the true count is within that cap - this
-    limit is a backstop, not the primary guard)."""
-    stmt = select(Message).where(
-        Message.chat_id == chat_id, Message.deleted_at.is_(None), Message.sender_id.is_not(None)
+    limit is a backstop, not the primary guard). `user_id` membership is
+    enforced via a participants JOIN, same hard guarantee as
+    count_messages_in_range above."""
+    stmt = (
+        select(Message)
+        .join(Participant, (Participant.chat_id == Message.chat_id) & (Participant.user_id == user_id))
+        .where(Message.chat_id == chat_id, Message.deleted_at.is_(None), Message.sender_id.is_not(None))
     )
     if start_at is not None:
         stmt = stmt.where(Message.created_at >= start_at)
@@ -352,6 +364,65 @@ async def get_messages_in_range(
 
     result = await session.execute(stmt)
     return result.scalars().all()
+
+
+async def list_attached_files(
+    session: AsyncSession,
+    chat_id: int,
+    sender_id: int,
+    limit: int = 20,
+) -> Sequence[Message]:
+    """ADR 0083: media messages a specific sender sent into a specific chat -
+    the agent's `list_attached_files` tool query, scoped by its caller to
+    (agent.owner_agent_chat_id, agent.owner_user_id) so it only ever surfaces
+    files the owner personally attached in their own agent chat. Newest
+    first, same shape/limit convention as get_chat_messages.
+
+    ADR 0086: a captionless attachment is excluded - a caption is the only
+    signal send_attached_file has to judge whether a file matches a later
+    customer request, and process_outgoing now requires one for any new
+    attach into this chat, but older captionless rows predate that
+    enforcement and are grandfathered as unusable rather than backfilled."""
+    stmt = (
+        select(Message)
+        .where(
+            Message.chat_id == chat_id,
+            Message.sender_id == sender_id,
+            Message.media_key.is_not(None),
+            Message.content.is_not(None),
+            Message.content != "",
+            Message.deleted_at.is_(None),
+            Message.purged_at.is_(None),
+        )
+        .order_by(Message.id.desc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+async def get_latest_incoming_message(
+    session: AsyncSession, chat_id: int, exclude_sender_id: int
+) -> Optional[Message]:
+    """ADR 0086: the most recent non-deleted message in `chat_id` NOT sent by
+    `exclude_sender_id` - used by the attachment-relevance judge to find what
+    the other party (the customer) actually asked for, right before
+    send_attached_file resends a file into that same chat. Text content only
+    (may be None for a media-only message) - the caller decides how to treat
+    that case."""
+    stmt = (
+        select(Message)
+        .where(
+            Message.chat_id == chat_id,
+            Message.sender_id.is_not(None),
+            Message.sender_id != exclude_sender_id,
+            Message.deleted_at.is_(None),
+        )
+        .order_by(Message.id.desc())
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.scalars().first()
 
 
 async def edit_message_content(

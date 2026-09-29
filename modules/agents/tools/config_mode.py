@@ -54,6 +54,22 @@ async def _tool_update_agent_rules(session: AsyncSession, agent: Agent, argument
     return {"system_prompt": updated.system_prompt}
 
 
+async def _tool_set_agent_identity(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """Sets the agent's optional display name and/or AI-disclosure toggle
+    (ADR 0081). Both arguments are independently optional - a key absent
+    from `arguments` is left unchanged on the row, matching how
+    update_agent_config only touches keys present in the patch."""
+    patch = {}
+    if "agent_name" in arguments:
+        name = str(arguments["agent_name"]).strip()
+        patch["agent_name"] = name or None
+    if "disclose_as_agent" in arguments:
+        patch["disclose_as_agent"] = bool(arguments["disclose_as_agent"])
+    updated = await update_agent_config(session, agent, patch)
+    await sync_agent_cache(updated)
+    return {"agent_name": updated.agent_name, "disclose_as_agent": updated.disclose_as_agent}
+
+
 async def _tool_set_trigger(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
     """Writes into Agent.triggers, same shape as the update_own_triggers
     execution tool - kept separate since this one is the config-mode entry
@@ -287,7 +303,6 @@ async def _tool_get_capacity_status(session: AsyncSession, agent: Agent, argumen
             "window_seconds": settings.AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS,
             "note": "per individual sender, not agent-wide",
         },
-        "max_messages_per_day": agent.restrictions.get("max_messages_per_day"),
         "send_message_quota": {
             "used": send_rate_used, "max": settings.WS_SEND_MESSAGE_RATE_MAX,
             "window_seconds": settings.WS_SEND_MESSAGE_RATE_WINDOW_SECONDS,
@@ -400,6 +415,7 @@ async def _tool_save_knowledge_from_text(session: AsyncSession, agent: Agent, ar
 CONFIG_TOOL_HANDLERS = {
     "set_agent_persona": _tool_set_agent_persona,
     "update_agent_rules": _tool_update_agent_rules,
+    "set_agent_identity": _tool_set_agent_identity,
     "set_trigger": _tool_set_trigger,
     "get_agent_status": _tool_get_agent_status,
     "estimate_api_usage": _tool_estimate_api_usage,

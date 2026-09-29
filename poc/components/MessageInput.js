@@ -7,13 +7,16 @@
 // on every keystroke, not just the first one.
 //
 // The [+] button opens a small WhatsApp-style attach menu: "Photos & Videos"
-// (native picker filtered to image/video types -> pick-media) and "Documents"
-// (unfiltered picker, any file type -> pick-document).
+// (native picker filtered to image/video types) and "Documents" (unfiltered
+// picker, any file type). Either one stages the file via "stage-attachment"
+// (shown as a preview strip above the composer with a cancel/x button)
+// instead of sending immediately, so a caption can be typed first; the send
+// button then emits "send-message" for the root to send both together.
 // Keep in sync with config/app_settings.py::MAX_MESSAGE_CONTENT_LENGTH (server-enforced).
 const MAX_MESSAGE_LENGTH = 8192;
 
 const MessageInput = {
-  emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'cancel-edit', 'pick-media', 'pick-document', 'start-recording', 'stop-recording', 'clear-attach-error', 'open-schedule'],
+  emits: ['update:messageInput', 'send-message', 'typing', 'cancel-reply', 'cancel-edit', 'stage-attachment', 'clear-attachment', 'start-recording', 'stop-recording', 'clear-attach-error', 'open-schedule'],
   props: {
     messageInput: { type: String, required: true },
     // error from the last attach attempt (e.g. file too large), shown as a
@@ -22,6 +25,9 @@ const MessageInput = {
     replyingToMessage: { default: null },
     // the message currently being edited (composer prefilled), or null
     editingMessage: { default: null },
+    // a file picked via the [+] menu, staged (not yet sent) so the user can
+    // add a caption first: { file, kind, forceKind, previewUrl, isImage } | null
+    stagedAttachment: { default: null },
     senderLabel: { type: Function, required: true },
     // true while a mic recording is in progress (root owns MediaRecorder)
     isRecording: { type: Boolean, default: false },
@@ -67,7 +73,7 @@ const MessageInput = {
     },
     onMediaFileChosen(event) {
       const file = event.target.files && event.target.files[0];
-      if (file) this.$emit('pick-media', file);
+      if (file) this.$emit('stage-attachment', file);
     },
     // Opens the device camera directly (mobile) or a webcam capture dialog
     // (desktop) via the file input's `capture` hint, then reuses the normal
@@ -79,11 +85,11 @@ const MessageInput = {
     },
     onCameraPhotoChosen(event) {
       const file = event.target.files && event.target.files[0];
-      if (file) this.$emit('pick-media', file);
+      if (file) this.$emit('stage-attachment', file);
     },
     // Long-press the camera button = record a video (WhatsApp convention);
     // a plain tap still takes a photo. Opens a camera-capture input scoped
-    // to video/* and reuses the same pick-media pipeline.
+    // to video/* and reuses the same stage-attachment pipeline.
     onCameraPressStart() {
       clearTimeout(this._cameraPressTimer);
       this._cameraPressFired = false;
@@ -109,7 +115,7 @@ const MessageInput = {
     },
     onCameraVideoChosen(event) {
       const file = event.target.files && event.target.files[0];
-      if (file) this.$emit('pick-media', file);
+      if (file) this.$emit('stage-attachment', file);
     },
     openDocumentPicker() {
       this.closeAttachMenu();
@@ -122,7 +128,13 @@ const MessageInput = {
     },
     onDocumentFileChosen(event) {
       const file = event.target.files && event.target.files[0];
-      if (file) this.$emit('pick-document', file);
+      if (file) this.$emit('stage-attachment', file, 'file');
+    },
+    formatFileSize(bytes) {
+      if (!bytes && bytes !== 0) return '';
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     },
     // Single toggle button: first press starts recording, second press stops
     // and sends (root owns the MediaRecorder + upload).
@@ -195,6 +207,21 @@ const MessageInput = {
              class="shrink-0 w-9 h-9 rounded object-cover" />
         <button @click="$emit('cancel-reply')" class="text-slate-400 hover:text-slate-600 text-lg leading-none px-1">&times;</button>
       </div>
+      <!-- Staged attachment preview: picked via [+] but not sent yet. Shown
+           above the composer so the user can add a caption before sending;
+           the x cancels it without sending anything. -->
+      <div v-if="stagedAttachment" class="px-3 pt-2 flex items-center gap-2">
+        <div class="flex-1 min-w-0 flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
+          <img v-if="stagedAttachment.isImage" :src="stagedAttachment.previewUrl" alt=""
+               class="shrink-0 w-10 h-10 rounded object-cover" />
+          <span v-else class="shrink-0 text-2xl leading-none">{{ stagedAttachment.kind === 'video' ? '🎬' : '📄' }}</span>
+          <div class="min-w-0 text-xs">
+            <div class="truncate font-medium text-slate-700">{{ stagedAttachment.file.name }}</div>
+            <div class="text-slate-400">{{ formatFileSize(stagedAttachment.file.size) }}</div>
+          </div>
+        </div>
+        <button @click="$emit('clear-attachment')" class="text-slate-400 hover:text-slate-600 text-lg leading-none px-1">&times;</button>
+      </div>
       <div class="p-3 flex items-center gap-2">
         <div class="relative shrink-0">
           <button type="button" @click="toggleAttachMenu"
@@ -240,7 +267,7 @@ const MessageInput = {
                  :maxlength="maxMessageLength"
                  class="flex-1 min-w-0 px-3 py-1.5 text-sm border border-slate-300 rounded-2xl resize-none leading-normal"
                  style="max-height:150px; overflow-y:auto;"></textarea>
-          <button v-if="messageInput.trim()" @click="$emit('send-message')"
+          <button v-if="messageInput.trim() || stagedAttachment" @click="$emit('send-message')"
                   class="shrink-0 w-9 h-9 flex items-center justify-center rounded-full bg-teal-700 text-white">
             <svg viewBox="0 0 24 24" class="w-4 h-4" fill="currentColor"><path d="M3 20l18-8L3 4v6l12 2-12 2z"/></svg>
           </button>

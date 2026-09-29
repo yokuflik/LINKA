@@ -1,4 +1,19 @@
-# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051 / ADR 0053 / ADR 0057 / ADR 0059 / ADR 0063 / ADR 0064 / ADR 0065 / ADR 0066 / ADR 0067 / ADR 0071 / ADR 0072 / ADR 0073 / ADR 00732 / ADR 0075 / ADR 0077 / ADR 0078
+# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051 / ADR 0053 / ADR 0057 / ADR 0059 / ADR 0063 / ADR 0064 / ADR 0065 / ADR 0066 / ADR 0067 / ADR 0071 / ADR 0072 / ADR 0073 / ADR 00732 / ADR 0075 / ADR 0077 / ADR 0078 / ADR 0080 / ADR 0081 / ADR 0082 / ADR 0083 / ADR 0084 / ADR 0085 / ADR 0089
+
+`docs/adr/0082-invoke-worker-domain-split.md`: `modules/agents/invoke_worker.py`
+(1165 lines) split by responsibility. `_run_turn`/`AgentInvokeConsumer`/
+`_fire_schedule_entry`/both poll loops/`run_forever` stayed in
+`invoke_worker.py` (patched-by-dotted-path in tests, or structurally central
+to the file's own docstring); the Gemini-call/contents-building helpers
+(`_pending_confirmation_note`, `_post_config_reply`, `_format_history_
+transcript`, `_build_initial_contents`, `_build_schedule_contents`,
+`_check_gemini_call_budget`, `_generate_turn_or_supersede`,
+`_TurnSuperseded`) moved to `modules/agents/invoke_turn_helpers.py`; the
+owner-notification/typing-indicator helpers (`_publish_agent_thinking`,
+`_publish_peer_typing_loop`, `_notify_token_budget_exhausted`,
+`_notify_daily_budget_exhausted`) moved to `modules/agents/invoke_notify.py`.
+No behaviour change - references to these helper names elsewhere in this
+file/the changelog files as "in `invoke_worker.py`" predate the split.
 
 Full design rationale: `docs/adr/0045-ai-agent-service-account-tool-calling.md`
 (base design), `docs/adr/0046-agent-schedules-knowledge-base-and-byok.md`
@@ -21,7 +36,13 @@ with its own prompt and a set of transfer tools reaching every other
 sub-state - no execution/config tool of its own in either), and
 `docs/adr/0065-config-mode-no-reply-needed-tool.md` (no-op `no_reply_needed`
 config tool in every `builder_state`, so a config-mode turn can end without
-posting anything - extends 0047/0049/0063, does not replace them). ADR 0047's
+posting anything - extends 0047/0049/0063, does not replace them), and
+`docs/adr/0080-agent-marks-messages-read-on-turn-start.md` (execution-mode,
+message-fired turns call `message_service.mark_as_read` for the triggering
+message at the same gate as the Judge call in `invoke_worker.py::_run_turn`,
+right before the read tick's peer-visible `typing` indicator starts -
+unconditional call, ADR 0003 privacy/1:1-scoping already enforced downstream
+by `modules/receipts/apply.py`, no new logic in the agent). ADR 0047's
 own implementation log for decisions 5-7, and ADR 0053's full implementation
 log, both live in their respective ADR files, per the user's explicit request
 to keep implementation detail alongside the ADR once it's substantial.
@@ -33,11 +54,15 @@ split threshold:
 
 | File | Contents |
 |---|---|
+| `.claude_docs/ai_agent_schema.md` | Full `Agent`/`AgentToolCallLog`/`AgentKnowledgeDocument`/`AgentKnowledgeChunk` schema; `restrictions` default + DB-level backstop triggers (ADR 0066); `triggers` default + every field's behavior; `paused_chat_ids` shape/resume flow; no-code-execution rule; ADR 0078 knowledge-base ingestion/semantic-retrieval detail. |
 | `.claude_docs/ai_agent_history.md` | ADR 0045 steps 1-5 + ADR 0046 decisions 1-6 build log (schema, Trigger Rule Engine, worker, tool registry/Gemini client, config API, pre-filter cache, `on_unknown_sender`, `on_schedule`, knowledge base/RAG, BYOK), plus the AGENT_DRAWER_UI_PLAN.md Wave 2 backend pieces. |
-| `.claude_docs/ai_agent_changelog.md` | Chronological log of no-ADR fixes/prompt tuning/in-scope UX changes: `tools.py` package split (ADR 0056), peer-visible typing indicator + its int/string bug, `agent_thinking` drawer leak fix, ADR 0049 (Supervisor/Builder/Help) build detail, ADR 0047 all-decisions summary, persona tone fixes, self-triggering-loop bug, config-mode reply-not-posted bug, Gemini model bump, ADR 0050 reset-to-default, ADR 0051 auto-registration, Supervisor→Help handoff, history-transcript formatting, mid-turn handoff bug, BYOK disable, all-7-prompts tone rewrite, internal-id masking. |
+| `.claude_docs/ai_agent_changelog_early.md` | Chronological changelog, part 1/3 (2026-09-23 to 2026-09-25): `tools.py` package split (ADR 0056), peer-visible typing indicator + its int/string bug, `agent_thinking` drawer leak fix, ADR 0049 (Supervisor/Builder/Help) build detail, ADR 0047 all-decisions summary, persona tone fixes, self-triggering-loop bug, config-mode reply-not-posted bug, Gemini model bump, ADR 0050 reset-to-default, ADR 0051 auto-registration, Supervisor→Help handoff. |
+| `.claude_docs/ai_agent_changelog_mid.md` | Chronological changelog, part 2/3 (2026-09-25 to 2026-09-26): history-transcript formatting, mid-turn handoff bug, BYOK disable, all-7-prompts tone rewrite, internal-id masking, `no_reply_needed` (ADR 0065), Trigger Rule Engine commit bug. |
+| `.claude_docs/ai_agent_changelog.md` | Chronological changelog, part 3/3, newest (ADR 0079 / 2026-09-28 onward): eager supersede + token penalty (ADR 0077), ADR 0079 budget-retry/notice, message-batch debounce/turn-mutex (ADR 0063), in-flight-turn supersede (ADR 00732), history/search pagination (ADR 0067), per-call `limit` arg, history `[already handled]` marker (ADR 0071), bulk-fetch confirmation gate (ADR 0072), activation-quota-exceeded notice. |
 | `.claude_docs/ai_agent_judge_and_escalation.md` | ADR 0053 LLM Judge gate (model, fail-open, redirect-message, `AgentJudgeLog`); `pause_and_escalate` behavior/notices (talk-to-a-human trigger fix, formatted handoff notice, customer-facing transfer reply); identity-masking detail; `resolve_user` config tool. |
 | `.claude_docs/ai_agent_capacity_and_budgets.md` | ADR 0057 (`get_capacity_status` tool + `peek_fixed_window`), ADR 0058 (agent shares owner's WS send-message sliding-window budget + `peek_sliding_window`), ADR 0059 (5h/500k + 7d/3M rolling token-usage windows, output-token cap, `GET /agents/me/usage`, `UsageProgressBar.js`). |
-| `.claude_docs/ai_agent_frontend.md` | AI agent PoC frontend: `AgentDrawer.js`/`AgentChatView.js`/`AgentSettingsView.js`, `useAgentConfig.js`, BYOK frontend, peer-visible typing indicator frontend detail. |
+| `.claude_docs/ai_agent_frontend.md` | AI agent PoC frontend: `AgentDrawer.js`/`AgentChatView.js`/`AgentSettingsView.js`, `useAgentConfig.js`, BYOK frontend, peer-visible typing indicator frontend detail, the chat attach menu (content file / attached file). |
+| `.claude_docs/ai_agent_frontend_usage_and_search.md` | AI agent PoC frontend, split out of `ai_agent_frontend.md`: the token-usage ring+popover widget (`UsageProgressBar.js`, ADR 0059), in-chat search wiring, known frontend follow-ups. |
 
 **Standing obligation (2026-09-25, updated 2026-09-26 by ADR 0064, process
 note, not code)**: the Help Agent used to be one state
@@ -61,10 +86,42 @@ interface-only (never mention backend/infra/model/mechanism terms - see ADR
 schedule-fired turn): `send_message`, `reply_message`, `create_chat`,
 `leave_group`, `read_history`, `update_own_triggers`, `search_messages`,
 `search_semantic` (ADR 0069), `search_knowledge_semantic` (ADR 0078),
-`get_knowledge_index`, `fetch_chunk`, `pause_and_escalate` - 12 tools.
+`get_knowledge_index`, `fetch_chunk`, `list_attached_files`,
+`send_attached_file` (ADR 0083), `pause_and_escalate` - 14 tools.
 `search_messages`/`search_semantic` both take optional `start_date`/`end_date`
 (ADR 0068), which now also accept a specific time of day, not just a calendar
 date (ADR 0070).
+
+**ADR 0083 (2026-09-28): resend an owner-attached file.** `list_attached_files`
+lists media messages the owner personally sent into their own owner-agent
+chat (`{file_id, filename, caption, kind, mime, size_bytes, uploaded_at}`,
+newest first) - the groundwork the 2026-09-28 "Attached file" attach-menu
+entry (`ai_agent_frontend.md`) was explicitly built for. `caption` is the
+`Message.content` the owner typed alongside the attachment (nullable) - the
+signal the model actually needs to match a vague ask like "a picture of the
+computer" against an opaque filename. `send_attached_file(chat_id, file_id,
+caption?)` resends one into a real target chat, reusing the same
+`can_send_messages`/`blocked_read_chat_ids`/group-private/quota gate as
+`send_message`, then `process_outgoing(..., media={key, name,
+duration_seconds, blur_hash}, sender_agent_id=agent.id)` - `_validate_media`
+re-HEADs the object and re-bumps `media_blob.ref_count`, the same dedup-safe
+mechanics a client-side forward (ADR 0020) already uses. Hard security
+boundary: `file_id` is looked up via `get_message_by_id(session,
+agent.owner_agent_chat_id, file_id)` with `chat_id` fixed from the `Agent`
+row (never model-supplied) and `sender_id == agent.owner_user_id` re-verified
+at call time - so the tool can never resend a knowledge-base document or a
+media message from any *other* chat the agent can merely read. New crud
+query `modules/messaging/crud.py::list_attached_files`.
+
+Both tools sit in the plain `TOOL_SCHEMAS` list, so they were always reachable
+by every real (customer-facing) persona with no extra wiring - execution mode
+is "any chat except `owner_agent_chat_id`" regardless of `active_skill`
+(`dispatch.py::get_tool_schemas_for_chat`). `CHAT_STYLE_RULES`
+(`modules/agents/personas.py`, shared by every execution persona) now
+explicitly instructs the model to call `list_attached_files` whenever the
+other person asks for a photo/file/document, send immediately on one clear
+match, ask which one on multiple matches, and never claim to send something
+that isn't there.
 
 **Config mode** (`chat_id == owner_agent_chat_id` only) further branches on
 `Agent.builder_state` (ADR 0049, ADR 0064) into four sub-sets (supervisor/
@@ -73,10 +130,10 @@ neither Help state does):
 
 | `builder_state` | Persona prompt | Tools |
 |---|---|---|
-| `supervisor` (default) | routes, AND acts directly for the owner (ADR 0062) | `transfer_to_builder`, `transfer_to_help_building`, `transfer_to_help_general` (ADR 0064), `resume_paused_chat` (ADR 0055), `resolve_user`, `find_chat_by_name` (ADR 0073), `spawn_ephemeral_task` (ADR 0061), `no_reply_needed` (ADR 0065), `save_knowledge_from_text` (ADR 0078), **plus the full execution-mode toolset** (`send_message`, `reply_message`, `create_chat`, `leave_group`, `read_history`, `update_own_triggers`, `search_messages`, `search_semantic`, `search_knowledge_semantic`, `get_knowledge_index`, `fetch_chunk`, `pause_and_escalate`) |
-| `builder_agent` | interviews the owner, AND acts directly for the owner too (2026-09-26) | the 6 ADR 0047 config tools (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`, `schedule_one_off_task`) + `resolve_user` + `find_chat_by_name` (ADR 0073) + `resume_paused_chat` (ADR 0055) + `no_reply_needed` (ADR 0065) + `save_knowledge_from_text` (ADR 0078) + `transfer_to_help_building` + `transfer_to_help_general` (ADR 0064) + `transfer_to_supervisor` + `finish_building_agent`, **plus the full execution-mode toolset** (same 12 tools as supervisor) |
-| `help_agent_building` (ADR 0064) | explains building/configuring an agent | `transfer_to_builder`, `transfer_to_help_general`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065) |
-| `help_general` (ADR 0064) | explains using the Linka platform | `transfer_to_help_building`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065) |
+| `supervisor` (default) | routes, AND acts directly for the owner (ADR 0062) | `transfer_to_builder`, `transfer_to_help_building`, `transfer_to_help_general` (ADR 0064), `resume_paused_chat` (ADR 0055), `resolve_user`, `find_chat_by_name` (ADR 0073), `spawn_ephemeral_task` (ADR 0061), `no_reply_needed` (ADR 0065), `save_knowledge_from_text` (ADR 0078), **plus the full execution-mode toolset** (`send_message`, `reply_message`, `create_chat`, `leave_group`, `read_history`, `update_own_triggers`, `search_messages`, `search_semantic`, `search_knowledge_semantic`, `get_knowledge_index`, `fetch_chunk`, `list_attached_files`, `send_attached_file` (ADR 0083), `pause_and_escalate`) |
+| `builder_agent` | interviews the owner, AND acts directly for the owner too (2026-09-26) | the 6 ADR 0047 config tools (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`, `schedule_one_off_task`) + `set_agent_identity` (ADR 0081) + `resolve_user` + `find_chat_by_name` (ADR 0073) + `resume_paused_chat` (ADR 0055) + `no_reply_needed` (ADR 0065) + `save_knowledge_from_text` (ADR 0078) + `transfer_to_help_building` + `transfer_to_help_general` (ADR 0064) + `transfer_to_supervisor` + `finish_building_agent`, **plus the full execution-mode toolset** (same 14 tools as supervisor) |
+| `help_agent_building` (ADR 0064) | explains building/configuring an agent | `transfer_to_builder`, `transfer_to_help_general`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065), `search_knowledge_semantic`, `get_knowledge_index`, `fetch_chunk` (ADR 0084, read-only) |
+| `help_general` (ADR 0064) | explains using the Linka platform | `transfer_to_help_building`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065), `search_knowledge_semantic`, `get_knowledge_index`, `fetch_chunk` (ADR 0084, read-only) |
 
 **ADR 0065 (2026-09-26):** `no_reply_needed` is a no-op config-mode tool
 available in all four `builder_state`s - lets the model end a config-mode
@@ -109,6 +166,33 @@ always knows where to route next, so neither Help state needs to reason
 about anything beyond "answer, hand to my sibling, or give up to
 Supervisor." No schema/migration - `Agent.builder_state` is a plain string
 column, no DB-level enum constraint.
+
+**ADR 0084 (2026-09-28):** both Help states stayed pure prompt-knowledge
+under ADR 0064 - anything not hand-written into `HELP_GENERAL_PROMPT`/
+`HELP_BUILDING_PROMPT` had to be answered "I don't know." Gave both **read-only**
+access to the agent's own knowledge base (`search_knowledge_semantic`,
+`get_knowledge_index`, `fetch_chunk` - the same execution-mode handlers,
+`modules/agents/tools/builder_handoff.py`/`schemas.py`), so an owner can seed
+their own agent's knowledge base (`save_knowledge_from_text` or a file
+upload, same mechanism as any other reference doc) with real product
+documentation and have their Help personas answer from it. Both prompts now
+instruct the model to call `search_knowledge_semantic` first (fallback to
+`get_knowledge_index`+`fetch_chunk`) before answering, and to never mention
+the lookup or quote saved content verbatim. `save_knowledge_from_text` stays
+off both Help states' tool sets (read-only, no write) - ADR 0064's
+zero-action posture is otherwise unchanged (no execution/config tool
+reachable from either Help state), and knowledge stays hard-scoped per
+`agent_id` as everywhere else - no shared/global knowledge store across
+different owners' agents.
+
+**ADR 0085 (2026-09-28): knowledge-ingestion notice to the owner.** A
+successful `POST /agents/me/knowledge` commit, and a client-side PDF parse
+failure (new `POST /agents/me/knowledge/report-failure`), each enqueue a
+third `agent_invoke_stream` `kind` (`"knowledge"`, alongside
+`"message"`/`"schedule"`) that runs a real config-mode agent turn (always
+`chat_id == owner_agent_chat_id`) reporting the outcome in the agent's own
+voice - not a toast, not a fixed string. Full detail:
+`docs/adr/0085-agent-knowledge-ingestion-notice.md`.
 
 **`transfer_to_supervisor` (2026-09-26):** Builder-only escape hatch back to
 Supervisor, distinct from `finish_building_agent` - does not require the
@@ -168,229 +252,34 @@ Full per-tool build detail: `ai_agent_history.md` (original registry),
 
 ## Schema
 
+Full `Agent`/`AgentToolCallLog`/`AgentKnowledgeDocument`/`AgentKnowledgeChunk`
+models, `restrictions`/`triggers` default shapes and field behavior, the
+DB-level restriction backstop (ADR 0066), and the ADR 0078 knowledge-base
+ingestion/retrieval detail all moved to `.claude_docs/ai_agent_schema.md`
+(2026-09-28 split). Quick field reference kept here:
+
 ```python
 class Agent(Base):
     __tablename__ = "agents"
-    id: BigInteger
-    owner_user_id: BigInteger   # FK -> users.id, UNIQUE (one agent per user)
-    owner_agent_chat_id: BigInteger  # FK -> chats.id, permanent 1:1 owner<->agent chat, created eagerly
-    system_prompt: str          # soft constraint (Gemini system_instruction), NOT a security boundary
-    restrictions: dict          # JSONB, hard/enforced - see below
-    triggers: dict              # JSONB, Gatekeeper wake config - see below
-    is_enabled: bool            # kill switch, default False (ADR 0047 decision 2), checked at trigger-eval AND worker-dequeue time
-    encrypted_gemini_api_key: bytes | None  # BYOK (ADR 0046 decision 5), Fernet ciphertext, NULL = shared key
-    active_skill: str           # persona catalog key (ADR 0047 decision 3), default "one_off_executor"
-    paused_chat_ids: dict       # JSONB list, default [] (ADR 0047 decision 5) - escalated chats; ADR 0054: list of {chat_id, paused_at, expires_at}, auto-expires after AGENT_ESCALATION_PAUSE_HOURS (default 24) or on human resume/owner-chat reply
-    builder_state: str          # "supervisor"|"builder_agent"|"help_general"|"help_agent_building" (ADR 0049/0064), default "supervisor" - only meaningful in the config chat
-    created_at, updated_at
+    # id, owner_user_id (FK users, UNIQUE), owner_agent_chat_id (FK chats),
+    # system_prompt, restrictions (JSONB), triggers (JSONB), is_enabled,
+    # encrypted_gemini_api_key, active_skill, paused_chat_ids (JSONB),
+    # builder_state, agent_name, disclose_as_agent, created_at, updated_at
 
 class AgentToolCallLog(Base):
-    __tablename__ = "agent_tool_call_log"  # unpartitioned to start (ADR 0005 pattern if it grows)
-    id, agent_id, tool_name, arguments (JSONB), allowed, denial_reason, created_at
+    __tablename__ = "agent_tool_call_log"
 
 class AgentKnowledgeDocument(Base):
-    __tablename__ = "agent_knowledge_documents"  # ADR 0046 decision 4
-    id, agent_id, filename, s3_key, mime_type, status ("processing"|"ready"|"failed"), created_at
-    # s3_key is nullable (ADR 0078) - a document created via save_knowledge_from_text
-    # has nothing uploaded to S3; delete_knowledge_document skips the S3 call for it.
+    __tablename__ = "agent_knowledge_documents"
 
 class AgentKnowledgeChunk(Base):
-    __tablename__ = "agent_knowledge_chunks"  # ADR 0046 decision 4
-    id, agent_id, document_id, chunk_index, content, content_tsv, embedding, created_at
-    # embedding vector(768), nullable (ADR 0078) - own IVFFlat index
-    # (ix_agent_knowledge_chunks_embedding_ivfflat), separate from messages.embedding's
-    # (ADR 0042) - unrelated table, unrelated growth curve/tenant scoping, deferred-build
-    # the same way (see modules/agents/knowledge_ddl.py::ensure_knowledge_ivfflat_index).
+    __tablename__ = "agent_knowledge_chunks"
 ```
 
-`Agent.restrictions` default (`DEFAULT_AGENT_RESTRICTIONS` in
-`modules/agents/models.py`):
-```json
-{
-  "can_send_messages": true,
-  "can_message_groups": false,
-  "can_message_private": true,
-  "can_message_new_private_contacts": true,
-  "can_leave_groups": true,
-  "blocked_read_chat_ids": [],
-  "max_messages_per_day": null
-}
-```
-- `can_message_groups` defaults `false` for *newly created* agents only
-  (AGENT_DRAWER_UI_PLAN.md Wave 2 / ADR 0047 era, 2026-09-23) - existing
-  agents keep whatever value they already have (no backfill).
-- `can_message_new_private_contacts=false` blocks only `create_chat`, not
-  replying in an existing 1:1.
-- `blocked_read_chat_ids` is enforced by the Trigger Rule Engine skipping
-  the chat entirely (agent never invoked for it), not by a tool-level
-  refusal. All keys enforced server-side in `execute_tool_call`, never
-  relying on `system_prompt` for a security boundary.
-
-**DB-level backstop (ADR 0066, 2026-09-26):** the checks above, in
-`modules/agents/tools/execution.py`, are real enforcement against the model
-but not against a Python bug - a missed check in a new tool handler, or a
-future code path calling the messaging/chat services directly for an agent,
-would silently bypass them. `modules/agents/restriction_ddl.py` adds three
-Postgres `BEFORE` triggers that re-check the *same* `agents.restrictions`
-row independently, so the database itself refuses the write no matter what
-Python code (or bug) tried to make it:
-- `trg_agents_enforce_message_restrictions` (`BEFORE INSERT ON messages`):
-  reads the new `messages.sender_agent_id` column (populated by
-  `create_message`/`process_outgoing` whenever the caller is an agent -
-  never inferred from `type == AGENT_REPLY_MESSAGE_TYPE`, which is
-  display-only) and enforces `can_send_messages` /
-  `can_message_groups`/`can_message_private` / `blocked_read_chat_ids`.
-- `trg_agents_enforce_leave_group` (`BEFORE DELETE ON participants`):
-  enforces `can_leave_groups`.
-- `trg_agents_enforce_new_private_chat` (`BEFORE INSERT ON participants`):
-  enforces `can_message_new_private_contacts`, distinguishing a brand-new
-  1:1 chat from adding a member to one that already has participants.
-
-The last two read `current_setting('app.current_agent_id', true)` - a
-`SET LOCAL app.current_agent_id = '<id>'` issued by the write path
-(`modules/messaging/crud.py::create_message`,
-`modules/chats/membership.py::remove_member`,
-`modules/chats/creation.py::get_or_create_private_chat`, all via a new
-keyword-only `sender_agent_id` param) inside the same transaction as the
-mutation - transaction-scoped so it's safe under PgBouncer transaction
-pooling, never persisted anywhere, never used for anything except these
-triggers. `blocked_read_chat_ids` on the *read* side (`read_history`/
-`search_messages`) and `max_messages_per_day` are deliberately NOT given a
-DB trigger (no `BEFORE SELECT` in Postgres; a rolling quota isn't a
-row-level constraint) - both stay application-only, a known/accepted gap,
-not an oversight. DDL applied via `scripts/init_db.py` +
-`tests/conftest.py`, same idempotent `CREATE OR REPLACE FUNCTION` / `DROP
-TRIGGER IF EXISTS` / `CREATE TRIGGER` convention as `modules/search/ddl.py`
-(ADR 0040). Full rationale, including why Postgres roles + RLS were
-considered and rejected: `docs/adr/0066-db-level-agent-restriction-enforcement.md`.
-
-`Agent.triggers` default (`DEFAULT_AGENT_TRIGGERS`):
-```json
-{
-  "on_time_window": {"enabled": false, "start": "09:00", "end": "22:00"},
-  "on_specific_chats": {},
-  "on_unknown_sender": {"enabled": false},
-  "on_any_message": {"enabled": false},
-  "on_schedule": []
-}
-```
-- `on_specific_chats` maps `chat_id -> {"keywords": [...]}`. Empty keywords
-  = wake on any message in that chat; non-empty = case-insensitive
-  substring match (deliberately not regex - avoids ReDoS from
-  user-supplied keywords).
-- `on_unknown_sender.enabled` (ADR 0046 decision 2): fires once, on the
-  first-ever message in a private (non-group) chat; own per-sender daily
-  quota (20/day) on top of the hourly activation quota.
-- `on_any_message.enabled` (ADR 0052, 2026-09-25): fires on **every**
-  message in **every** private (non-group) chat - a broader, stateless
-  catch-all (unlike `on_unknown_sender`, never mutates `on_specific_chats`).
-  Groups excluded, same scope as `on_unknown_sender`. Still gated by
-  `on_time_window` + `blocked_read_chat_ids` + `paused_chat_ids`; reuses the
-  plain hourly `agent_activation` quota, no separate budget. Matched in
-  `trigger_engine._matches_any_message` (own DB round-trip for
-  `chat.is_group`, parallel to `_matches_unknown_sender`). Settings UI:
-  one checkbox, "Reply to every new private message", commits immediately
-  (`AgentSettingsView.js` / `useAgentConfig.js::setAnyMessageEnabled`).
-- `on_schedule` (ADR 0046 decision 3): list of `{id, kind: "recurring"|
-  "once", time|at, instruction, chat_id?, enabled}` entries, driven by the
-  `agent_schedule_due` Redis ZSET + a poll loop in `agent_worker`. Capped
-  at `AGENT_MAX_SCHEDULE_ENTRIES` (10).
-- `update_own_triggers` (execution-mode tool) and `set_trigger`
-  (config-mode tool) both write here via `modules/agents/crud.py::
-  update_agent_triggers` / `update_agent_config` - hard-scoped to the
-  caller's own `agent_id`, never touches `restrictions`. Both merge
-  `on_time_window`/`on_unknown_sender`/`on_any_message` one level deep
-  (`crud.py::_merge_triggers`) rather than replacing the sub-object
-  outright - a 2026-09-24 incident (`AgentOut` 500 on `GET /agents/me`)
-  found a partial `{"on_time_window": {"enabled": false}}` patch dropping
-  `start`/`end` under the old top-level-only shallow merge; `on_specific_chats`
-  is merged per-`chat_id` for the same reason, but the key-set itself still
-  follows the patch (a key absent from the patch is dropped from the
-  result), so the frontend's "always send the full current map" convention
-  still deletes entries correctly.
-
-`Agent.paused_chat_ids` (ADR 0047 decision 5, shape updated by ADR 0054):
-list of `{chat_id, paused_at, expires_at}` objects for chats the agent
-escalated via `pause_and_escalate` - skipped entirely at trigger-evaluation
-time (`trigger_engine._active_paused_chat_ids`, lazy expiry checked on
-read) until one of two things happens: `expires_at` lapses
-(`AGENT_ESCALATION_PAUSE_HOURS`, default 24, env-overridable), or a human
-calls `POST /agents/me/resume-chat/{chat_id}`. **2026-09-26 (no ADR,
-behavior fix):** the original ADR 0054 "any owner message in their own
-agent chat resumes the most-recently-escalated pause" shortcut
-(`crud.resume_most_recent_pause`) was removed from `trigger_engine.py` - it
-fired on message content indiscriminately, so a plain unrelated message to
-the agent silently un-paused an escalation the owner had no intention of
-resuming. `resume_most_recent_pause` itself was deleted from `crud.py` as
-dead code once its only caller was removed. Resuming a paused chat is now
-only ever explicit: (ADR 0055) the owner names a person via the
-`resume_paused_chat` config tool (Supervisor + Builder states), which
-resolves phone_number/username through the `resolve_user` contract and
-un-pauses just that chat via `crud.resume_agent_chat`. Full escalation/
-notice detail: `ai_agent_judge_and_escalation.md`.
-
-**No-code-execution rule (2026-09-26, no ADR, prompt-only)**: added a fixed
-"never run code" clause to the shared style blocks both config-mode
-(`builder_flow.py::STYLE_RULES`, inherited by Supervisor/Builder/Help) and
-execution-mode (`personas.py::CHAT_STYLE_RULES`, inherited by every
-storable skill) prompts inherit - the agent must refuse to run/execute/
-evaluate any code, script, shell command, or similar sent by anyone in a
-message, including its own owner, regardless of framing. This is a soft,
-system-prompt-level instruction only (like `system_prompt` itself, not a
-security boundary enforced in `execute_tool_call`) - the agent has no
-code-execution tool in the registry to begin with, so this is defense in
-depth against the model being talked into simulating/roleplaying execution,
-not a fix for an actual capability.
-
-**Agent-decided knowledge-base ingestion + semantic retrieval (ADR 0078,
-2026-09-28)**: new config-mode tool `save_knowledge_from_text` (Supervisor +
-Builder, `modules/agents/tools/config_mode.py::_tool_save_knowledge_from_text`)
-lets the model itself decide, within a normal tool-calling turn, that the
-owner's latest message is reference/lookup data (inventory, price lists,
-policies, FAQs) that should never re-enter the prompt verbatim - an
-owner-invoked command was deliberately rejected (the owner isn't expected to
-know when the mechanism applies). Known, accepted risk: this is a
-classification judgment, not a size threshold, and can misfire either way;
-mitigated by prompt wording + a hard **transparency requirement** (the tool's
-schema description requires the agent to tell the owner what it saved and why,
-in the same turn - never silently). New text-only ingestion path,
-`modules/agents/knowledge_service.py::commit_knowledge_text` - same
-chunk -> quota-check -> document -> chunk-rows sequence as
-`commit_knowledge_document`, skipping the S3 fetch since the text arrives
-directly as a tool-call argument (`AgentKnowledgeDocument.s3_key=None`,
-`mime_type="text/plain"`, now nullable on the model).
-
-Both commit paths (`commit_knowledge_document` too) now embed their chunks
-**synchronously** right after the rows are written
-(`knowledge_service.py::_embed_chunks_best_effort`, one `gemini_client.
-embed_batch` call per document) - deliberately not the flush-on-demand Redis
-queue ADR 0042 uses for messages, since knowledge documents are created rarely
-(an occasional action) rather than on every send, so there's no hot-path
-latency to defer around, and immediate searchability (the owner's very next
-message could already retrieve it) outweighs the batching win. A Gemini
-failure mirrors ADR 0042's posture - logs a warning, leaves `embedding` NULL,
-never blocks/rolls back the document commit.
-
-New execution-mode tool `search_knowledge_semantic`
-(`modules/agents/tools/execution.py::_tool_search_knowledge_semantic` ->
-`knowledge_service.py::search_knowledge_semantic` ->
-`modules/agents/knowledge_crud.py::semantic_search_knowledge_chunks`): embeds
-the query via the same live query-embedding LRU (`vector_search.query_cache`,
-ADR 0044, agent-agnostic cache key) and cosine-searches
-`agent_knowledge_chunks` scoped hard to `agent_id`, returning top matches'
-content directly - no index-then-fetch two-hop. `get_knowledge_index`/
-`fetch_chunk` are **not removed** - they stay the fallback for a small
-knowledge base and for chunks with no embedding (an embed failure mid-ingest).
-Both prompts (`SUPERVISOR_PROMPT`/execution `TOOL_SCHEMAS` description) steer
-the model to prefer `search_knowledge_semantic` once a KB exists.
-
-New `AgentKnowledgeChunk.embedding vector(768)` column + its own deferred-build
-IVFFlat index (`modules/agents/knowledge_ddl.py::ensure_knowledge_ivfflat_index`,
-NOT auto-run by `apply_knowledge_ddl`/`init_db.py` - same "empty-table
-centroids are useless" reasoning as ADR 0042 for messages) - a second,
-independent IVFFlat index alongside `ix_messages_embedding_ivfflat`, never
-sharing the messages table's index or ADR 0042's Redis queue. Reuses 100% of
-existing chunking/quota/Gemini-embedding infra, no new external dependency.
+Full column list, JSONB default shapes (`restrictions`, `triggers`,
+`paused_chat_ids`), the DB-level restriction backstop (ADR 0066), the
+no-code-execution rule, and ADR 0078's knowledge-base ingestion/semantic
+retrieval: **`.claude_docs/ai_agent_schema.md`**.
 
 ## Rate limits / budgets (all via `infra/ratelimit`, ADR 0012)
 
@@ -410,148 +299,14 @@ existing chunking/quota/Gemini-embedding infra, no new external dependency.
 | Token usage - weekly | 3,000,000 tokens / 7d per-agent, combined input+output (ADR 0059) | `ratelimit:agent_tokens_7d:{agent_id}`, Redis fixed-window, token-weighted |
 
 When the daily time budget is exhausted: finish the in-flight turn, then go
-dormant until the daily window resets (no announcement message is
-currently sent - a known gap, not yet built).
+dormant until the daily window resets - `process_entry` does call
+`_notify_daily_budget_exhausted` (real, SET-NX-cooldown-gated owner notice)
+before skipping a due entry; see `ai_agent_changelog.md`.
 
-## Message-batch debounce + per-chat turn mutex (ADR 0063)
-
-A matched trigger no longer calls `enqueue_invocation` directly -
-`trigger_engine.py` calls `invoke_debounce.arm_debounce(agent_id, chat_id,
-message_id)`, which `ZADD`s `{agent_id}:{chat_id}` onto
-`agent_invoke_debounce_due` scored `now + AGENT_INVOKE_DEBOUNCE_SECONDS`
-(default 2s) and stashes `message_id` in a matching `agent_invoke_debounce_
-msg:{agent_id}:{chat_id}` STRING. A second match for the same pair before it
-fires just overwrites both (plain `ZADD`/`SET`) - a fast burst or a
-self-correction ("I want blue" / "wait, purple") coalesces into a single
-turn seeded from the *latest* message, instead of racing one Gemini turn per
-message. All quota/permission checks still run per-message at match time,
-unchanged. `invoke_worker.py::_invoke_debounce_poll_loop` (1s tick,
-alongside the existing 30s schedule-poll loop) pops due pairs and is what
-actually calls `enqueue_invocation`.
-
-Separately, `AgentInvokeConsumer.process_entry` holds a Redis mutex
-(`agent_turn_lock:{agent_id}:{chat_id}`, `SET NX EX AGENT_TURN_TIMEOUT_
-SECONDS`) around every `_run_turn` call - a debounced fire landing while a
-previous turn for the same pair is still running (up to 90s) does not start
-a second concurrent turn; it calls `arm_debounce` again (no message_id, so
-whatever was last stashed carries over) so the message gets a real turn
-right after the in-flight one's lock releases, instead of being dropped.
-
-Complementary prompt-level instruction (not a substitute for the above):
-`personas.py::CHAT_STYLE_RULES` tells the model to read an unanswered run of
-messages backwards and let the latest one override an earlier, contradicted
-one, replying naturally to the final ask without mentioning the correction.
-
-**Superseding an in-flight turn (ADR 00732, 2026-09-27):** ADR 0063's turn-mutex
-fallback (a debounced fire landing while a previous turn is still running)
-only re-armed the debounce - the in-flight turn itself was left untouched and
-could still call `send_message`/`reply_message` before the mutex released,
-producing a stale reply followed by a second, real one. `process_entry`'s
-same re-arm call site now also calls `invoke_debounce.mark_superseded(agent_id,
-chat_id)` (`agent_turn_superseded:{agent_id}:{chat_id}`, TTL =
-`AGENT_TURN_TIMEOUT_SECONDS`, same self-healing bound as the turn lock).
-`_run_turn` checks `is_superseded` (atomic `GETDEL`) at two points: the top of
-every round-trip loop iteration, and again immediately before dispatching
-`send_message`/`reply_message` specifically (closes the race where the flag
-was set while that round-trip's Gemini call was already in flight). Either
-hit ends the turn with no reply delivered and no re-arm (the message that set
-the flag already re-armed); every other tool call already made by the
-superseded turn (e.g. `read_history`) is simply wasted, not merged into the
-replacement turn. **Does not attempt real Gemini request cancellation** -
-confirmed via `ai.google.dev` docs that no cancellation/billing-on-early-stop
-contract is documented; the underlying HTTP call runs to completion or
-timeout exactly as before, this only gates whether its result ever reaches a
-chat. No new owner-facing notice; `agent_thinking` stays in whatever state it
-was in when superseded.
-
-**History/search pagination + truncation notice (ADR 0067, 2026-09-26)**:
-`read_history` (still 20 messages/call) and `search_messages` (still 10
-results/call) now accept `before_id`/`cursor` respectively and return
-`has_more` (+ `next_before_id`/`next_cursor`) instead of silently truncating.
-`CHAT_STYLE_RULES` (execution-mode, `personas.py`) and `STYLE_RULES`
-(config-mode, `builder_flow.py` - reachable there too since Supervisor/
-Builder get the full execution toolset per ADR 0062) both instruct the model
-to say plainly that there's more than it pulled in one call whenever
-`has_more: true`, and offer to continue in parts, rather than answering as if
-the page were the whole history/result set. Caps themselves are unchanged;
-this is pagination + disclosure, not a bigger single-call limit.
-
-**Per-call `limit` argument (2026-09-27, no ADR)**: `read_history`,
-`search_messages`, `search_semantic`, and `bulk_fetch_messages` now all
-accept an optional `limit` in their tool-call arguments, letting the model
-ask for fewer or more results than each tool's own default in a single call
-instead of always getting the fixed page size. New shared
-`execution.py::_clamp_tool_limit(requested, default, max_limit=None)` always
-clamps to `[1, max_limit]` server-side regardless of what the model passes
-(never trusted as-is, same posture as every other restriction/quota check in
-this module) - a malformed value raises `ToolDeniedError`, not a 500.
-`read_history`/`search_messages` default to their existing 20/10 page sizes,
-capped at the new shared `AGENT_TOOL_RESULT_MAX_LIMIT` (50,
-`config/agent_settings.py`, env-overridable). `search_semantic` defaults to
-`DEFAULT_VECTOR_SEARCH_LIMITS.default_limit`, capped at
-`min(AGENT_TOOL_RESULT_MAX_LIMIT, DEFAULT_VECTOR_SEARCH_LIMITS.max_limit)` -
-never lets an agent call exceed the vector-search service's own ceiling.
-`bulk_fetch_messages` keeps its own much larger ceiling
-(`AGENT_BULK_FETCH_MAX_MESSAGES`, 1000) untouched - its `limit` (if passed)
-is clamped to `[1, AGENT_BULK_FETCH_MAX_MESSAGES]`, independent of the shared
-50 cap, since it's already gated behind `count_messages_in_range` +
-owner confirmation (ADR 0072). `count_messages_in_range` itself takes no
-`limit` (it returns a plain count, not a list). No schema/architecture
-change, no new tests (same gap as every prior agents-module step) - full
-agents suite re-run green after landing.
-
-**History transcript `[already handled]` marker (ADR 0071, 2026-09-26)**:
-`_format_history_transcript` (`invoke_worker.py`) marks any Customer/Owner
-line that is followed later in the same flattened transcript by an Agent
-line as `[already handled]` - a structural, order-based signal (no new
-schema/state) fixing a bug where an old owner instruction (e.g. "summarize
-the chat with Yossi") sitting unmarked in the transcript on a later,
-unrelated turn read to Gemini as still-pending and could trigger a
-re-execution of the tool call that already handled it. Only the trailing run
-of unanswered lines (no Agent line after them yet) stays unmarked. A matching
-`STYLE_RULES` rule in `builder_flow.py` tells the model to treat marked lines
-as past context only, never to re-act on them.
-
-**Bulk chat summarization with a hard confirmation gate (ADR 0072,
-2026-09-27)**: two new execution-mode tools (auto-unioned into
-Supervisor/Builder per ADR 0062) let the agent summarize a whole chat/date
-range in one call instead of paging `read_history` 20 rows at a time -
-`count_messages_in_range(chat_id, start_date?, end_date?)` (free
-`SELECT COUNT(*)`, `modules/messaging/crud.py`) and
-`bulk_fetch_messages(chat_id, start_date?, end_date?)` (up to
-`AGENT_BULK_FETCH_MAX_MESSAGES` = 1000 messages, single shot, no pagination
-envelope). The model must call the count first: `too_large: true` (count
->1000) -> tell the owner to narrow the range, never attempt the fetch;
-`needs_confirmation: true` (count <=1000) -> ask the owner to confirm the
-"expensive operation" and end the turn - never call `bulk_fetch_messages` in
-that same turn. `count_messages_in_range`'s handler stashes the request on a
-new nullable `Agent.pending_confirmation` JSONB column
-(`{tool, chat_id, start_at, end_at, count, created_at}`, single dict like
-`paused_chat_ids`'s per-entry shape but not a list - only one owner
-conversation at a time), lazily expiring after
-`AGENT_PENDING_CONFIRMATION_TTL_MINUTES` (60). The *next* turn (seeded by the
-owner's actual reply) gets a reminder appended to its system prompt by
-`_pending_confirmation_note()` (`invoke_worker.py`, re-derived every
-round-trip exactly like `builder_state`'s prompt already is). Hard,
-server-side enforcement (ADR 0045 posture, not prompt-only):
-`bulk_fetch_messages`'s handler (`modules/agents/tools/execution.py`)
-independently re-checks `pending_confirmation` matches the call's exact
-chat_id/date range and hasn't expired, and re-counts at call time in case
-messages arrived in the gap - a `ToolDeniedError` either way, regardless of
-what the model claims. `reset_agent_to_default` (ADR 0050) clears
-`pending_confirmation` too. `docs/adr/0072-bulk-message-fetch-with-confirmation-gate.md`.
-
-**Activation quota exceeded -> owner notice (2026-09-25, no ADR)**: unlike the
-daily time budget above, exceeding the hourly activation quota does post a
-generic system message ("Your agent hit its hourly activation limit and
-won't respond to new messages until it resets...") into the owner's own
-agent chat (`Agent.owner_agent_chat_id`), from both call sites in
-`trigger_engine.py` (owner-chat direct-wake and the normal per-participant
-trigger path). Gated by a `SET NX` cooldown key
-(`agent_quota_notice_sent:{owner_agent_chat_id}`, TTL = the activation
-window) so a burst of dropped triggers within the same hour produces exactly
-one notice, not one per message. `send_system_message` is imported lazily
-inside the notifier function, not at module top, to avoid a circular import
-(`modules.messaging.send` already imports `evaluate_triggers` from this
-module). Full detail on the equivalent token-budget-exhaustion notice (ADR
-0059): `ai_agent_capacity_and_budgets.md`.
+**Message-batch debounce/turn-mutex (ADR 0063), in-flight-turn supersede
+(ADR 00732), history/search pagination (ADR 0067), per-call `limit` arg,
+history `[already handled]` marker (ADR 0071), bulk-fetch confirmation gate
+(ADR 0072), the activation-quota-exceeded owner notice, and ADR 0089
+(config-mode language fix + silent-turn-failure gaps)** all moved to
+`.claude_docs/ai_agent_changelog.md` (2026-09-28 split, this file kept
+re-crossing the ~300-line threshold).

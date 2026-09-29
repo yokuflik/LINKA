@@ -63,10 +63,10 @@ def _mock_collaborators(monkeypatch):
     async def _fake_is_participant(session, chat_id, user_id):
         return True
 
-    async def _fake_count(session, chat_id, start_at=None, end_at=None):
+    async def _fake_count(session, chat_id, user_id, start_at=None, end_at=None):
         return state["count"]
 
-    async def _fake_get_messages(session, chat_id, start_at=None, end_at=None, limit=1000):
+    async def _fake_get_messages(session, chat_id, user_id, start_at=None, end_at=None, limit=1000):
         return state["messages"]
 
     async def _fake_resolve_sender_labels(session, sender_ids):

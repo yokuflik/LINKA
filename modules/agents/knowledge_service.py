@@ -68,12 +68,16 @@ async def commit_knowledge_document(
     storage_key: str,
     mime_type: str,
     chunks: list[str] | None,
-) -> AgentKnowledgeDocument:
+) -> tuple[AgentKnowledgeDocument, list[str]]:
     """Finalizes an uploaded knowledge document: text/markdown is fetched and
     chunked server-side (`chunks` must be None/empty); PDF chunks arrive
     pre-computed from the client (`chunks` must be non-empty - the server
     never runs a PDF parser). Raises KnowledgeQuotaExceededError before
-    writing anything if the per-agent document/chunk caps would be exceeded."""
+    writing anything if the per-agent document/chunk caps would be exceeded.
+
+    Returns (document, chunk_list) - the caller (router.py, ADR 0085) uses
+    the actual chunk text to seed the owner-notice turn with real content,
+    not just filename/mime metadata."""
     if mime_type not in settings.AGENT_KNOWLEDGE_ALLOWED_MIME:
         raise KnowledgeValidationError(f"content type {mime_type!r} is not allowed for knowledge documents")
 
@@ -116,7 +120,7 @@ async def commit_knowledge_document(
         chunk_rows.append(chunk)
     await session.flush()
     await _embed_chunks_best_effort(session, chunk_rows)
-    return document
+    return document, chunk_list
 
 
 async def _embed_chunks_best_effort(session: AsyncSession, chunks: list[AgentKnowledgeChunk]) -> None:

@@ -211,8 +211,7 @@ async def main(drop: bool) -> None:
                 "ALTER TABLE agents ALTER COLUMN restrictions SET DEFAULT "
                 "'{\"can_send_messages\": true, \"can_message_groups\": false, "
                 "\"can_message_private\": true, \"can_message_new_private_contacts\": true, "
-                "\"can_leave_groups\": true, \"blocked_read_chat_ids\": [], "
-                "\"max_messages_per_day\": null}'::jsonb",
+                "\"can_leave_groups\": true, \"blocked_read_chat_ids\": []}'::jsonb",
                 # ADR 0047 decision 3: skill/persona in force for execution-
                 # mode turns. New column, existing rows backfilled to the
                 # same default new rows get (no per-agent customization to
@@ -241,11 +240,23 @@ async def main(drop: bool) -> None:
                 # ADR 0072: stashed bulk_fetch_messages confirmation request,
                 # nullable (no prior value, absent = no pending confirmation).
                 "ALTER TABLE agents ADD COLUMN IF NOT EXISTS pending_confirmation JSONB",
+                # ADR 0081: owner-chosen display name (nullable, no prior
+                # value - existing agents stay nameless) + AI-disclosure
+                # toggle (existing agents default to false, matching today's
+                # implicit full-impersonation behavior, no backfill needed).
+                "ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_name VARCHAR(64)",
+                "ALTER TABLE agents ADD COLUMN IF NOT EXISTS disclose_as_agent BOOLEAN "
+                "NOT NULL DEFAULT false",
                 # ADR 0074: judge malicious-intent flag, existing table -
                 # prior rows default to false (never evaluated for this
                 # category before this column existed).
                 "ALTER TABLE agent_judge_log ADD COLUMN IF NOT EXISTS is_malicious "
                 "BOOLEAN NOT NULL DEFAULT false",
+                # ADR 0088: unseeable-media escalation flag, existing table -
+                # prior rows default to false (never evaluated for this
+                # category before this column existed).
+                "ALTER TABLE agent_judge_log ADD COLUMN IF NOT EXISTS "
+                "needs_human_review BOOLEAN NOT NULL DEFAULT false",
                 # ADR 0078: a document created via save_knowledge_from_text has
                 # nothing uploaded to S3 - existing NOT NULL constraint on an
                 # already-initialised DB must be dropped (create_all never

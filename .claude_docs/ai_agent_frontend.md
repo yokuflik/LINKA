@@ -3,7 +3,10 @@
 Split out of `.claude_docs/ai_agent.md` on 2026-09-23 once that file passed
 ~300 lines (CLAUDE.md Rule 9). Backend design/state stays in `ai_agent.md`;
 this file tracks the PoC frontend only. See `ai_agent.md`'s Status section
-for the backend counterpart of everything referenced here.
+for the backend counterpart of everything referenced here. Split again on
+2026-09-28 (re-crossed ~300 lines): the token-usage indicator (ADR 0059),
+in-chat search, and the "known follow-ups" list moved to
+`.claude_docs/ai_agent_frontend_usage_and_search.md`.
 
 ## Current shape (drawer UI, supersedes the old centered modal)
 
@@ -63,9 +66,11 @@ there, styled by that chat's own sender_id logic.
   concurrently: **Knowledge base** (ADR 0046 decision 4) and **Your own
   Gemini key** (ADR 0046 decision 6, BYOK) - see `ai_agent.md` for the
   backend side of both. Checkboxes commit immediately on `@change`; every
-  text field (`system_prompt`, `max_messages_per_day`, per-chat keyword
-  lists, the BYOK key input) uses a local dirty flag + Save/Cancel buttons
-  that appear only while dirty. Takes two new props (`chats`, `chatDisplayName`,
+  text field (`system_prompt`, per-chat keyword lists, the BYOK key input)
+  uses a local dirty flag + Save/Cancel buttons that appear only while dirty
+  (the hard section's `max_messages_per_day` field + Save/Cancel was removed
+  2026-09-28, no ADR - all its restrictions now commit immediately like the
+  checkboxes). Takes two new props (`chats`, `chatDisplayName`,
   threaded through `AgentDrawer.js` from `index.html`'s existing `ctx.chats`/
   `ctx.chatDisplayName`): the `on_specific_chats` "Chat ID to add" free-text
   box (2026-09-24 bug - stored a typed contact name as a bogus key that could
@@ -82,8 +87,7 @@ there, styled by that chat's own sender_id logic.
   `toggleAgentEnabled` replace the old `openAgentModal`/`showAgentModal`/
   `saveAgentConfig`. Per-section save functions: `saveSoftPrompt`/
   `cancelSoftPromptEdit` (soft), `setRestrictionCheckbox` (hard checkboxes,
-  immediate PATCH) + `saveHardTextFields`/`cancelHardTextEdit` (hard text,
-  `max_messages_per_day`), `saveByokKey`/`cancelByokKeyEdit`/`clearByokKey`
+  immediate PATCH), `saveByokKey`/`cancelByokKeyEdit`/`clearByokKey`
   (BYOK). Trigger-list helpers (`addAgentChatTrigger`/
   `removeAgentChatTrigger`/`setTimeWindowField`) PATCH immediately;
   `onChatTriggerKeywordsInput`/`saveChatTriggerKeywords`/
@@ -260,97 +264,92 @@ reported "Someone is typing" symptom - keeping them as defense-in-depth:
   fix this path is now a rare-error-only fallback (e.g. `resolveChatMember
   Phones`'s fetch itself fails), not the common case.
 
-## Usage indicator: ring + popover, not an always-visible bar (ADR 0059, 2026-09-26)
+## Settings view trimmed to restrictions-only (2026-09-28, no ADR, frontend-only)
 
-`poc/components/UsageProgressBar.js` is a self-contained widget - a small
-circular ring button (SVG `stroke-dasharray`/`stroke-dashoffset`, filled by
-the 5h window's percentage only, colored teal/amber/rose by percent/blocked)
-that lives in `AgentDrawer.js`'s header row (both chat and settings views,
-next to the Reset/toggle buttons - not scoped to `view === 'chat'` like the
-composer is). Clicking it toggles a small popover (own `popoverOpen` local
-state, closed on any outside click via a `document` click listener added in
-`mounted`/removed in `beforeUnmount`) containing both linear progress bars
-("Session (5h)" / "Weekly (7d)"), each with a percentage and a live "Resets
-in HH:MM:SS" countdown. **This popover is the only place either window's
-percentage/bar is shown, per explicit user requirement** - the ring itself
-never surfaces a number, and the 7d window is never shown anywhere else. The
-countdown ticks client-side off a `now` timer (`setInterval`, 1s, cleared in
-`beforeUnmount`) anchored to `_fetchedAtMs` (a non-server field stamped onto
-the response by `loadAgentUsage` at fetch time) so it stays accurate between
-polls without extra network traffic.
+`AgentSettingsView.js` now renders **only** the hard `restrictions` section
+(checkboxes only - `max_messages_per_day` removed entirely 2026-09-28, see
+`ai_agent_schema.md`) - explicit user request to hide the
+soft-guidance (`system_prompt`), triggers/Gatekeeper, knowledge base, and
+BYOK sections from this view. Display-only trim: no backend/schema/endpoint
+change, all removed fields still exist and are still PATCHable via
+`useAgentConfig.js`/`PATCH /agents/me` (untouched) - just not editable from
+this UI right now. `AgentSettingsView.js` props/emits cut down to
+`form`/`busy`/`error`/`hardTextDirty` + the 4 restriction-related emits;
+`AgentDrawer.js`'s own props/emits and its `index.html` bindings were left
+as-is (unused listeners for the removed sections are harmless no-ops) to
+avoid a wider blast radius for what's meant to be a narrow visual change.
+To restore a removed section, re-add its template block + the corresponding
+props/emits to `AgentSettingsView.js` and re-wire it through `AgentDrawer.js`
+the way it worked before this trim.
 
-**Frozen-state banner shows an exact clock time, not a countdown**:
-`AgentChatView.js` (which already disables the composer while
-`usageBlocked`) now also takes a `usage` prop and computes `freezeEndsAt` -
-whichever blocked window resets furthest in the future (the one actually
-still gating the composer) converted to an absolute `Date`, ticked by the
-same 1s-interval pattern. The inline note above the composer reads "Usage
-limit reached - frozen until HH:MM" (or "D Mon, HH:MM" if the reset falls on
-a different day) instead of a vague "try again later" - this is the one
-exception to the popover-only rule above, since it's a single derived
-instant, not the percentage/bar detail itself.
+## Image send scroll-to-bottom parity with the main chat (2026-09-28, no ADR)
 
-`useAgentConfig.js`: new `agentUsage` ref (`{window_5h, window_7d} | null`)
-and `agentUsageBlocked` computed (true if either window's `is_blocked`).
-`loadAgentUsage()` fetches `GET /agents/me/usage`; `startAgentUsagePolling`/
-`stopAgentUsagePolling` wrap it in a 30s `setInterval`, following the
-closure-variable-timer idiom already used by `useWebsocket.js`'s
-`heartbeatTimer`/`useMediaUpload.js`'s `recordingTimer` (store the timer id,
-clear it explicitly) rather than `useChatStore.js`'s fire-once-never-cleared
-`setInterval` - this one is scoped to the drawer being open, not the app's
-whole lifetime. Started in `openAgentDrawer`, stopped in `closeAgentDrawer`
-and `resetAgentConfig` (logout teardown). This is the first "poll a REST
-endpoint on an interval" pattern in `poc/` - usage isn't pushed over WS from
-any single call site the way `agent_thinking`/`agent_config_changed` are, so
-polling was the more direct route.
+`AgentChatView.js`'s `scrollToBottom()` was a one-shot `scrollTop = scrollHeight`
+jump - fine for text, but an image/video bubble's reserved box only reaches its
+final height after the `<img>`/`<video>` actually finishes loading, so sending
+(or receiving) a photo left the view short of the true bottom. Fixed by mirroring
+`useChatOpen.js::scrollMessagesToBottom`'s pattern exactly: jump immediately,
+then for every still-loading `img`/`video` in the pane, listen for
+`load`/`loadedmetadata`/`error` and re-jump if still `pinnedToBottom` when it
+settles. No new prop/emit - purely internal to the method.
 
-When `agentUsageBlocked` is true, `AgentChatView.js` disables the textarea,
-the `+` attachment button, and the send button (`:disabled`, greyed out) and
-shows a short inline note. UX convenience only - the real enforcement is
-`invoke_worker.py`'s server-side pre-flight gate (see `ai_agent.md`).
+## Attach menu in the owner-agent chat (2026-09-28, no ADR)
 
-## Search inside the agent's own chat (2026-09-26, no ADR)
+The chat `+` button (`AgentChatView.js`) was previously a PDF-only stub
+(`pick-pdf` emit → `useAgentConfig.js::onAgentPdfPicked`, which just toasted
+"not sent yet" and did nothing). Replaced with a two-option attach menu,
+mirroring `MessageInput.js`'s existing attach-menu pattern (`attachMenuOpen`
+data flag, `absolute bottom-11 left-0` popup, close-on-select):
 
-Reuses the existing message-search stack (ADR 0040/`search.md`) unmodified -
-the owner-agent chat is a real `chat_id` with the owner as its sole
-participant, so `GET /chats/{owner_agent_chat_id}/messages/search` and
-`.../messages/around/{id}` work with zero backend change. Frontend-only wiring:
-
-- **`AgentDrawer.js`** - new magnifying-glass button in the header row (chat
-  view only, next to the settings-gear icon), emits `open-search`.
-- **`index.html`** - `@open-search="openSearchModal(myAgent &&
-  myAgent.owner_agent_chat_id)"`: opens the same `SearchModal`/`useSearch.js`
-  used everywhere else, scoped to that chat id exactly like `ChatHeader`'s
-  `open-chat-search`.
-- **`useSearch.js`'s `openSearchResult`** - the one real special case. A
-  normal hit's chat is in `LinkaChatStore` and goes through
-  `ctx.jumpToMessage` (`selectChat` + `/messages/around/{id}`). The agent
-  chat is deliberately kept **out** of the store (see above), so
-  `jumpToMessage` can't target it - `openSearchResult` now checks
-  `result.chat_id === ctx.myAgent.value.owner_agent_chat_id` first and, if so,
-  calls `ctx.openAgentDrawer()` (reopens the drawer on top of whatever chat
-  is open behind it) then `ctx.jumpToAgentMessage(chat_id, id)` instead.
-- **`useAgentConfig.js`'s `jumpToAgentMessage`/`agentHighlightedId`** - mirrors
-  `useChatOpen.js::jumpToMessage`'s shape (already-loaded → just highlight;
-  else fetch `/messages/around/{id}` and replace `agentMessages`) but writes
-  into the local `agentMessages` list instead of the store, since the agent
-  chat has no `LinkaChatStore` entry to update.
-- **`AgentChatView.js`** - new `highlightedId` prop, `data-msg-id` on each
-  bubble, same `bg-amber-200/70` flash treatment as `MessageList.js`
-  (`highlightedId`/`highlightTimer`), plus a `watch` that scrolls the target
-  bubble into view (`scrollIntoView({block:'center'})`) since a jump can land
-  outside the currently-rendered page.
-
-## Known follow-ups (frontend)
-
-- Owner-agent-chat avatar showing the agent's picture in its chat header/
-  sidebar row - currently falls back to the colored-initial circle
-  (`useChatMembers`/`useChatMeta` have no special-cased avatar resolution
-  for this chat yet).
-- Tool-call log UI (`AgentToolCallLog` has no read endpoint yet either -
-  backend follow-up too).
-- Frontend UI for `on_unknown_sender` toggle (ADR 0046 decision 2) and
-  `on_schedule` entries (decision 3, add/edit/remove) - both backend-only so
-  far, no `AgentSettingsView.js` section yet.
-- No frontend tests exist for any of this (no test harness convention in
-  this PoC generally).
+- **"Content file" (txt/pdf)** → `pick-knowledge-file` emit →
+  `useAgentConfig.js::onAgentKnowledgeFilePicked` → calls the **already-existing**
+  `ctx.uploadKnowledgeFile` (`useKnowledgeUpload.js`, previously reachable
+  only from `AgentSettingsView.js`'s Knowledge base section) - no new upload
+  logic, this is purely a second entry point into that pipeline (client-side
+  PDF.js chunking, server chunking for txt/md, quota check, embedding).
+- **"Attached file" (any file)** → `stage-attachment` emit →
+  `useAgentConfig.js::stageAgentAttachment` - **stages** the file instead of
+  sending it immediately (2026-09-28 update, mirrors the main chat composer's
+  staged-attachment pattern in `.claude_docs/frontend.md`): held in
+  `agentStagedAttachment` (`{file, kind, forceKind, previewUrl, isImage}`),
+  rendered by `AgentChatView.js` as a preview strip above its composer
+  (thumbnail/icon + filename/size + an **x** → `clear-attachment` /
+  `clearAgentStagedAttachment`, discards without sending). The draft textarea
+  stays usable while staged; `AgentChatView.submit()` routes to a
+  `send-attachment` emit (carrying the typed caption) instead of the plain
+  `send` emit whenever a file is staged, and the Send button enables on
+  either typed text or a staged file.
+  `useAgentConfig.js::sendAgentAttachment(caption)` sends the staged file +
+  caption as **one** message: reuses `useMediaUpload.js`'s existing
+  `prepareMediaBlock` (upload-ticket + PUT, same bucket/pipeline as any chat
+  attachment - confirmed `modules/messaging/` has zero
+  `owner_agent_chat_id` special-casing anywhere), forces `kind='file'`
+  (`mediaKindForMime(mime, 'file')`) so any file type is accepted (not just
+  the image/video allowlist), and includes `content` on the `send_message`
+  payload only when the caption is non-empty. Builds the optimistic bubble
+  directly into `agentMessages` (not `LinkaChatStore`, consistent with this
+  chat being kept out of the store - see above) with `content` set to the
+  caption; the real `new_message` echo reconciles it the same way
+  `onAgentChatMessage` already reconciles text sends. `closeAgentDrawer`
+  clears any staged attachment on close. The old immediate-send
+  `onAgentAttachmentPicked` (no caption support) is gone.
+- **`AgentChatView.js`'s bubble template** gained minimal media rendering
+  (inline `<img>` for image-kind messages, otherwise a 📎 filename+size chip)
+  - it was text-only (`v-if="row.m.content"`) before; a media message with no
+  caption previously rendered as a blank bubble.
+- **Model awareness without analysis (explicit user requirement)**: the
+  agent must know an attachment was sent (filename only) as safe context -
+  e.g. "the owner sent a product photo" - without ever fetching or analyzing
+  its bytes. This required one backend change:
+  `invoke_turn_helpers.py::_format_history_transcript` used to filter on
+  `if m.content`, so a captionless media message (the normal case for a
+  plain attachment) was silently dropped from the transcript entirely. Now
+  includes any message with `content` **or** `media_name`, appending
+  `[attached file: <name>]` to the transcript line. Full detail:
+  `ai_agent_changelog.md`.
+- **Resending an attachment (ADR 0083, 2026-09-28)**: the groundwork above
+  was explicitly built for this - `list_attached_files`/`send_attached_file`
+  (execution-mode tools, `ai_agent.md`) let the agent list files the owner
+  attached here and resend one into a real chat (e.g. a price list to a
+  customer). No frontend change - it rides the normal `new_message` fan-out
+  into the target chat like any other agent-sent message.

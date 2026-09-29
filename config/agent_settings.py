@@ -244,6 +244,17 @@ AGENT_KNOWLEDGE_MAX_CHUNKS_PER_AGENT = int(
 # they're capped by AGENT_KNOWLEDGE_MAX_CHUNKS_PER_AGENT instead).
 AGENT_KNOWLEDGE_SEARCH_LIMIT = int(os.environ.get("AGENT_KNOWLEDGE_SEARCH_LIMIT", "5"))
 
+# ADR 0085: how much real chunk content seeds the owner-notice turn after a
+# successful upload, so the agent can actually describe what it learned
+# instead of only echoing filename/mime. Capped, not the whole document -
+# this is a turn-seed, not a second copy of the knowledge base.
+AGENT_KNOWLEDGE_NOTICE_PREVIEW_CHUNKS = int(
+    os.environ.get("AGENT_KNOWLEDGE_NOTICE_PREVIEW_CHUNKS", "5")
+)
+AGENT_KNOWLEDGE_NOTICE_PREVIEW_MAX_CHARS = int(
+    os.environ.get("AGENT_KNOWLEDGE_NOTICE_PREVIEW_MAX_CHARS", "4000")
+)
+
 # Allowed upload MIME types for knowledge documents - text/Markdown are
 # chunked server-side, PDF is parsed+chunked client-side (pdf.js) and only
 # the resulting chunk array is POSTed; the raw PDF bytes still go to S3
@@ -320,6 +331,24 @@ AGENT_JUDGE_FOLLOW_UP_WINDOW_SECONDS = int(
 AGENT_JUDGE_FOLLOW_UP_RECENT_MESSAGES = int(
     os.environ.get("AGENT_JUDGE_FOLLOW_UP_RECENT_MESSAGES", "2")
 )
+
+# --- Attachment-relevance judge (ADR 0086) ---
+# A separate, dedicated jev classification call gating send_attached_file -
+# NOT the message judge above: different question, different call site (mid
+# tool-call, not pre-turn), own rate bucket so a burst of attachment resends
+# can never starve or be starved by the message judge's own budget.
+ATTACHMENT_JUDGE_CALLS_PER_MINUTE = int(os.environ.get("ATTACHMENT_JUDGE_CALLS_PER_MINUTE", "60"))
+ATTACHMENT_JUDGE_CALLS_WINDOW_SECONDS = int(os.environ.get("ATTACHMENT_JUDGE_CALLS_WINDOW_SECONDS", "60"))
+
+# Noul cutoff for "this file plausibly matches what was asked for" - separate
+# from JEV_ON_TOPIC_THRESHOLD (a different proposition entirely), tunable
+# independently once AgentJudgeLog data comes in.
+ATTACHMENT_JUDGE_MATCH_THRESHOLD = float(os.environ.get("ATTACHMENT_JUDGE_MATCH_THRESHOLD", "0.5"))
+
+# Noul cutoff for the message judge's needs_human_review question on a
+# media-only triggering message (ADR 0088) - independent of
+# JEV_ON_TOPIC_THRESHOLD/JEV_MALICIOUS_THRESHOLD, a different proposition.
+AGENT_MEDIA_ESCALATION_THRESHOLD = float(os.environ.get("AGENT_MEDIA_ESCALATION_THRESHOLD", "0.5"))
 
 # --- Capacity estimation (ADR 0057) ---
 # Rough single-turn wall-clock cost used ONLY to project "roughly how many
@@ -413,6 +442,8 @@ __all__ = [
     "AGENT_KNOWLEDGE_ALLOWED_MIME",
     "AGENT_KNOWLEDGE_SERVER_CHUNKED_MIME",
     "AGENT_KNOWLEDGE_MAX_UPLOAD_BYTES",
+    "AGENT_KNOWLEDGE_NOTICE_PREVIEW_CHUNKS",
+    "AGENT_KNOWLEDGE_NOTICE_PREVIEW_MAX_CHARS",
     "AGENT_ESTIMATED_SECONDS_PER_TURN",
     "AGENT_BYOK_ENCRYPTION_KEY",
     "JEV_API_KEY",
@@ -426,6 +457,10 @@ __all__ = [
     "AGENT_JUDGE_SYSTEM_PROMPT_PREVIEW_CHARS",
     "AGENT_JUDGE_FOLLOW_UP_WINDOW_SECONDS",
     "AGENT_JUDGE_FOLLOW_UP_RECENT_MESSAGES",
+    "ATTACHMENT_JUDGE_CALLS_PER_MINUTE",
+    "ATTACHMENT_JUDGE_CALLS_WINDOW_SECONDS",
+    "ATTACHMENT_JUDGE_MATCH_THRESHOLD",
+    "AGENT_MEDIA_ESCALATION_THRESHOLD",
     "AGENT_TOKEN_BUDGET_5H",
     "AGENT_TOKEN_BUDGET_5H_WINDOW_SECONDS",
     "AGENT_TOKEN_BUDGET_7D",

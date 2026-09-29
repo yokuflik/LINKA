@@ -19,11 +19,13 @@ const AgentDrawer = {
     messagesHasMore: { type: Boolean, default: false },
     messagesLoadingOlder: { type: Boolean, default: false },
     thinkingStatus: { default: null },
+    // a file picked via AgentChatView's [+] menu, staged (not yet sent) so
+    // the owner can add a caption first: same shape as MessageInput's prop.
+    stagedAttachment: { default: null },
     // Token usage windows (ADR 0059) - {window_5h, window_7d} | null.
     usage: { type: Object, default: null },
     usageBlocked: { type: Boolean, default: false },
     promptDirty: { type: Boolean, required: true },
-    hardTextDirty: { type: Boolean, required: true },
     chatKeywordsDirty: { type: Object, required: true },
     // Knowledge base (ADR 0046 decision 4) - own upload/delete calls, not
     // part of the diff-then-PATCH agent config.
@@ -34,16 +36,22 @@ const AgentDrawer = {
     byokDirty: { type: Boolean, required: true },
     byokKeyInput: { type: String, required: true },
     resetBusy: { type: Boolean, default: false },
+    // Media-rendering helpers threaded through to AgentChatView so image/
+    // video/voice/file bubbles render identically to the main chat pane.
+    imageOrientation: { type: Function, required: true },
+    thumbHashToDataUrl: { type: Function, required: true },
+    thumbHashToAspect: { type: Function, required: true },
+    uploadProgress: { type: Object, default: () => ({}) },
   },
   emits: [
-    'close', 'activate', 'toggle-enabled', 'open-settings', 'open-search', 'back-to-chat', 'send-chat-message', 'load-older-messages', 'pick-pdf',
+    'close', 'activate', 'toggle-enabled', 'open-settings', 'open-search', 'back-to-chat', 'send-chat-message', 'send-attachment', 'load-older-messages', 'pick-knowledge-file', 'stage-attachment', 'clear-attachment',
     'prompt-input', 'save-prompt', 'cancel-prompt',
-    'set-restriction', 'max-messages-input', 'save-hard-text', 'cancel-hard-text',
+    'set-restriction',
     'add-chat-trigger', 'remove-chat-trigger', 'set-time-window', 'set-any-message',
     'chat-keywords-input', 'save-chat-keywords', 'cancel-chat-keywords',
     'upload-knowledge-file', 'delete-knowledge-document',
     'byok-key-input', 'save-byok-key', 'cancel-byok-key', 'clear-byok-key',
-    'reset-agent',
+    'reset-agent', 'voice-played',
   ],
   template: `
     <div v-if="open" class="fixed inset-x-0 bottom-0 top-14 z-50 pointer-events-none">
@@ -136,34 +144,19 @@ const AgentDrawer = {
                            :currentUser="currentUser" :messages="messages" :highlightedId="highlightedId" :loading="messagesLoading"
                            :hasMore="messagesHasMore" :loadingOlder="messagesLoadingOlder"
                            :thinkingStatus="thinkingStatus" :usageBlocked="usageBlocked" :usage="usage"
+                           :stagedAttachment="stagedAttachment"
+                           :imageOrientation="imageOrientation" :thumbHashToDataUrl="thumbHashToDataUrl" :thumbHashToAspect="thumbHashToAspect"
+                           :uploadProgress="uploadProgress"
                            @send="(text) => $emit('send-chat-message', text)"
+                           @send-attachment="(text) => $emit('send-attachment', text)"
                            @load-older="$emit('load-older-messages')"
-                           @pick-pdf="(file) => $emit('pick-pdf', file)" />
+                           @pick-knowledge-file="(file) => $emit('pick-knowledge-file', file)"
+                           @stage-attachment="(file, forceKind) => $emit('stage-attachment', file, forceKind)"
+                           @clear-attachment="$emit('clear-attachment')"
+                           @voice-played="(m) => $emit('voice-played', m)" />
             <AgentSettingsView v-else
                                :form="form" :busy="busy" :error="error"
-                               :chats="chats" :chatDisplayName="chatDisplayName"
-                               :promptDirty="promptDirty" :hardTextDirty="hardTextDirty"
-                               :chatKeywordsDirty="chatKeywordsDirty"
-                               :knowledgeDocuments="knowledgeDocuments" :knowledgeUploadBusy="knowledgeUploadBusy"
-                               :knowledgeError="knowledgeError"
-                               :byokDirty="byokDirty" :byokKeyInput="byokKeyInput"
-                               @prompt-input="(v) => $emit('prompt-input', v)"
-                               @save-prompt="$emit('save-prompt')" @cancel-prompt="$emit('cancel-prompt')"
-                               @set-restriction="(k, v) => $emit('set-restriction', k, v)"
-                               @max-messages-input="(v) => $emit('max-messages-input', v)"
-                               @save-hard-text="$emit('save-hard-text')" @cancel-hard-text="$emit('cancel-hard-text')"
-                               @add-chat-trigger="(id) => $emit('add-chat-trigger', id)"
-                               @remove-chat-trigger="(id) => $emit('remove-chat-trigger', id)"
-                               @set-time-window="(k, v) => $emit('set-time-window', k, v)"
-                               @set-any-message="(v) => $emit('set-any-message', v)"
-                               @chat-keywords-input="(id, v) => $emit('chat-keywords-input', id, v)"
-                               @save-chat-keywords="(id) => $emit('save-chat-keywords', id)"
-                               @cancel-chat-keywords="(id) => $emit('cancel-chat-keywords', id)"
-                               @upload-knowledge-file="(f) => $emit('upload-knowledge-file', f)"
-                               @delete-knowledge-document="(id) => $emit('delete-knowledge-document', id)"
-                               @byok-key-input="(v) => $emit('byok-key-input', v)"
-                               @save-byok-key="$emit('save-byok-key')" @cancel-byok-key="$emit('cancel-byok-key')"
-                               @clear-byok-key="$emit('clear-byok-key')" />
+                               @set-restriction="(k, v) => $emit('set-restriction', k, v)" />
           </div>
         </template>
       </div>

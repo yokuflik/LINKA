@@ -40,6 +40,7 @@ from modules.agents.models import Agent, AgentJudgeLog
 from modules.agents.token_budget import record_tokens
 from modules.agents.typesafe_client import TypeSafeError, classify, noul_value
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
+from modules.messaging.crud import get_latest_incoming_message
 from modules.messaging.models import Message
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,139 @@ def _domain_description(agent: Agent) -> str:
         preview = agent.system_prompt[: settings.AGENT_JUDGE_SYSTEM_PROMPT_PREVIEW_CHARS]
         parts.append(f"Additional owner-authored rules (may be partial): {preview}")
     return "\n".join(parts) if parts else "No specific domain configured - general assistant."
+
+
+# Message.type per its own column comment: 1=text, 2=image, 3=video,
+# 4=audio, 5=file, 6=system, 7=agent reply. Only the media kinds are
+# reachable here (evaluate_message only sees execution-mode, message-fired
+# triggers, never system/agent-reply rows).
+_MEDIA_TYPE_LABELS = {2: "photo", 3: "video", 4: "voice note", 5: "file"}
+
+
+class JudgeVerdict:
+    __slots__ = (
+        "is_approved",
+        "reason",
+        "is_follow_up",
+        "redirect_message",
+        "is_malicious",
+        "needs_human_review",
+    )
+
+    def __init__(
+        self,
+        is_approved: bool,
+        reason: str,
+        is_follow_up: bool,
+        redirect_message: str = "",
+        is_malicious: bool = False,
+        needs_human_review: bool = False,
+    ):
+        self.is_approved = is_approved
+        self.reason = reason
+        self.is_follow_up = is_follow_up
+        self.redirect_message = redirect_message
+        # ADR 0074: fail-open / no-content / rate-limited paths must never
+        # themselves trigger an escalation - only a real judge verdict can
+        # set this true, so every constructor call site other than the
+        # successful-response branch below relies on this default.
+        self.is_malicious = is_malicious
+        # ADR 0088: same posture - only the media-classification success
+        # path below can set this true.
+        self.needs_human_review = needs_human_review
+
+
+async def _evaluate_unseeable_media(
+    session: AsyncSession,
+    agent: Agent,
+    chat_id: int,
+    message_id: int,
+    message: Message,
+    is_follow_up: bool,
+) -> JudgeVerdict:
+    """ADR 0088: a media-only triggering message (no caption) can't be seen
+    by the agent at all. Asks jev - using only the same file metadata
+    (type/mime/filename) ADR 0086's attachment judge is allowed to see, never
+    bytes - whether this specific kind of attachment plausibly needs a human
+    to actually look at it. Escalates only if jev says yes AND the message is
+    still the chat's latest incoming one (no follow-up has since arrived) -
+    the "still unanswered" fact is a plain DB check, not something worth
+    asking jev to judge."""
+    media_label = _MEDIA_TYPE_LABELS.get(message.type, "attachment")
+    state = f"{media_label} (mime: {message.media_mime or 'unknown'}, filename: {message.media_name or 'none'})"
+
+    if not await check_and_increment(
+        agent.id,
+        "agent_judge_calls",
+        settings.AGENT_JUDGE_CALLS_PER_MINUTE,
+        settings.AGENT_JUDGE_CALLS_WINDOW_SECONDS,
+    ):
+        logger.warning("agent_judge: agent %s over judge call budget, failing open (media)", agent.id)
+        verdict = JudgeVerdict(True, "judge rate limit exceeded - failed open", is_follow_up)
+        await _log_verdict(session, agent.id, chat_id, message_id, verdict)
+        return verdict
+
+    domain = _domain_description(agent)
+    questions = {
+        "needs_human_review": {
+            "type": "noul",
+            "instructions": (
+                f"The agent cannot see the actual contents of this "
+                f"{media_label} - it only knows its type and filename below. "
+                f"Judge whether this kind of attachment plausibly needs a "
+                f"real human to look at it before the conversation can move "
+                f"forward (e.g. an ID/receipt/document/screenshot needing "
+                f"verification or a judgment call) - as opposed to something "
+                f"the agent can reasonably acknowledge and continue the "
+                f"conversation on its own without seeing. Be permissive "
+                f"toward NOT needing a human: only answer yes when the "
+                f"filename/type clearly suggests something requiring real "
+                f"review.\n\n{domain}"
+            ),
+        },
+    }
+
+    try:
+        answers = await classify(state=state, questions=questions)
+        await record_tokens(agent.id, _estimate_jev_input_tokens(state, questions))
+        needs_human_review = (
+            noul_value(answers, "needs_human_review") >= settings.AGENT_MEDIA_ESCALATION_THRESHOLD
+        )
+
+        if not needs_human_review:
+            verdict = JudgeVerdict(True, "media attachment does not need human review", is_follow_up)
+            await _log_verdict(session, agent.id, chat_id, message_id, verdict)
+            return verdict
+
+        latest = await get_latest_incoming_message(session, chat_id, agent.owner_user_id)
+        if latest is not None and latest.id != message_id:
+            # A newer message already arrived - the agent should react to
+            # that one, not raise a stale "can't see this" escalation.
+            verdict = JudgeVerdict(
+                True, "media needs review but a newer message already followed up", is_follow_up
+            )
+            await _log_verdict(session, agent.id, chat_id, message_id, verdict)
+            return verdict
+
+        redirect_message = await _generate_redirect_message(
+            agent, state, f"sent a {media_label} the agent can't view and needs a human to check"
+        )
+        verdict = JudgeVerdict(
+            False,
+            f"received a {media_label} it can't view and got no further context from the customer",
+            is_follow_up,
+            redirect_message,
+            needs_human_review=True,
+        )
+    except (TypeSafeError, KeyError, TypeError, ValueError) as exc:
+        logger.error(
+            "agent_judge: jev media classification failed for agent %s chat %s message %s, failing open: %s",
+            agent.id, chat_id, message_id, exc,
+        )
+        verdict = JudgeVerdict(True, f"judge call failed - failed open: {exc}", is_follow_up)
+
+    await _log_verdict(session, agent.id, chat_id, message_id, verdict)
+    return verdict
 
 
 async def _is_follow_up_in_active_conversation(session: AsyncSession, chat_id: int) -> bool:
@@ -128,42 +262,33 @@ def local_redirect_text(agent: Agent) -> str:
     return f"That's a bit outside what I help with here - happy to help with {domain} though, what can I do for you?"
 
 
-class JudgeVerdict:
-    __slots__ = ("is_approved", "reason", "is_follow_up", "redirect_message", "is_malicious")
-
-    def __init__(
-        self,
-        is_approved: bool,
-        reason: str,
-        is_follow_up: bool,
-        redirect_message: str = "",
-        is_malicious: bool = False,
-    ):
-        self.is_approved = is_approved
-        self.reason = reason
-        self.is_follow_up = is_follow_up
-        self.redirect_message = redirect_message
-        # ADR 0074: fail-open / no-content / rate-limited paths must never
-        # themselves trigger an escalation - only a real judge verdict can
-        # set this true, so every constructor call site other than the
-        # successful-response branch below relies on this default.
-        self.is_malicious = is_malicious
-
-
 async def evaluate_message(
-    session: AsyncSession, agent: Agent, chat_id: int, message_id: int, message_content: Optional[str]
+    session: AsyncSession,
+    agent: Agent,
+    chat_id: int,
+    message_id: int,
+    message_content: Optional[str],
+    message: Optional[Message] = None,
 ) -> JudgeVerdict:
     """Runs the judge gate for one execution-mode, message-fired turn.
     Always returns a JudgeVerdict - never raises; a technical failure is
     logged at ERROR and reported back as an approved verdict (fail-open, ADR
     0053 section 6). Every verdict (approved, rejected, or fail-open) is
-    logged to AgentJudgeLog for tuning."""
+    logged to AgentJudgeLog for tuning.
+
+    `message` (the full ORM row, ADR 0088) is optional only for
+    backward-compatible callers - invoke_worker.py always passes it, since it
+    already fetched the row to check media_key before this call."""
     is_follow_up = await _is_follow_up_in_active_conversation(session, chat_id)
 
     if not message_content:
-        # Nothing to judge (e.g. a media-only message with no caption) -
-        # approve by default rather than rejecting content the judge never
-        # actually saw.
+        if message is not None and message.media_key is not None:
+            return await _evaluate_unseeable_media(
+                session, agent, chat_id, message_id, message, is_follow_up
+            )
+        # Nothing to judge (e.g. a media message somehow missing its own
+        # row) - approve by default rather than rejecting content the judge
+        # never actually saw.
         verdict = JudgeVerdict(True, "no text content to evaluate", is_follow_up)
         await _log_verdict(session, agent.id, chat_id, message_id, verdict)
         return verdict
@@ -336,5 +461,6 @@ async def _log_verdict(
             reason=verdict.reason,
             is_follow_up_flag=verdict.is_follow_up,
             is_malicious=verdict.is_malicious,
+            needs_human_review=verdict.needs_human_review,
         )
     )

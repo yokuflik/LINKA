@@ -98,9 +98,9 @@
 <script src="components/ChatProfileModal.js?v=2026.09.11-2"></script>
 <script src="components/ProfileEditModal.js?v=2026.09.11-2"></script>
 <script src="components/SettingsModal.js?v=2026.09.11-2"></script>
-<script src="components/AgentChatView.js?v=2026.09.23-2"></script>
+<script src="components/AgentChatView.js?v=2026.09.28"></script>
 <script src="components/AgentSettingsView.js?v=2026.09.23-1"></script>
-<script src="components/AgentDrawer.js?v=2026.09.24-2"></script>
+<script src="components/AgentDrawer.js?v=2026.09.28"></script>
 <script src="components/UsageProgressBar.js?v=2026.09.26-2"></script>
 <script src="components/SearchModal.js?v=2026.09.13-1"></script>
 <script src="components/NewChatModal.js?v=2026.09.11-2"></script>
@@ -138,8 +138,8 @@
 <script src="composables/useScheduleMessage.js?v=2026.09.11-2"></script>
 <script src="composables/useMediaPlaceholder.js?v=2026.09.11-2"></script>
 <script src="composables/useSettings.js?v=2026.09.11-2"></script>
-<script src="composables/useAgentConfig.js?v=2026.09.24"></script>
-<script src="composables/useKnowledgeUpload.js?v=2026.09.23-1"></script>
+<script src="composables/useAgentConfig.js?v=2026.09.28-2"></script>
+<script src="composables/useKnowledgeUpload.js?v=2026.09.28"></script>
 <script src="composables/useProfileEdit.js?v=2026.09.11-2"></script>
 <script src="composables/useAvatarCache.js?v=2026.09.11-2"></script>
 <script src="composables/useAvatarLightbox.js?v=2026.09.11-2"></script>
@@ -497,15 +497,16 @@ const app = createApp({
                 <span>{{ scheduledCount }} scheduled</span>
               </button>
             </div>
-            <MessageInput v-model:messageInput="messageInput" @send-message="sendMessage" @typing="notifyTyping"
+            <MessageInput v-model:messageInput="messageInput" @send-message="sendMessageOrAttachment" @typing="notifyTyping"
               @open-schedule="openScheduleModal()"
               :attachError="messagesError" @clear-attach-error="messagesError = ''"
               :replyingToMessage="replyingToMessage" :senderLabel="replySenderLabel" @cancel-reply="cancelReply"
               :editingMessage="editingMessage" @cancel-edit="cancelEdit"
+              :stagedAttachment="stagedAttachment"
               :isRecording="isRecording" :recordingSeconds="recordingSeconds" :liveWaveform="liveWaveform"
               @start-recording="startRecording" @stop-recording="stopRecording"
-              @pick-media="sendMediaMessage"
-              @pick-document="(f) => sendMediaMessage(f, 'file')" />
+              @stage-attachment="stageAttachment"
+              @clear-attachment="clearStagedAttachment" />
           </template>
           <div v-else class="flex-1 flex items-center justify-center text-slate-400 text-sm">
             Select a chat, or create one from the sidebar.
@@ -611,27 +612,31 @@ const app = createApp({
       :messages="agentMessages" :messagesLoading="agentMessagesLoading" :highlightedId="agentHighlightedId"
       :messagesHasMore="agentHasMoreMessages" :messagesLoadingOlder="agentLoadingOlderMessages"
       :thinkingStatus="agentThinkingStatus"
+      :stagedAttachment="agentStagedAttachment"
       :usage="agentUsage" :usageBlocked="agentUsageBlocked"
-      :promptDirty="promptDirty" :hardTextDirty="hardTextDirty" :chatKeywordsDirty="chatKeywordsDirty"
+      :promptDirty="promptDirty" :chatKeywordsDirty="chatKeywordsDirty"
       :knowledgeDocuments="knowledgeDocuments" :knowledgeUploadBusy="knowledgeUploadBusy" :knowledgeError="knowledgeError"
       :byokDirty="byokDirty" :byokKeyInput="byokKeyInput"
       :resetBusy="agentResetBusy"
+      :imageOrientation="imageOrientation" :thumbHashToDataUrl="thumbHashToDataUrl" :thumbHashToAspect="thumbHashToAspect"
+      :uploadProgress="uploadProgress"
       @close="closeAgentDrawer" @activate="activateMyAgent" @toggle-enabled="toggleAgentEnabled"
       @open-settings="openAgentSettings"
       @open-search="openSearchModal(myAgent && myAgent.owner_agent_chat_id)"
-      @back-to-chat="backToAgentChat" @send-chat-message="sendAgentChatMessage"
+      @back-to-chat="backToAgentChat" @send-chat-message="sendAgentChatMessage" @send-attachment="sendAgentAttachment"
       @load-older-messages="loadOlderAgentMessages(myAgent && myAgent.owner_agent_chat_id)"
-      @pick-pdf="onAgentPdfPicked"
+      @pick-knowledge-file="onAgentKnowledgeFilePicked"
+      @stage-attachment="stageAgentAttachment" @clear-attachment="clearAgentStagedAttachment"
       @prompt-input="onPromptInput" @save-prompt="saveSoftPrompt" @cancel-prompt="cancelSoftPromptEdit"
-      @set-restriction="setRestrictionCheckbox" @max-messages-input="onMaxMessagesInput"
-      @save-hard-text="saveHardTextFields" @cancel-hard-text="cancelHardTextEdit"
+      @set-restriction="setRestrictionCheckbox"
       @add-chat-trigger="addAgentChatTrigger" @remove-chat-trigger="removeAgentChatTrigger"
       @set-time-window="setTimeWindowField" @set-any-message="setAnyMessageEnabled"
       @chat-keywords-input="onChatTriggerKeywordsInput" @save-chat-keywords="saveChatTriggerKeywords"
       @cancel-chat-keywords="cancelChatTriggerKeywordsEdit"
       @upload-knowledge-file="uploadKnowledgeFile" @delete-knowledge-document="deleteKnowledgeDocument"
       @byok-key-input="onByokKeyInput" @save-byok-key="saveByokKey" @cancel-byok-key="cancelByokKeyEdit"
-      @clear-byok-key="clearByokKey" @reset-agent="resetAgentToDefault" />
+      @clear-byok-key="clearByokKey" @reset-agent="resetAgentToDefault"
+      @voice-played="onAgentVoicePlayed" />
 
     <SearchModal v-if="showSearchModal"
       v-model:query="searchQuery"

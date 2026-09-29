@@ -69,12 +69,13 @@ async def get_agent_by_owner(session: AsyncSession, owner_user_id: int) -> Optio
 
 async def update_agent_config(session: AsyncSession, agent: Agent, patch: dict) -> Agent:
     """Applies a config PATCH (system_prompt / is_enabled / restrictions /
-    triggers / active_skill) from the config UI (step 5) or the
-    set_agent_persona config tool (ADR 0047 decision 6). restrictions/
-    triggers are shallow-merged (only the keys present in the patch change);
-    system_prompt/is_enabled/active_skill are replaced outright when present.
-    Distinct from update_agent_triggers above, which is scoped to the
-    update_own_triggers *tool* and never touches restrictions."""
+    triggers / active_skill / agent_name / disclose_as_agent) from the config
+    UI (step 5) or a config tool (set_agent_persona / set_agent_identity,
+    ADR 0047 decision 6 / ADR 0081). restrictions/triggers are shallow-merged
+    (only the keys present in the patch change); every other field is
+    replaced outright when present. Distinct from update_agent_triggers
+    above, which is scoped to the update_own_triggers *tool* and never
+    touches restrictions."""
     if "system_prompt" in patch:
         agent.system_prompt = patch["system_prompt"]
     if "is_enabled" in patch:
@@ -83,6 +84,10 @@ async def update_agent_config(session: AsyncSession, agent: Agent, patch: dict) 
         agent.active_skill = patch["active_skill"]
     if "builder_state" in patch:
         agent.builder_state = patch["builder_state"]
+    if "agent_name" in patch:
+        agent.agent_name = patch["agent_name"]
+    if "disclose_as_agent" in patch:
+        agent.disclose_as_agent = patch["disclose_as_agent"]
     if "restrictions" in patch:
         agent.restrictions = {**agent.restrictions, **patch["restrictions"]}
     if "triggers" in patch:

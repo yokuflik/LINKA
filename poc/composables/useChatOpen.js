@@ -217,6 +217,7 @@ function useChatOpen(ctx) {
     ctx.clearUnreadCount(chatId);
     ctx.replyingToMessage.value = null;
     if (ctx.editingMessage.value) ctx.cancelEdit();
+    if (ctx.clearStagedAttachment) ctx.clearStagedAttachment();
     ctx.closeMessageContextMenu();
     const item = ctx.chats.value.find((c) => c.chat.id === chatId);
     if (item && !item.chat.is_group) ctx.resolvePrivateChatTitle(chatId, { force: true });

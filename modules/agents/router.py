@@ -2,10 +2,13 @@
 caller's own agent. No listing/admin endpoints - one agent per user, always
 addressed as "mine"."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.dependencies import get_current_user_id
+from config import settings
 from infra.db.connection import get_db
 from infra.ids.client import next_id
 from typing import List
@@ -21,9 +24,11 @@ from modules.agents.reset import reset_agent_to_default
 from modules.media.errors import MediaValidationError
 from modules.agents.schedule import sync_schedule_zset
 from modules.agents.schemas import AgentConfigPatchIn
+from modules.agents.invoke_queue import enqueue_knowledge_event
 from modules.agents.schemas import (
     AgentKnowledgeCommitIn,
     AgentKnowledgeDocumentOut,
+    AgentKnowledgeFailureIn,
     AgentKnowledgeUploadTicketIn,
     AgentKnowledgeUploadTicketOut,
 )
@@ -36,9 +41,10 @@ from modules.messaging import service as message_service
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
 from realtime import realtime_service
 
-_GREETING_TEXT = "שלום, אני סוכן ה-AI שלך. מה תרצה שאעשה היום?"
+_GREETING_TEXT = "Hi, I'm your AI agent. What would you like me to do today?"
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+logger = logging.getLogger(__name__)
 
 
 async def _get_my_agent_or_404(session: AsyncSession, user_id: int) -> Agent:
@@ -100,16 +106,21 @@ async def create_my_agent(
     # same way any agent reply is (process_outgoing, AGENT_REPLY_MESSAGE_TYPE)
     # so it's indistinguishable from a normal turn. process_outgoing
     # self-commits, so this runs after the chat/agent transaction above, not
-    # inside it.
-    await message_service.process_outgoing(
-        session,
-        sender_id=user_id,
-        chat_id=chat.id,
-        client_message_id=f"agent-greeting-{agent.id}",
-        content=_GREETING_TEXT,
-        type=AGENT_REPLY_MESSAGE_TYPE,
-        sender_agent_id=agent.id,
-    )
+    # inside it. Best-effort, same reasoning as the reset path below: the
+    # agent itself already exists at this point, so a transient send-path
+    # failure here must not turn into a 500 that hides a successful creation.
+    try:
+        await message_service.process_outgoing(
+            session,
+            sender_id=user_id,
+            chat_id=chat.id,
+            client_message_id=f"agent-greeting-{agent.id}",
+            content=_GREETING_TEXT,
+            type=AGENT_REPLY_MESSAGE_TYPE,
+            sender_agent_id=agent.id,
+        )
+    except Exception:
+        logger.exception("Failed to send greeting after agent creation for user_id=%s", user_id)
 
     return _agent_out(agent)
 
@@ -192,16 +203,22 @@ async def reset_my_agent(
     # Re-send the opening greeting so the now-empty chat isn't blank, same
     # path as agent creation (a real persisted message, not a client-only
     # placeholder). Runs after the reset transaction commits, like the
-    # greeting on creation.
-    await message_service.process_outgoing(
-        session,
-        sender_id=user_id,
-        chat_id=agent.owner_agent_chat_id,
-        client_message_id=f"agent-reset-greeting-{await next_id()}",
-        content=_GREETING_TEXT,
-        type=AGENT_REPLY_MESSAGE_TYPE,
-        sender_agent_id=agent.id,
-    )
+    # greeting on creation. Best-effort: the reset itself already committed
+    # above, so a failure here (e.g. a transient send-path error) must not
+    # turn into a 500 that tells the owner the reset failed when it didn't -
+    # log and continue instead of losing the response.
+    try:
+        await message_service.process_outgoing(
+            session,
+            sender_id=user_id,
+            chat_id=agent.owner_agent_chat_id,
+            client_message_id=f"agent-reset-greeting-{await next_id()}",
+            content=_GREETING_TEXT,
+            type=AGENT_REPLY_MESSAGE_TYPE,
+            sender_agent_id=agent.id,
+        )
+    except Exception:
+        logger.exception("Failed to send greeting after agent reset for user_id=%s", user_id)
 
     out = _agent_out(agent)
     await realtime_service.publish_user_event(
@@ -270,7 +287,7 @@ async def commit_knowledge_document(
 ):
     agent = await _get_my_agent_or_404(session, user_id)
     try:
-        document = await knowledge_service.commit_knowledge_document(
+        document, chunk_list = await knowledge_service.commit_knowledge_document(
             session,
             agent,
             filename=body.filename,
@@ -284,7 +301,49 @@ async def commit_knowledge_document(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     # commit_knowledge_document only flushes - get_db() never auto-commits.
     await session.commit()
+    # ADR 0085: best-effort owner notice, authored by the agent itself in a
+    # real config-mode turn - never blocks/fails the upload response if the
+    # enqueue itself has trouble (same posture as every other trigger match).
+    # Seeded with real chunk content (capped, not the whole document) so the
+    # agent can actually describe what it learned, not just echo filename/
+    # mime - see AGENT_KNOWLEDGE_NOTICE_PREVIEW_CHUNKS/_MAX_CHARS.
+    preview = "\n\n".join(chunk_list[: settings.AGENT_KNOWLEDGE_NOTICE_PREVIEW_CHUNKS])
+    preview = preview[: settings.AGENT_KNOWLEDGE_NOTICE_PREVIEW_MAX_CHARS]
+    await enqueue_knowledge_event(
+        agent_id=agent.id,
+        chat_id=agent.owner_agent_chat_id,
+        instruction=(
+            f"a document named '{document.filename}' ({document.mime_type}, {len(chunk_list)} chunks) "
+            f"was just added to your knowledge base. Here is an excerpt of its content:\n\n{preview}\n\n"
+            "Summarize for the owner, in your own words, what this document contains / what you learned "
+            "from it - not just that it was added. The excerpt above may be in any language - that has "
+            "no bearing on your reply's language: reply in the same language the owner has been using in "
+            "this chat (see the chat history below), never the document's language."
+        ),
+    )
     return document
+
+
+@router.post("/me/knowledge/report-failure", status_code=status.HTTP_204_NO_CONTENT)
+async def report_knowledge_failure(
+    body: AgentKnowledgeFailureIn,
+    user_id: int = Depends(get_current_user_id),
+    session: AsyncSession = Depends(get_db),
+):
+    """ADR 0085: client-side PDF parse failure (zero extractable text) -
+    nothing is uploaded/committed here, this only lets the owner's agent
+    explain the limitation in its own chat instead of a silent local toast."""
+    agent = await _get_my_agent_or_404(session, user_id)
+    await enqueue_knowledge_event(
+        agent_id=agent.id,
+        chat_id=agent.owner_agent_chat_id,
+        instruction=(
+            f"the owner tried to add a document named '{body.filename}' ({body.mime_type}) to your "
+            f"knowledge base, but it failed ({body.reason} - likely a scanned/image-only PDF with no "
+            "selectable text). Explain this limitation to the owner, in the same language the owner has "
+            "been using in this chat (see the chat history below)."
+        ),
+    )
 
 
 @router.get("/me/knowledge", response_model=List[AgentKnowledgeDocumentOut])

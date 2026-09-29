@@ -11,15 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from infra.ids.client import next_id
-from infra.ratelimit.service import check_and_increment, check_sliding_window
+from infra.ratelimit.service import check_sliding_window
 from modules.agents.cache import sync_agent_cache
 from modules.agents.crud import pause_agent_chat
 from modules.agents.models import Agent, AgentToolCallLog
 
 logger = logging.getLogger(__name__)
-
-_SECONDS_PER_DAY = 86400
-
 
 class ToolDeniedError(Exception):
     """Raised internally when a restriction blocks a tool call - carries the
@@ -57,20 +54,6 @@ async def _resolve_sender_labels(session: AsyncSession, sender_ids: list) -> dic
         }
         for uid, user in users.items()
     }
-
-
-async def _check_daily_send_quota(agent: Agent) -> None:
-    """Cumulative send cap independent of the Gemini API rate limit -
-    guards against a technically rate-limit-compliant agent still blasting
-    one chat with dozens of messages in a burst (ADR 0045). Null/absent
-    means unlimited - no counter touched, so an agent that never sets this
-    never pays for a Redis round trip it doesn't need."""
-    limit = agent.restrictions.get("max_messages_per_day")
-    if limit is None:
-        return
-    allowed = await check_and_increment(agent.id, "agent_messages_per_day", int(limit), _SECONDS_PER_DAY)
-    if not allowed:
-        raise ToolDeniedError("max_messages_per_day exceeded")
 
 
 async def _consume_owner_send_budget(agent: Agent) -> None:

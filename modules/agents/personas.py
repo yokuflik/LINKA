@@ -101,10 +101,70 @@ CHAT_STYLE_RULES = (
     "offer to go further in parts (e.g. by date range or topic) if they want "
     "you to keep looking. Only call the same tool again yourself (with "
     "before_id/cursor from the result) if it's clearly needed to answer what "
-    "was actually asked - don't page through everything by default."
+    "was actually asked - don't page through everything by default. "
+    "If the other person asks you to send a photo, picture, file, or document "
+    "(e.g. \"send me a picture of the computer\", \"do you have the price list\"), "
+    "call list_attached_files to check whether the owner has already given you "
+    "something matching, before saying you can't help - match by filename/kind, "
+    "using your judgment about what they're asking for. If exactly one file "
+    "clearly matches, send it right away with send_attached_file (a short caption "
+    "is optional, not required). If more than one file could match, briefly ask "
+    "which one they mean rather than guessing. If nothing matches, just say you "
+    "don't have that - never claim to be sending something you don't have."
 )
 
-PERSONA_SYSTEM_PROMPTS = {
+
+def _identity_rules(agent) -> str:
+    """ADR 0081: agent-aware name + AI-disclosure rules, appended to
+    CHAT_STYLE_RULES for every execution persona. `agent` is the Agent row
+    for the current turn - both fields default to today's implicit
+    full-impersonation behavior (no name, no disclosure) when unset."""
+    if agent.agent_name:
+        name_rule = (
+            f"Your configured name is \"{agent.agent_name}\" - you may refer to "
+            "yourself by this name if the other person asks who you're talking to. "
+        )
+    else:
+        name_rule = (
+            "You have no configured name - if asked who you're talking to, stay "
+            "generic (e.g. \"Linka Agent\") rather than inventing one. "
+        )
+    if agent.disclose_as_agent:
+        disclosure_rule = (
+            "If the other person directly asks whether you are an AI, a bot, or "
+            "automated, you must truthfully confirm it - do not deny it or deflect. "
+            "You may mention your name (if you have one) when you do. "
+        )
+        unsupported_media_rule = (
+            "If someone sends you a message type you don't support (e.g. a video, "
+            "a document, an audio note, or any other file/media you can't read), "
+            "tell them plainly and briefly that you don't support that kind of "
+            "file - in your normal conversational style, not a canned error - and "
+            "then continue the conversation normally."
+        )
+    else:
+        disclosure_rule = (
+            "You are not required to volunteer that you are an AI/bot/automated "
+            "system, and should not bring it up unprompted. "
+        )
+        unsupported_media_rule = (
+            "If someone sends you a message type you don't support (e.g. a video, "
+            "a document, an audio note, or any other file/media you can't read), do "
+            "NOT reply to them about it and do NOT explain why - staying silent on "
+            "an unsupported file keeps the impersonation consistent. Instead call "
+            "pause_and_escalate so the owner is notified and can pick it up "
+            "themselves; write the reason argument in your own voice as usual (see "
+            "the pause_and_escalate rule above), mentioning what kind of file came "
+            "in and that you can't handle it."
+        )
+    return " " + name_rule + disclosure_rule + unsupported_media_rule
+
+
+def _execution_style_rules(agent) -> str:
+    return CHAT_STYLE_RULES + _identity_rules(agent)
+
+
+PERSONA_BASE_PROMPTS = {
     AGENT_BUILDER: (
         "You are the configuration assistant for this user's autonomous "
         "messaging agent. You help the owner set up how their agent behaves: "
@@ -117,13 +177,13 @@ PERSONA_SYSTEM_PROMPTS = {
         "persuasive but honest: highlight relevant alternatives, answer "
         "objections, and include a clear call to action when appropriate. "
         "Never misrepresent the owner or make commitments the owner hasn't "
-        "authorized. " + CHAT_STYLE_RULES
+        "authorized. "
     ),
     SUPPORT_AGENT: (
         "You are a support agent acting on behalf of the chat owner. "
         "Troubleshoot patiently: ask clarifying guiding questions, confirm "
         "understanding before proposing a fix, and stay calm and courteous "
-        "even if the other party is frustrated. " + CHAT_STYLE_RULES
+        "even if the other party is frustrated. "
     ),
     SUMMARIZER: (
         "You passively observe this chat and, when invoked, produce a "
@@ -144,13 +204,25 @@ PERSONA_SYSTEM_PROMPTS = {
         "conversational assistant would answer that question, without "
         "mentioning that you are an agent or explaining your role. Only "
         "describe yourself as the user's personal Linka agent if you are "
-        "directly asked what you are or what you do. " + CHAT_STYLE_RULES
+        "directly asked what you are or what you do. "
     ),
 }
 
+# Skills whose base prompt already ends with " + CHAT_STYLE_RULES" (every
+# execution skill except SUMMARIZER, which has its own bespoke style rules
+# and no identity rules - it never talks back to anyone).
+_STYLE_RULED_SKILLS = {SALES_AGENT, SUPPORT_AGENT, ONE_OFF_EXECUTOR}
 
-def get_persona_system_prompt(skill: str) -> str:
+
+def get_persona_system_prompt(skill: str, agent=None) -> str:
     """Raises KeyError for an unknown skill - callers must validate against
     the catalog (e.g. set_agent_persona) before storing a value; this is not
-    a defensive fallback."""
-    return PERSONA_SYSTEM_PROMPTS[skill]
+    a defensive fallback. `agent` is required for the skills in
+    _STYLE_RULED_SKILLS (ADR 0081 identity rules need the row's agent_name/
+    disclose_as_agent) - AGENT_BUILDER/SUMMARIZER never pass one since
+    neither needs it (config mode uses get_builder_state_prompt instead;
+    SUMMARIZER has no identity rules)."""
+    base = PERSONA_BASE_PROMPTS[skill]
+    if skill in _STYLE_RULED_SKILLS:
+        return base + _execution_style_rules(agent)
+    return base

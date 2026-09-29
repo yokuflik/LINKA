@@ -275,6 +275,27 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "list_attached_files",
+        "description": "List files the owner has attached in their own agent chat, available to send to someone else via send_attached_file. Each entry has a file_id, filename, an optional caption the owner typed when attaching it, kind, mime, size, and when it was attached. Use the filename and caption together to judge what a file shows/contains (e.g. a caption \"our new laptop model\" on an image means it's a photo of that laptop) - call this whenever a chat counterpart asks for a photo/file/document, even if they don't name it exactly, to check whether something the owner already shared matches what they're asking for.",
+        "parameters": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "description": "Optional: how many files to return (default 20, max 50)"}},
+        },
+    },
+    {
+        "name": "send_attached_file",
+        "description": "Resend a file the owner previously attached in their own agent chat (see list_attached_files) into a real chat, e.g. sending a price list or brochure to a customer. Only files the owner attached in their own agent chat can be sent this way - you cannot send a file from any other chat. The call can be denied if the file does not appear to match what the other person actually asked for - if that happens, do not claim you sent something; instead ask a clarifying question or check list_attached_files again for a better match.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string", "description": "Target chat id to send the file into"},
+                "file_id": {"type": "string", "description": "file_id from list_attached_files"},
+                "caption": {"type": "string", "description": "Optional caption text to send alongside the file"},
+            },
+            "required": ["chat_id", "file_id"],
+        },
+    },
+    {
         "name": "pause_and_escalate",
         "description": "Freeze yourself for this specific chat and notify the human owner that you need their input. Use this when you're stuck, unsure, or asked to do something outside your restrictions - and ALWAYS when the other person explicitly asks to speak with a human/real person/representative/the owner, or is ready to close a deal and needs a human to finalize it. You will not be woken again in this chat until the owner resumes it. Before or immediately after calling this, also tell the other person in the chat (via send_message/reply_message) that you're connecting them with a real person now, in their own language.",
         "parameters": {
@@ -303,6 +324,17 @@ CONFIG_TOOL_SCHEMAS = [
             "type": "object",
             "properties": {"rules": {"type": "string"}},
             "required": ["rules"],
+        },
+    },
+    {
+        "name": "set_agent_identity",
+        "description": "Set the agent's optional display name and/or whether it may truthfully admit to being an AI if directly asked. Either argument can be omitted to leave that field unchanged.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "agent_name": {"type": "string", "description": "Optional name the agent may use when asked who it is. Omit if the owner doesn't want to set one."},
+                "disclose_as_agent": {"type": "boolean", "description": "True: the agent must truthfully confirm being an AI/bot if directly asked. False (default): no permission to volunteer AI status unprompted."},
+            },
         },
     },
     {
@@ -426,6 +458,13 @@ CONFIG_TOOL_SCHEMAS = [
 ]
 
 # --- Builder sub-state schema sets (ADR 0049) --------------------------------
+# ADR 0084: the two Help personas need read-only access to the agent's own
+# knowledge base (reference docs seeded for them) even though they otherwise
+# stay zero-action (ADR 0064) - pulled from TOOL_SCHEMAS the same way the
+# Supervisor/Builder-only refs below are pulled from CONFIG_TOOL_SCHEMAS.
+_SEARCH_KNOWLEDGE_SEMANTIC_SCHEMA = next(s for s in TOOL_SCHEMAS if s["name"] == "search_knowledge_semantic")
+_GET_KNOWLEDGE_INDEX_SCHEMA = next(s for s in TOOL_SCHEMAS if s["name"] == "get_knowledge_index")
+_FETCH_CHUNK_SCHEMA = next(s for s in TOOL_SCHEMAS if s["name"] == "fetch_chunk")
 _RESUME_PAUSED_CHAT_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "resume_paused_chat")
 _RESOLVE_USER_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "resolve_user")
 _FIND_CHAT_BY_NAME_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "find_chat_by_name")
@@ -481,10 +520,16 @@ BUILDER_STATE_TOOL_SCHEMAS = {
         TRANSFER_TO_HELP_GENERAL_SCHEMA,
         TRANSFER_TO_SUPERVISOR_SCHEMA,
         _NO_REPLY_NEEDED_SCHEMA,
+        _SEARCH_KNOWLEDGE_SEMANTIC_SCHEMA,
+        _GET_KNOWLEDGE_INDEX_SCHEMA,
+        _FETCH_CHUNK_SCHEMA,
     ],
     BuilderState.HELP_GENERAL: [
         TRANSFER_TO_HELP_BUILDING_SCHEMA,
         TRANSFER_TO_SUPERVISOR_SCHEMA,
         _NO_REPLY_NEEDED_SCHEMA,
+        _SEARCH_KNOWLEDGE_SEMANTIC_SCHEMA,
+        _GET_KNOWLEDGE_INDEX_SCHEMA,
+        _FETCH_CHUNK_SCHEMA,
     ],
 }

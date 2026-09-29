@@ -24,7 +24,6 @@ DEFAULT_AGENT_RESTRICTIONS = {
     "can_message_new_private_contacts": True,
     "can_leave_groups": True,
     "blocked_read_chat_ids": [],
-    "max_messages_per_day": None,
 }
 
 # Default shape of Agent.triggers - the Gatekeeper config (ADR 0045).
@@ -58,7 +57,8 @@ DEFAULT_AGENT_TRIGGERS = {
 
 # Skills/personas catalog (ADR 0047 decision 3) - fixed, code-defined, no
 # user-authored personas in v1. Full prompts live in modules/agents/personas.py
-# (PERSONA_SYSTEM_PROMPTS), not here, to keep this module schema-only.
+# (PERSONA_BASE_PROMPTS / get_persona_system_prompt), not here, to keep this
+# module schema-only.
 # "agent_builder" is never stored as active_skill - it's implicitly in force
 # whenever the triggering chat is owner_agent_chat_id (ADR 0047 decision 4),
 # regardless of what active_skill is set to.
@@ -135,7 +135,7 @@ class Agent(Base):
     encrypted_gemini_api_key = Column(LargeBinary, nullable=True)
 
     # Skill/persona in force for execution-mode turns (ADR 0047 decision 3) -
-    # one of PERSONA_SYSTEM_PROMPTS' keys (modules/agents/personas.py). Fixed
+    # one of PERSONA_BASE_PROMPTS' keys (modules/agents/personas.py). Fixed
     # config on the row, set only via the set_agent_persona config tool or
     # the config UI - never selected per-turn by the model itself.
     active_skill = Column(
@@ -144,6 +144,19 @@ class Agent(Base):
         default=DEFAULT_AGENT_ACTIVE_SKILL,
         server_default=text(f"'{DEFAULT_AGENT_ACTIVE_SKILL}'"),
     )
+
+    # Owner-chosen display name (ADR 0081) - optional, prompt-only: never
+    # surfaces in the UI (message bubbles/typing indicator unchanged, the
+    # agent still sends as the owner's own user_id). Only lets the agent
+    # refer to itself by this name in conversation text if asked who it is.
+    # NULL means no name configured - the agent stays generic ("Linka Agent").
+    agent_name = Column(String(64), nullable=True)
+
+    # Owner toggle (ADR 0081): whether the agent may truthfully admit being
+    # an AI/bot if directly asked, vs. today's default full impersonation
+    # (False = unchanged behavior - no instruction to lie, just no
+    # permission to volunteer AI status unprompted).
+    disclose_as_agent = Column(Boolean, nullable=False, default=False, server_default=text("false"))
 
     # Dynamic runtime state written by the agent itself via pause_and_escalate
     # (ADR 0047 decision 5) - NOT part of restrictions (owner-authored hard
@@ -326,5 +339,38 @@ class AgentJudgeLog(Base):
     reason = Column(Text, nullable=False)
     is_follow_up_flag = Column(Boolean, nullable=False)
     is_malicious = Column(Boolean, nullable=False, server_default="false")
+    # ADR 0088: true when the triggering message was media-only and jev
+    # judged the attachment as plausibly needing a human to actually view it
+    # (the "unseeable media" escalation gate).
+    needs_human_review = Column(Boolean, nullable=False, server_default="false")
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class AgentAttachmentJudgeLog(Base):
+    """
+    Audit log of every attachment-relevance judge verdict (ADR 0086) - one
+    row per send_attached_file call the judge evaluated. Deliberately a
+    separate table from AgentJudgeLog (above): a different classification
+    question, a different call site (mid tool-call, not pre-turn), and its
+    own rate bucket - this is not a variant of the message judge, it's an
+    independent gate, so its audit trail stays independent too.
+    """
+
+    __tablename__ = "agent_attachment_judge_log"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+
+    agent_id = Column(
+        BigInteger,
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chat_id = Column(BigInteger, nullable=False, index=True)
+    file_id = Column(BigInteger, nullable=False)
+
+    is_approved = Column(Boolean, nullable=False)
+    reason = Column(Text, nullable=False)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

@@ -12,9 +12,9 @@ New Builder-state-only config tool `get_capacity_status`
 (`modules/agents/tools/config_mode.py::_tool_get_capacity_status`): read-only
 introspection of every rate limit relevant to the agent (activation quota,
 Gemini calls/min, daily active-seconds budget, per-sender unknown-sender
-daily quota, `restrictions.max_messages_per_day`, knowledge base
-documents/chunks, schedule entries, `on_specific_chats` auto-registered
-count) alongside current usage read live from Redis/Postgres - never
+daily quota, knowledge base documents/chunks, schedule entries,
+`on_specific_chats` auto-registered count) alongside current usage read live
+from Redis/Postgres - never
 increments or enforces anything. New `infra/ratelimit/service.py::
 peek_fixed_window(identifier, action)` (bare Redis `GET`, no `INCR`) is the
 one new rate-limiter primitive this needed, since `agent_activation` and
@@ -45,7 +45,7 @@ it once near the end of the interview, before `finish_building_agent`, and
 folding its estimate into the final summary message as an approximation,
 never a guarantee. `HELP_PROMPT` confirmed not to need a matching update
 (too generic to describe individual tool mechanics) per the standing
-obligation logged in `ai_agent_changelog.md`. No schema/architecture change
+obligation logged in `ai_agent_changelog_mid.md`. No schema/architecture change
 beyond the one new config setting, no new tests (same gap as every prior
 agents-module step) - import-smoke-tested only.
 

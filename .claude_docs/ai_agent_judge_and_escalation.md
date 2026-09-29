@@ -271,6 +271,105 @@ their own agent. Fixed two things:
 No schema/architecture change. No new tests (same gap as every prior
 agents-module step) - import-smoke-tested only.
 
+## Attachment-relevance judge (ADR 0086, DONE 2026-09-28) - a SEPARATE gate from the above
+
+Not part of the message-judge gate above - a dedicated, independent
+mechanism gating `send_attached_file` (ADR 0083's file-resend tool), built
+because the message judge must not be the thing deciding whether a resent
+file matches what someone asked for (different proposition, different call
+site - mid tool-call, not pre-turn).
+
+**Layer 1 - mandatory caption at attach time.** A file attached into the
+owner-agent chat now requires a non-empty caption: `poc/components/
+AgentChatView.js::submit()` blocks the combined send inline
+(`captionRequiredWarning`) when `stagedAttachment` is set and the draft is
+empty; the real enforcement is `modules/messaging/send.py::process_outgoing`
+- when `chat_id` resolves to an `Agent.owner_agent_chat_id` (via
+`modules.agents.crud.get_agent_by_owner_chat`) and the send carries a media
+payload with `sender_agent_id is None` (i.e. the owner's own send, not the
+agent's `send_attached_file` replay into a different target chat), an empty/
+whitespace `content` raises `MediaValidationError`. Old captionless rows are
+grandfathered unusable, not backfilled: `modules.messaging.crud.
+list_attached_files` and `_tool_send_attached_file`'s own source-message
+check both now require non-empty `content`.
+
+**Layer 2 - `modules/agents/attachment_judge.py::evaluate_attachment_match`.**
+One `jev` classification call (same `typesafe_client.classify` transport the
+message judge uses) with its own rate bucket
+(`attachment_judge_calls:{agent_id}`, `ATTACHMENT_JUDGE_CALLS_PER_MINUTE`/
+`_WINDOW_SECONDS` - never shares `agent_judge_calls`) and its own threshold
+(`ATTACHMENT_JUDGE_MATCH_THRESHOLD`, independent of `JEV_ON_TOPIC_THRESHOLD`).
+Single atomic Noul question `matches_request`, judged from text only: the
+target chat's latest incoming message (new `modules.messaging.crud.
+get_latest_incoming_message`, most recent non-deleted message not sent by
+the owner) vs. the file's own caption + filename - never the file's actual
+bytes (ADR 0083's "no content inspection" line holds). Empty requester text
+auto-approves without calling `jev`. Wired into `_tool_send_attached_file`
+right before `process_outgoing`; a rejected verdict raises `ToolDeniedError`
+(model sees it, must react - ask a clarifying question or check
+`list_attached_files` again), never a silent send. Fail-open on any
+`TypeSafeError`/malformed response/rate-limit-exceeded, same posture as the
+message judge. Every verdict logged to a new, separate
+`AgentAttachmentJudgeLog` table (own file_id/chat_id/agent_id/is_approved/
+reason columns) - not `AgentJudgeLog`, since this is an independent gate
+with its own audit trail. New table picked up by `create_all`, no
+`ALTER TABLE` needed.
+
+## Unseeable-media escalation gate (ADR 0088, DONE 2026-09-28)
+
+Extends the message judge (not a new gate/call) to handle a media-only
+triggering message (photo/video/voice note/file, no caption) that is still
+the chat's latest incoming message - the agent has no content inspection at
+all (same boundary ADR 0083/0086 already draw), so previously it just
+approved blind ("no text content to evaluate") and the main turn ran with no
+way to react to what the file actually shows.
+
+`judge.py::evaluate_message`'s empty-content branch now checks
+`message.media_key is not None` (a new optional `message: Message` param,
+always passed by `invoke_worker.py` since it already fetched the row) and, if
+so, routes to `_evaluate_unseeable_media` instead of auto-approving. That
+function asks jev **one** extra atomic Noul question, `needs_human_review`,
+fed only `type`/`media_mime`/`media_name` (never bytes) plus the domain
+description - same "no content inspection" text-only posture as ADR 0086's
+attachment judge - via the *same* `agent_judge_calls` rate bucket (no new
+bucket, no second call per message: the normal four-question call never ran
+for a media-only message anyway, so this replaces zero calls with one, still
+cheaper than a dedicated second gate). Threshold is its own setting,
+`AGENT_MEDIA_ESCALATION_THRESHOLD` (default 0.5), independent of
+`JEV_ON_TOPIC_THRESHOLD`/`JEV_MALICIOUS_THRESHOLD`/
+`ATTACHMENT_JUDGE_MATCH_THRESHOLD`.
+
+The "is this still unanswered" fact is deliberately kept in Python, not asked
+of jev: on `needs_human_review=true`, `_evaluate_unseeable_media` calls the
+existing `modules.messaging.crud.get_latest_incoming_message` (same helper
+ADR 0086's attachment judge uses) and only escalates if the triggering
+`message_id` is still that latest id - if the customer already sent a
+follow-up (text or another attachment) before the turn ran, the verdict stays
+approved and the main turn reacts to the newer message instead, same as
+normal.
+
+On true escalation: `is_approved=False` (routes through the same
+`invoke_worker.py` rejection branch as any other judge rejection - jev-
+authored, same-language customer redirect posted first, main model turn
+never runs) plus a new `JudgeVerdict.needs_human_review=True` flag.
+`invoke_worker.py` checks this flag (after the existing `is_malicious` check,
+mutually exclusive - a media-only message has no text to carry an
+injection/extraction/code-execution attempt in, so `is_malicious` is
+structurally always false on this path) and calls the same shared
+`tools/common.py::escalate_chat` ADR 0074 uses, with
+`notice_prefix="\U0001f4ce"` (paperclip - a third distinct glyph from
+\U0001f91d model-initiated and ⚠️ malicious) and a server-built reason string
+(not jev prose - Noul questions are boolean-scored, no reason text comes
+back).
+
+`AgentJudgeLog` gained one column, `needs_human_review` (default `false`,
+`ALTER TABLE` safety-net line in `scripts/init_db.py`, same pattern as ADR
+0074's `is_malicious`). Fail-open unchanged in spirit: a jev call failure on
+a media-only message now falls open to approved-without-escalating (same
+posture as every other judge failure). No new tests (same gap as every prior
+agents-module step) - full agents suite (260/260) + judge suite (23/23) green
+after landing; import-smoke-tested.
+
 ## Identity masking (internal ids hidden from Gemini and chat output)
 
 **Internal ids hard-masked out of every tool result handed to Gemini
@@ -329,7 +428,7 @@ named person (under checklist item 1, plus a reminder in the "narrate every
 save" section) - if `resolve_user` returns `found: false`, the Builder must
 tell the owner plainly instead of proceeding as if it worked. `HELP_PROMPT`
 confirmed not to need a matching update (too generic to describe targeting
-mechanics) per the standing obligation logged in `ai_agent_changelog.md`.
+mechanics) per the standing obligation logged in `ai_agent_changelog_mid.md`.
 Execution-mode tools untouched - this is a config-mode-only (Builder-only)
 concern, since only the config chat sets up triggers/schedules. No
 schema/architecture change, no new tests (same gap as every prior

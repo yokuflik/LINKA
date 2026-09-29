@@ -141,17 +141,27 @@ BUILDER_STATE_HANDLERS = {
         "finish_building_agent": _tool_finish_building_agent,
     },
     # ADR 0064: two disjoint Help personas, neither with any execution/config
-    # tool - only transfer tools, same zero-action posture the original
-    # single help_agent state had.
+    # tool beyond transfer - stays a zero-action posture for anything that
+    # touches a real chat. ADR 0084 adds read-only knowledge-base lookup
+    # (search_knowledge_semantic/get_knowledge_index/fetch_chunk, same
+    # handlers execution mode uses) so these two can actually answer from
+    # reference docs seeded into the agent's own knowledge base instead of
+    # only what's baked into their system prompt.
     BuilderState.HELP_BUILDING: {
         "transfer_to_builder": _tool_transfer_to_builder,
         "transfer_to_help_general": _tool_transfer_to_help_general,
         "transfer_to_supervisor": _tool_transfer_to_supervisor,
         "no_reply_needed": _tool_no_reply_needed,
+        "search_knowledge_semantic": EXECUTION_TOOL_HANDLERS["search_knowledge_semantic"],
+        "get_knowledge_index": EXECUTION_TOOL_HANDLERS["get_knowledge_index"],
+        "fetch_chunk": EXECUTION_TOOL_HANDLERS["fetch_chunk"],
     },
     BuilderState.HELP_GENERAL: {
         "transfer_to_help_building": _tool_transfer_to_help_building,
         "transfer_to_supervisor": _tool_transfer_to_supervisor,
         "no_reply_needed": _tool_no_reply_needed,
+        "search_knowledge_semantic": EXECUTION_TOOL_HANDLERS["search_knowledge_semantic"],
+        "get_knowledge_index": EXECUTION_TOOL_HANDLERS["get_knowledge_index"],
+        "fetch_chunk": EXECUTION_TOOL_HANDLERS["fetch_chunk"],
     },
 }

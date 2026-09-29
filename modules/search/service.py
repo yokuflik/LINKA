@@ -157,6 +157,7 @@ async def search_in_chat(
     rows = await crud.search_chat_messages(
         session,
         chat_id=chat_id,
+        user_id=user_id,
         tsq_fn=fn,
         tsq_value=value,
         before_id=decode_cursor(cursor),

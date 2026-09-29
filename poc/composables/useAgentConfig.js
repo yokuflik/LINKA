@@ -266,7 +266,6 @@ function useAgentConfig(ctx) {
     if (!myAgent.value) await loadMyAgent();
     agentForm.value = myAgent.value ? cloneForm(myAgent.value) : null;
     promptDirty.value = false;
-    hardTextDirty.value = false;
     byokKeyInput.value = '';
     byokDirty.value = false;
     showAgentDrawer.value = true;
@@ -281,6 +280,7 @@ function useAgentConfig(ctx) {
     showAgentDrawer.value = false;
     agentDrawerView.value = 'chat';
     stopAgentUsagePolling();
+    clearAgentStagedAttachment();
   }
 
   function openAgentSettings() {
@@ -347,10 +347,7 @@ function useAgentConfig(ctx) {
     promptDirty.value = false;
   }
 
-  // --- Hard section: checkboxes commit immediately; text fields (max/day,
-  // chat-trigger keywords) are Save/Cancel, dirty-guarded like the prompt ---
-
-  const hardTextDirty = ref(false);
+  // --- Hard section: checkboxes commit immediately ---
 
   async function setRestrictionCheckbox(key, value) {
     if (!myAgent.value) return;
@@ -371,44 +368,6 @@ function useAgentConfig(ctx) {
       };
       ctx.showToast(ctx.friendlyError(err, "We couldn't update that restriction. Please try again."));
     }
-  }
-
-  function onMaxMessagesInput(value) {
-    agentForm.value = {
-      ...agentForm.value,
-      restrictions: { ...agentForm.value.restrictions, max_messages_per_day: value },
-    };
-    hardTextDirty.value = true;
-  }
-
-  async function saveHardTextFields() {
-    if (!agentForm.value) return;
-    agentBusy.value = true;
-    agentError.value = '';
-    try {
-      myAgent.value = await ctx.apiFetch('/agents/me', {
-        method: 'PATCH',
-        body: JSON.stringify({
-          restrictions: { max_messages_per_day: agentForm.value.restrictions.max_messages_per_day },
-        }),
-      });
-      agentForm.value = cloneForm(myAgent.value);
-      hardTextDirty.value = false;
-      ctx.showToast('Restrictions saved');
-    } catch (err) {
-      agentError.value = ctx.friendlyError(err, "We couldn't save your restrictions. Please try again.");
-    } finally {
-      agentBusy.value = false;
-    }
-  }
-
-  function cancelHardTextEdit() {
-    if (!myAgent.value) return;
-    agentForm.value = {
-      ...agentForm.value,
-      restrictions: { ...agentForm.value.restrictions, max_messages_per_day: myAgent.value.restrictions.max_messages_per_day },
-    };
-    hardTextDirty.value = false;
   }
 
   // --- BYOK: write-only Gemini key field (ADR 0046 decision 6). The server
@@ -592,11 +551,134 @@ function useAgentConfig(ctx) {
     });
   }
 
-  // Placeholder only - the PDF picker in the agent chat's [+] button is
-  // wired up (file selection + type restriction) but nothing is done with
-  // the picked file yet (no upload/parsing), per explicit instruction.
-  function onAgentPdfPicked(file) {
-    ctx.showToast('PDF picked: ' + file.name + ' (not sent yet)');
+  // Voice message "played" receipt for the agent's own chat - same
+  // mark_played WS action as ctx.onVoicePlayed (useWebsocket.js), but that
+  // helper reads ctx.activeChatId, which the agent chat is deliberately kept
+  // out of (see file header) - so it's sent directly here instead.
+  function onAgentVoicePlayed(message) {
+    if (!message || !myAgent.value || message.sender_id === ctx.currentUser.value.id || message.id == null) return;
+    ctx.sendRaw({ type: 'mark_played', chat_id: myAgent.value.owner_agent_chat_id, message_id: message.id });
+  }
+
+  // "Content file" menu entry (ADR 0087) - stages the file exactly like
+  // "Attached file" (preview with x to cancel, caption before send) instead
+  // of uploading straight to the knowledge base on pick. PDF text/chunks are
+  // still extracted at pick-time (useKnowledgeUpload.js::
+  // prepareKnowledgeUpload) so a scanned/no-text PDF is still caught and
+  // reported before the owner can even stage it - same outcome as the old
+  // instant-upload path, just surfaced before Send instead of after.
+  async function onAgentKnowledgeFilePicked(file) {
+    if (!ctx.prepareKnowledgeUpload) return;
+    let prepared;
+    try {
+      prepared = await ctx.prepareKnowledgeUpload(file);
+    } catch (err) {
+      ctx.logError && ctx.logError('knowledge file preparation failed', err);
+      ctx.showToast(ctx.friendlyError(err, "We couldn't read that document. Please try again."));
+      return;
+    }
+    if (!prepared) return; // no extractable text - prepareKnowledgeUpload already reported it
+    stageAgentAttachment(file, 'file', { isKnowledge: true, knowledgeMimeType: prepared.mimeType, knowledgeChunks: prepared.chunks });
+  }
+
+  // "Attached file" menu entry - stages the file (preview shown above the
+  // composer with an x to cancel) instead of sending immediately, so the
+  // owner can type a caption first. Same staging shape as
+  // useMediaUpload.js's stageAttachment for the main chat composer.
+  // `knowledgeMeta` (ADR 0087) is set only for the "Content file" entry -
+  // carries what's needed to also commit this file to the knowledge base
+  // once it's sent as a normal chat message.
+  const agentStagedAttachment = ref(null);
+
+  function stageAgentAttachment(file, forceKind, knowledgeMeta) {
+    if (agentStagedAttachment.value) URL.revokeObjectURL(agentStagedAttachment.value.previewUrl);
+    // No forceKind = auto-detect by MIME (image/video/file), same as the main
+    // chat composer's Photos & Videos picker; forceKind='file' only when the
+    // owner explicitly picked the Document entry.
+    const kind = ctx.mediaKindForMime(file.type, forceKind);
+    if (!kind) { ctx.showToast("That file type isn't supported."); return; }
+    if (file.size <= 0) { ctx.showToast('That file looks empty.'); return; }
+    if (ctx.MEDIA_MAX_BYTES && file.size > ctx.MEDIA_MAX_BYTES[kind]) {
+      const limitMb = ctx.MEDIA_MAX_BYTES[kind] / 1024 / 1024;
+      ctx.showToast('That file is too large - the maximum is ' + limitMb + ' MB.');
+      return;
+    }
+    agentStagedAttachment.value = {
+      file, kind, forceKind: forceKind || null,
+      previewUrl: URL.createObjectURL(file),
+      isImage: kind === 'image',
+      isKnowledge: !!(knowledgeMeta && knowledgeMeta.isKnowledge),
+      knowledgeMimeType: knowledgeMeta ? knowledgeMeta.knowledgeMimeType : null,
+      knowledgeChunks: knowledgeMeta ? knowledgeMeta.knowledgeChunks : null,
+    };
+  }
+
+  function clearAgentStagedAttachment() {
+    if (agentStagedAttachment.value) URL.revokeObjectURL(agentStagedAttachment.value.previewUrl);
+    agentStagedAttachment.value = null;
+  }
+
+  // Send button when a file is staged - sends the staged file + whatever
+  // caption text was typed as ONE combined message, reusing
+  // useMediaUpload.js's prepareMediaBlock (upload-ticket + PUT, same
+  // bucket/pipeline as any chat attachment). The owner-agent chat is a real
+  // chat_id with zero special-casing anywhere in modules/messaging/ - this
+  // rides the exact same send_message WS action as sendAgentChatMessage
+  // above, just with a media block + optional content attached. Optimistic
+  // bubble is appended to agentMessages (not ctx.messages/LinkaChatStore),
+  // mirroring sendAgentChatMessage's own optimistic-append pattern; the real
+  // new_message echo reconciles it the same way (onAgentChatMessage above).
+  async function sendAgentAttachment(caption) {
+    const staged = agentStagedAttachment.value;
+    if (!staged || !myAgent.value) return;
+    const { file, kind, isKnowledge, knowledgeMimeType, knowledgeChunks } = staged;
+    clearAgentStagedAttachment();
+    const chatId = myAgent.value.owner_agent_chat_id;
+    const content = (caption || '').trim();
+
+    // ADR 0087: a "Content file" attachment is also committed to the
+    // knowledge base - a separate upload into the `agent_knowledge` bucket
+    // (own MIME allowlist + own server-side chunking), independent of the
+    // chat-message send below. Best-effort: a failure here still leaves the
+    // file sent as a normal chat message, just not added to the knowledge
+    // base - reported via a toast rather than blocking/rolling back the send.
+    if (isKnowledge && ctx.commitKnowledgeUpload) {
+      ctx.commitKnowledgeUpload(file, knowledgeMimeType, knowledgeChunks).catch((err) => {
+        ctx.logError && ctx.logError('knowledge commit failed', err);
+        ctx.showToast(ctx.friendlyError(err, "We couldn't add that document to the knowledge base."));
+      });
+    }
+
+    const messageType = ctx.MEDIA_MESSAGE_TYPE[kind];
+    const clientMessageId = crypto.randomUUID();
+    const localUrl = URL.createObjectURL(file);
+    const optimistic = {
+      id: null, client_message_id: clientMessageId, chat_id: chatId,
+      sender_id: ctx.currentUser.value.id, type: messageType, content: content || null,
+      created_at: new Date().toISOString(), status: 'SENT',
+      media_url: localUrl, _localMediaUrl: localUrl,
+      media_mime: file.type || 'application/octet-stream', media_size: file.size, media_name: file.name,
+      pending: true, send_failed: false,
+    };
+    agentMessages.value.push(optimistic);
+
+    try {
+      const block = await ctx.prepareMediaBlock(file, kind, { chatId });
+      const payload = {
+        type: 'send_message',
+        chat_id: chatId,
+        client_message_id: clientMessageId,
+        message_type: messageType,
+        media: { key: block.key, name: block.name },
+      };
+      if (content) payload.content = content;
+      ctx.sendRaw(payload);
+    } catch (err) {
+      ctx.logError && ctx.logError('agent chat attachment send failed', err);
+      optimistic.pending = false;
+      optimistic.send_failed = true;
+      ctx.showToast(ctx.friendlyError(err, "We couldn't send that file. Please try again."));
+    }
   }
 
   // --- Reset to default (ADR 0050): irreversibly wipes the owner-agent
@@ -620,7 +702,6 @@ function useAgentConfig(ctx) {
       myAgent.value = await ctx.apiFetch('/agents/me/reset', { method: 'POST' });
       agentForm.value = cloneForm(myAgent.value);
       promptDirty.value = false;
-      hardTextDirty.value = false;
       byokDirty.value = false;
       byokKeyInput.value = '';
       chatKeywordsDirty.value = {};
@@ -647,14 +728,13 @@ function useAgentConfig(ctx) {
 
   // Applied by useWsRouter's agent_config_changed branch (fired by
   // router.py's PATCH /agents/me for cross-tab/cross-device sync). Guards
-  // against clobbering an in-progress text edit (promptDirty / hardTextDirty
-  // / chatKeywordsDirty).
+  // against clobbering an in-progress text edit (promptDirty /
+  // chatKeywordsDirty).
   function applyAgentConfigChanged(agent) {
     myAgent.value = agent;
     if (!agentForm.value) return;
     const merged = cloneForm(agent);
     if (promptDirty.value) merged.system_prompt = agentForm.value.system_prompt;
-    if (hardTextDirty.value) merged.restrictions.max_messages_per_day = agentForm.value.restrictions.max_messages_per_day;
     for (const chatId of Object.keys(chatKeywordsDirty.value)) {
       if (agentForm.value.triggers.on_specific_chats[chatId]) {
         merged.triggers.on_specific_chats[chatId] = agentForm.value.triggers.on_specific_chats[chatId];
@@ -683,7 +763,6 @@ function useAgentConfig(ctx) {
     agentError.value = '';
     agentThinkingStatus.value = null;
     promptDirty.value = false;
-    hardTextDirty.value = false;
     byokDirty.value = false;
     byokKeyInput.value = '';
     chatKeywordsDirty.value = {};
@@ -696,6 +775,7 @@ function useAgentConfig(ctx) {
     agentMessages, agentMessagesLoading, agentMessagesLoaded,
     agentHasMoreMessages, agentLoadingOlderMessages,
     loadAgentMessages, loadOlderAgentMessages, onAgentChatMessage, onAgentChatMessageFailed,
+    onAgentVoicePlayed,
     agentHighlightedId, jumpToAgentMessage,
     showAgentDrawer, agentDrawerView, agentForm, agentBusy, agentError,
     agentThinkingStatus, applyAgentThinking, applyAgentConfigChanged,
@@ -704,12 +784,13 @@ function useAgentConfig(ctx) {
     openAgentDrawer, closeAgentDrawer, openAgentSettings, backToAgentChat,
     toggleAgentEnabled,
     promptDirty, onPromptInput, saveSoftPrompt, cancelSoftPromptEdit,
-    hardTextDirty, setRestrictionCheckbox, onMaxMessagesInput, saveHardTextFields, cancelHardTextEdit,
+    setRestrictionCheckbox,
     byokDirty, byokKeyInput, onByokKeyInput, saveByokKey, cancelByokKeyEdit, clearByokKey,
     addAgentChatTrigger, removeAgentChatTrigger, setTimeWindowField, setAnyMessageEnabled,
     chatKeywordsDirty, onChatTriggerKeywordsInput, saveChatTriggerKeywords, cancelChatTriggerKeywordsEdit,
     sendAgentChatMessage,
-    onAgentPdfPicked,
+    onAgentKnowledgeFilePicked,
+    agentStagedAttachment, stageAgentAttachment, clearAgentStagedAttachment, sendAgentAttachment,
     resetAgentConfig,
     agentResetBusy, resetAgentToDefault,
   };

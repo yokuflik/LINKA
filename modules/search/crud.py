@@ -53,6 +53,7 @@ async def search_chat_messages(
     session: AsyncSession,
     *,
     chat_id: int,
+    user_id: int,
     tsq_fn: str,
     tsq_value: str,
     before_id: Optional[int],
@@ -61,10 +62,16 @@ async def search_chat_messages(
     end_at: Optional[datetime] = None,
 ) -> Sequence[Message]:
     """In-chat search. `chat_id = :chat_id AND content_tsv @@ :q` seeks straight
-    into the composite `gin (chat_id, content_tsv)` index (btree_gin)."""
+    into the composite `gin (chat_id, content_tsv)` index (btree_gin).
+    `user_id` membership is enforced via a participants JOIN (same hard
+    guarantee as search_global_messages/semantic_search_messages) so a
+    wrong/guessed chat_id structurally returns zero rows, on top of - not
+    instead of - the caller's own is_participant pre-check."""
     tsq = _tsquery(tsq_fn, tsq_value)
-    stmt = select(Message).where(
-        Message.chat_id == chat_id, *_match_conditions(tsq), *_date_range_conditions(start_at, end_at)
+    stmt = (
+        select(Message)
+        .join(Participant, and_(Participant.chat_id == Message.chat_id, Participant.user_id == user_id))
+        .where(Message.chat_id == chat_id, *_match_conditions(tsq), *_date_range_conditions(start_at, end_at))
     )
     if before_id is not None:
         stmt = stmt.where(

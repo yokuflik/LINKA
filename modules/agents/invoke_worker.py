@@ -35,14 +35,12 @@ import contextlib
 import logging
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
 
 from redis.exceptions import ResponseError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from infra.db.connection import session_scope
-from infra.ratelimit.service import check_and_increment
 from infra.redis.client import redis_client
 from modules.agents.builder_flow import BuilderState, get_builder_state_prompt
 from modules.agents.crud import get_agent_by_id, get_agents_with_ephemeral_tasks
@@ -56,371 +54,48 @@ from modules.agents.invoke_debounce import (
     is_superseded,
     mark_superseded,
     pop_latest_message_id,
-    refresh_typing_indicator,
     release_turn_lock,
     release_typing_indicator,
+)
+from modules.agents.invoke_notify import (
+    _MESSAGE_SENDING_TOOL_NAMES,
+    _ROUND_TRIP_CAP_NOTICE,
+    _notify_daily_budget_exhausted,
+    _notify_token_budget_exhausted,
+    _publish_agent_thinking,
+    _publish_peer_typing_loop,
 )
 from modules.agents.invoke_queue import enqueue_invocation, enqueue_schedule_fire
 from modules.agents.gemini_client import (
     GeminiChatError,
-    TurnResult,
     extract_function_call,
     extract_text,
     function_response_part,
-    generate_turn,
+)
+from modules.agents.invoke_turn_helpers import (
+    _TOOL_THINKING_LABELS,
+    _TurnSuperseded,
+    _build_initial_contents,
+    _build_knowledge_contents,
+    _build_schedule_contents,
+    _check_gemini_call_budget,
+    _generate_turn_or_supersede,
+    _pending_confirmation_note,
+    _post_config_reply,
 )
 from modules.agents.judge import evaluate_message, local_redirect_text
 from modules.agents.tools.common import escalate_chat
-from modules.agents.models import Agent
 from modules.agents.personas import get_persona_system_prompt
 from modules.agents.schedule import due_members, remove_due_member, reschedule_recurring
-from modules.agents.time_budget import has_budget_remaining, record_active_seconds, seconds_until_reset
+from modules.agents.time_budget import has_budget_remaining, record_active_seconds
 from modules.agents.token_budget import peek_usage, record_tokens
 from modules.agents.tools import execute_tool_call, get_tool_schemas_for_chat, is_config_mode
 from modules.messaging import service as message_service
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
 from modules.messaging.crud import get_message_by_id
-from modules.messaging.read_api import get_message_history
-from realtime import realtime_service
 from realtime.fanout.base_worker import BaseStreamConsumer
 
 logger = logging.getLogger(__name__)
-
-
-def _pending_confirmation_note(agent: Agent) -> str:
-    """ADR 0072: re-derived every round-trip alongside system_prompt itself
-    (same pattern as builder_state) - carries a stashed bulk_fetch_messages
-    request across the turn boundary that count_messages_in_range's handler
-    created it on. Purely advisory context for the model; the actual gate is
-    server-side in bulk_fetch_messages's handler (modules/agents/tools/execution.py),
-    which independently re-checks this same field before running."""
-    pending = agent.pending_confirmation
-    if not isinstance(pending, dict) or pending.get("tool") != "bulk_fetch_messages":
-        return ""
-    created_at = pending.get("created_at")
-    try:
-        if created_at is None or datetime.now(timezone.utc) - datetime.fromisoformat(created_at) > timedelta(
-            minutes=settings.AGENT_PENDING_CONFIRMATION_TTL_MINUTES
-        ):
-            return ""
-    except ValueError:
-        return ""
-
-    return (
-        "\n\nYou previously asked the owner to confirm a bulk_fetch_messages request for "
-        f"chat_id {pending.get('chat_id')} (start_date={pending.get('start_at') or 'none'}, "
-        f"end_date={pending.get('end_at') or 'none'}, {pending.get('count')} messages). If the "
-        "owner's latest message confirms it, call bulk_fetch_messages now with that exact "
-        "chat_id/date range. If they declined or moved on to something else, do not call it - "
-        "just continue normally."
-    )
-
-# Short human labels for the agent drawer's live "thinking" indicator
-# (AGENT_DRAWER_UI_PLAN.md Wave 2) - purposely coarse (tool name only, no
-# arguments), since this is a UX nicety, not a debug/audit log (that's
-# AgentToolCallLog).
-_TOOL_THINKING_LABELS = {
-    "send_message": "Sending a message…",
-    "reply_message": "Sending a reply…",
-    "create_chat": "Starting a new chat…",
-    "leave_group": "Leaving a group…",
-    "read_history": "Reading chat history…",
-    "update_own_triggers": "Updating its own triggers…",
-    "get_knowledge_index": "Looking through its knowledge base…",
-    "fetch_chunk": "Reading a knowledge document…",
-    "search_messages": "Searching messages…",
-    "pause_and_escalate": "Escalating to you…",
-    "set_agent_persona": "Updating its persona…",
-    "update_agent_rules": "Updating its rules…",
-    "set_trigger": "Updating its triggers…",
-    "get_agent_status": "Checking its own status…",
-    "estimate_api_usage": "Estimating usage…",
-    "schedule_one_off_task": "Scheduling a task…",
-    "spawn_ephemeral_task": "Starting a one-off task…",
-    "transfer_to_builder": "Bringing in the builder…",
-    "transfer_to_help_building": "Bringing in help…",
-    "transfer_to_help_general": "Bringing in help…",
-    "finish_building_agent": "Finishing up and activating…",
-}
-
-
-async def _post_config_reply(session: AsyncSession, agent: Agent, chat_id: int, text: str) -> None:
-    """Config-mode turns (Supervisor/Builder/Help, ADR 0049) have no
-    send_message-shaped tool - the persona prompts just instruct the model to
-    reply in plain text, expecting that text to reach the owner's chat. Unlike
-    execution mode (where a persona is expected to call send_message/
-    reply_message itself), there is no tool to invoke here, so the worker
-    posts the turn's final text response directly via the same
-    process_outgoing/AGENT_REPLY_MESSAGE_TYPE path _tool_send_message uses -
-    otherwise the model's reply is generated and then silently discarded,
-    which is exactly what made agent_builder turns look like the agent
-    "thought and then said nothing" (found and fixed 2026-09-24, in-scope bug
-    fix, not a new architectural decision)."""
-    if not text:
-        return
-    await message_service.process_outgoing(
-        session,
-        sender_id=agent.owner_user_id,
-        chat_id=chat_id,
-        client_message_id=f"agent-{uuid.uuid4().hex}",
-        content=text,
-        type=AGENT_REPLY_MESSAGE_TYPE,
-        sender_agent_id=agent.id,
-    )
-
-
-async def _publish_agent_thinking(owner_user_id: int, status: str, detail: str | None = None) -> None:
-    """Ephemeral, fire-and-forget - never persisted, never replayed on
-    reconnect (same semantics as the existing `typing` WS event). A failure
-    here must never interrupt or fail the turn itself."""
-    try:
-        await realtime_service.publish_user_event(
-            owner_user_id,
-            {"event": "agent_thinking", "status": status, "detail": detail},
-        )
-    except Exception:
-        logger.exception("agent_worker: failed to publish agent_thinking for owner %s", owner_user_id)
-
-
-# How often to re-publish the real chat `typing` event while a turn is
-# working - matches useTyping.js's TYPING_SEND_THROTTLE_MS/TYPING_EXPIRY_MS on
-# the client (a real user's browser resends every 3s, and a receiver's
-# indicator expires 5s after the last one), so a working agent keeps looking
-# "typing" continuously instead of flickering off between updates.
-_PEER_TYPING_REFRESH_SECONDS = 3.0
-
-# Tools whose execution posts a message into the triggering chat - once one of
-# these lands, the peer-visible typing loop must stop immediately (see its
-# cancellation right after execute_tool_call below).
-_MESSAGE_SENDING_TOOL_NAMES = frozenset({"send_message", "reply_message"})
-
-
-async def _publish_peer_typing_loop(chat_id: int, sender_id: int, *, owns_indicator: bool) -> None:
-    """Real `typing` event fanned out to the chat's other participants (same
-    `publish_event` a genuine user's WS `typing` frame goes through) - runs
-    for the lifetime of an execution-mode turn targeting a real chat, so
-    whoever the agent is about to message sees an ordinary "typing…"
-    indicator instead of nothing, until the reply itself lands. Distinct from
-    `_publish_agent_thinking`, which is a private, owner-only signal for the
-    agent drawer and is never seen by other chat members.
-
-    `owns_indicator` (ADR 0075): True when this call's `claim_typing_indicator`
-    won the race for this chat - only the owning loop actually refreshes the
-    shared marker and releases it on exit. A non-owning loop (this turn was
-    superseded and its replacement already holds the marker) still publishes
-    the real `typing` WS event on the same cadence - the frontend indicator
-    itself is per-publish, not keyed off the marker - it just never touches
-    the marker's lifecycle, so a superseded turn's own cancellation can never
-    tear down the replacement turn's ownership of it."""
-    try:
-        while True:
-            # user_id must be a string, matching every other id in every
-            # other event on the wire (Snowflake-id-as-string convention,
-            # .claude_docs/database_schema.md) - the Rust ws_gateway forwards
-            # this payload byte-for-byte from Redis with no reserialization
-            # (crates/ws_gateway/src/fanin.rs), so a raw Python int here
-            # reaches the browser as a JSON number while every real `typing`
-            # frame's user_id is `.to_string()`'d (handlers.rs). The frontend
-            # compares ids with strict `===` throughout, so this one event
-            # type silently failed every identity check downstream.
-            await realtime_service.publish_event(
-                chat_id, {"event": "typing", "user_id": str(sender_id), "kind": "typing"}
-            )
-            if owns_indicator:
-                await refresh_typing_indicator(chat_id)
-            await asyncio.sleep(_PEER_TYPING_REFRESH_SECONDS)
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("agent_worker: failed to publish peer typing for chat %s", chat_id)
-
-
-class _TurnSuperseded(Exception):
-    """ADR 00732: raised internally by `_generate_turn_or_supersede` when the
-    supersede flag fires while a Gemini call is in flight - caught right
-    where it's raised, never escapes `_run_turn`."""
-
-
-# How often to poll the supersede flag while a Gemini call is in flight
-# (ADR 00732) - short enough that a superseded turn's outbound HTTP request
-# gets cancelled quickly instead of running to completion and contending
-# with the replacement turn's own call to the same API.
-_SUPERSEDE_POLL_SECONDS = 0.5
-
-
-async def _generate_turn_or_supersede(agent_id: int, chat_id: int | None, **kwargs) -> TurnResult:
-    """Wraps generate_turn so a turn that gets superseded (ADR 00732) mid-call
-    actually stops talking to Gemini instead of running the request to
-    completion in the background - two real back-to-back generateContent
-    calls for the same agent (the stale one finishing, then the replacement
-    starting right after) was observed to make the outbound connection to
-    Gemini time out under that back-to-back load. Cancelling the stale call's
-    task also cancels its underlying httpx request.
-
-    chat_id=None (schedule/ephemeral-task turns) never contends with
-    anything, so it always just awaits generate_turn directly."""
-    if chat_id is None:
-        return await generate_turn(**kwargs)
-
-    call_task = asyncio.ensure_future(generate_turn(**kwargs))
-    try:
-        while True:
-            done, _ = await asyncio.wait({call_task}, timeout=_SUPERSEDE_POLL_SECONDS)
-            if done:
-                return call_task.result()
-            if await is_superseded(agent_id, chat_id):
-                # Re-mark it - is_superseded is a get-and-delete and the
-                # round-trip-top/pre-send checks elsewhere in _run_turn still
-                # need to see it, but this path returns straight out of
-                # _run_turn instead of reaching either of them.
-                call_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await call_task
-                raise _TurnSuperseded()
-    finally:
-        if not call_task.done():
-            call_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await call_task
-
-
-async def _check_gemini_call_budget(agent_id: int) -> bool:
-    return await check_and_increment(
-        agent_id,
-        "agent_gemini_calls",
-        settings.AGENT_GEMINI_CALLS_PER_MINUTE,
-        settings.AGENT_GEMINI_CALLS_WINDOW_SECONDS,
-    )
-
-
-# ADR 0059: fixed English notice, posted at most once per exhaustion event
-# (SET NX cooldown, same pattern as trigger_engine._notify_activation_quota_
-# exceeded), always into the owner's own agent chat - never into whatever
-# third-party chat the turn was actually serving.
-_TOKEN_BUDGET_EXHAUSTED_NOTICE = (
-    "Your agent has used up its token budget for this time window and will "
-    "pause responding until it resets. It'll pick back up automatically."
-)
-
-# Fixed English notice for the AGENT_TURN_MAX_TOOL_ROUNDTRIPS cap - always
-# posted (no cooldown, unlike the token-budget notice above: this cap is per-
-# turn, not a standing pause, so there is no ongoing state to avoid re-
-# notifying about).
-_ROUND_TRIP_CAP_NOTICE = (
-    "This request was too complex to finish in one go, so your agent stopped "
-    "partway through. Please try again with a simpler or more specific request."
-)
-
-
-async def _notify_token_budget_exhausted(session: AsyncSession, agent: Agent, window: str) -> None:
-    cooldown_key = f"agent_token_budget_notice_sent:{window}:{agent.id}"
-    window_seconds = (
-        settings.AGENT_TOKEN_BUDGET_5H_WINDOW_SECONDS
-        if window == "5h"
-        else settings.AGENT_TOKEN_BUDGET_7D_WINDOW_SECONDS
-    )
-    try:
-        acquired = await redis_client.set(cooldown_key, "1", nx=True, ex=window_seconds)
-        if not acquired:
-            return
-        from modules.messaging.send import send_system_message
-
-        await send_system_message(session, agent.owner_agent_chat_id, _TOKEN_BUDGET_EXHAUSTED_NOTICE)
-        await session.commit()
-    except Exception:
-        logger.exception("failed to notify owner of agent %s token budget exhaustion", agent.id)
-
-
-async def _notify_daily_budget_exhausted(session: AsyncSession, agent: Agent) -> None:
-    """Daily active-processing-time budget (has_budget_remaining) exhausted -
-    checked in process_entry *before* _run_turn is ever called, so unlike
-    every other exhaustion path above this one previously had no notice path
-    at all (not even the owner-only agent_thinking 'error' status, since that
-    lives inside _run_turn). Same SET NX cooldown pattern as
-    _notify_token_budget_exhausted, one notice per exhaustion event. Unlike
-    the per-minute Gemini call budget (invoke_worker._run_turn's in-place
-    retry above), this window doesn't reset again soon, so there is nothing
-    to usefully retry - only a notice makes sense here."""
-    cooldown_key = f"agent_daily_budget_notice_sent:{agent.id}"
-    try:
-        remaining = await seconds_until_reset(agent.id)
-        # remaining can be 0 right at the boundary (key just expired) -
-        # cooldown TTL still needs a positive value, so floor it.
-        cooldown_seconds = max(remaining, 60)
-        acquired = await redis_client.set(cooldown_key, "1", nx=True, ex=cooldown_seconds)
-        if not acquired:
-            return
-        hours = max(1, round(remaining / 3600))
-        notice = (
-            "Your agent has used up its processing time budget for today and "
-            f"will pause responding for up to {hours} hour{'s' if hours != 1 else ''}. "
-            "It'll pick back up automatically."
-        )
-        from modules.messaging.send import send_system_message
-
-        await send_system_message(session, agent.owner_agent_chat_id, notice)
-        await session.commit()
-    except Exception:
-        logger.exception("failed to notify owner of agent %s daily budget exhaustion", agent.id)
-
-
-def _format_history_transcript(history) -> str | None:
-    """Formats a message history window into a single 'Agent: ...' /
-    'Customer: ...' transcript block (oldest first) - the explicit role
-    label (rather than a raw sender_id) reads far better to Gemini than a
-    numeric id, and matches how a human would paste a chat log. Truncated to
-    AGENT_HISTORY_TRANSCRIPT_MAX_CHARS from the start (oldest lines dropped
-    first) so the most recent context always survives a long/verbose chat.
-
-    Customer/Owner lines followed later in the transcript by an Agent line
-    are marked '[already handled]' (ADR 0071) - the agent would not have
-    replied without having acted on them, so re-seeing them unmarked on a
-    later, unrelated turn otherwise reads to Gemini as still-pending and can
-    trigger a re-execution of whatever tool call handled them the first time.
-    Only the trailing run of Customer/Owner lines with no Agent reply after
-    them - the genuinely unanswered tail - is left unmarked."""
-    ordered = [m for m in reversed(list(history)) if m.content]
-    is_agent = [m.type == AGENT_REPLY_MESSAGE_TYPE for m in ordered]
-    handled = [any(is_agent[i + 1:]) for i in range(len(ordered))]
-    lines = [
-        f'{"Agent" if is_agent[i] else "Customer"}: {m.content}'
-        + ("" if is_agent[i] or not handled[i] else " [already handled]")
-        for i, m in enumerate(ordered)
-    ]
-    if not lines:
-        return None
-    transcript = "\n".join(lines)
-    if len(transcript) > settings.AGENT_HISTORY_TRANSCRIPT_MAX_CHARS:
-        transcript = "…(earlier messages truncated)…\n" + transcript[-settings.AGENT_HISTORY_TRANSCRIPT_MAX_CHARS:]
-    return transcript
-
-
-async def _build_initial_contents(session: AsyncSession, agent: Agent, chat_id: int) -> list[dict]:
-    """Seeds the conversation with the same structured shape read_history
-    hands back to the model - sender/timestamp/content - so Gemini's first
-    turn already has context instead of starting from nothing."""
-    history = await get_message_history(session, agent.owner_user_id, chat_id, limit=20)
-    transcript = _format_history_transcript(history) or "(no prior text messages in this chat)"
-    prompt = (
-        f"You were woken up by new activity in chat {chat_id}. "
-        f"Recent chat history (oldest first):\n{transcript}\n\n"
-        "Decide whether and how to respond using the available tools."
-    )
-    return [{"role": "user", "parts": [{"text": prompt}]}]
-
-
-async def _build_schedule_contents(session: AsyncSession, agent: Agent, instruction: str, chat_id: int | None) -> list[dict]:
-    """Seeds a schedule-fired turn (ADR 0046 decision 3) from the entry's
-    free-text instruction instead of chat history - optionally joined with
-    the target chat's recent history when the entry set a chat_id."""
-    parts = [f"Scheduled task: {instruction}"]
-    if chat_id is not None:
-        history = await get_message_history(session, agent.owner_user_id, chat_id, limit=20)
-        transcript = _format_history_transcript(history)
-        if transcript:
-            parts.append(f"Recent history in chat {chat_id} (oldest first):\n{transcript}")
-    parts.append("Decide whether and how to act using the available tools.")
-    return [{"role": "user", "parts": [{"text": "\n\n".join(parts)}]}]
 
 
 async def _run_turn(
@@ -428,12 +103,16 @@ async def _run_turn(
     chat_id: int | None,
     message_id: int | None = None,
     schedule_instruction: str | None = None,
+    knowledge_instruction: str | None = None,
     scoped_system_prompt: str | None = None,
 ) -> None:
     """Runs one Gemini + tool-calling turn for `agent_id`. Message-fired
     (`message_id` set) seeds from chat history; schedule-fired
     (`schedule_instruction` set, ADR 0046 decision 3) seeds from the entry's
-    free-text instruction, optionally joined with `chat_id` history. Opens
+    free-text instruction, optionally joined with `chat_id` history;
+    knowledge-notice-fired (`knowledge_instruction` set, ADR 0085) seeds from
+    a fully-formed instruction with no chat history - always config-mode
+    (chat_id is always agent.owner_agent_chat_id). Opens
     its own DB session (this consumer's caller session is per-batch and
     shouldn't be held across a slow Gemini call). Every failure is logged and
     swallowed - a bad turn must never crash the worker loop; the daily time
@@ -500,7 +179,15 @@ async def _run_turn(
             # -templated redirect instead - no second Gemini call.
             if message_id is not None and not config_mode_turn:
                 message = await get_message_by_id(session, chat_id, message_id)
-                verdict = await evaluate_message(session, agent, chat_id, message_id, message.content if message else None)
+                # ADR 0080: mark the triggering message read as soon as the
+                # agent starts processing it, mirroring a human reading the
+                # chat before replying. Unconditional - ADR 0003 privacy
+                # (owner's own privacy.read_receipts, 1:1-only) is already
+                # enforced downstream by the receipt_log worker.
+                await message_service.mark_as_read(session, agent.owner_user_id, chat_id, message_id)
+                verdict = await evaluate_message(
+                    session, agent, chat_id, message_id, message.content if message else None, message
+                )
                 await session.commit()
                 if not verdict.is_approved:
                     logger.info(
@@ -535,10 +222,26 @@ async def _run_turn(
                             session, agent, chat_id, verdict.reason, notice_prefix="⚠️"
                         )
                         await session.commit()
+                    # ADR 0088: a media-only message (photo/video/voice
+                    # note/file) the agent can't view, still unanswered by
+                    # the customer - the judge decided it plausibly needs a
+                    # human to actually look at it.
+                    elif verdict.needs_human_review:
+                        logger.info(
+                            "agent_worker: judge flagged unseeable media needing review, "
+                            "agent %s chat %s message %s: %s",
+                            agent_id, chat_id, message_id, verdict.reason,
+                        )
+                        await escalate_chat(
+                            session, agent, chat_id, verdict.reason, notice_prefix="📎"
+                        )
+                        await session.commit()
                     ended_status = "done"
                     return
 
-            if schedule_instruction is not None:
+            if knowledge_instruction is not None:
+                contents = await _build_knowledge_contents(session, agent, knowledge_instruction)
+            elif schedule_instruction is not None:
                 contents = await _build_schedule_contents(session, agent, schedule_instruction, chat_id)
             else:
                 contents = await _build_initial_contents(session, agent, chat_id)
@@ -684,7 +387,7 @@ async def _run_turn(
                     system_prompt = f"{persona_prompt}\n\n{agent.system_prompt}" if agent.system_prompt else persona_prompt
                     system_prompt += _pending_confirmation_note(agent)
                 else:
-                    persona_prompt = get_persona_system_prompt(agent.active_skill)
+                    persona_prompt = get_persona_system_prompt(agent.active_skill, agent)
                     system_prompt = f"{persona_prompt}\n\n{agent.system_prompt}" if agent.system_prompt else persona_prompt
 
                 # ADR 0059: token-usage tracking only, no gating (2026-09-26) -
@@ -805,7 +508,28 @@ async def _run_turn(
                     # use send_message/reply_message themselves, and chat_id
                     # is None on a schedule-fired turn anyway.
                     if chat_id is not None and is_config_mode(agent, chat_id):
-                        await _post_config_reply(session, agent, chat_id, text)
+                        if not text:
+                            # ADR 0089: a config-mode turn ending with no
+                            # extractable text (e.g. a thought-signature-only
+                            # response, or an unusual finish reason) used to
+                            # silently no-op here (_post_config_reply returns
+                            # early on empty text) - the owner saw
+                            # agent_thinking "started" and then nothing ever
+                            # arrived, indistinguishable from the agent simply
+                            # giving up. Always leave a trace instead.
+                            logger.warning(
+                                "agent_worker: agent %s config-mode turn ended with empty text, "
+                                "posting fallback notice instead of nothing",
+                                agent_id,
+                            )
+                            await _post_config_reply(
+                                session,
+                                agent,
+                                chat_id,
+                                "Sorry, something went wrong on my end. Could you say that again?",
+                            )
+                        else:
+                            await _post_config_reply(session, agent, chat_id, text)
                         await session.commit()
                     ended_status = "done"
                     return
@@ -883,6 +607,21 @@ async def _run_turn(
                     # here instead of looping for another round-trip or
                     # falling through to the call-is-None/_post_config_reply
                     # path (which posts unconditionally).
+                    if knowledge_instruction is not None or schedule_instruction is not None:
+                        # ADR 0089: a turn seeded to report an already-
+                        # completed action (knowledge ingestion, schedule
+                        # firing) has something the owner hasn't seen yet by
+                        # construction - no_reply_needed here means that
+                        # report was never delivered. The prompt (STYLE_RULES)
+                        # already tells the model not to do this; log so a
+                        # recurrence is visible instead of only surfacing as
+                        # another silent-turn user report.
+                        logger.warning(
+                            "agent_worker: agent %s called no_reply_needed on a "
+                            "knowledge/schedule-fired turn - an unreported outcome "
+                            "may have been dropped",
+                            agent_id,
+                        )
                     ended_status = "done"
                     return
                 # The reply just landed (new_message clears the indicator
@@ -983,6 +722,13 @@ class AgentInvokeConsumer(BaseStreamConsumer):
                     scoped_system_prompt=entry.get("scoped_system_prompt"),
                 )
                 log_target = f"schedule {schedule_id}"
+            elif kind == "knowledge":
+                # ADR 0085: always targets the owner-agent chat - config-mode
+                # by construction (is_config_mode), no chat history to seed
+                # from, just the caller-built instruction string.
+                chat_id = int(fields["chat_id"])
+                coro = _run_turn(agent_id, chat_id, knowledge_instruction=fields["instruction"])
+                log_target = f"knowledge notice, chat {chat_id}"
             else:
                 chat_id = int(fields["chat_id"])
                 message_id = int(fields["message_id"])
@@ -1030,6 +776,29 @@ class AgentInvokeConsumer(BaseStreamConsumer):
                     "This took a bit too long to process. Please try again in a moment.",
                 )
                 await session.commit()
+            except Exception:
+                # ADR 0089: any other unhandled failure inside _run_turn used
+                # to propagate to _drain_shard's catch-all, which only logs
+                # and leaves the entry unacked for reclaim - completely
+                # silent from the owner's side (agent_thinking flips to
+                # "error" in _run_turn's own finally, but that pub/sub event
+                # has no replay and the frontend currently renders "error"
+                # identically to "done"). Post the same fixed, non-technical
+                # notice the timeout path above already uses, then re-raise
+                # so the entry is still left unacked for reclaim/retry
+                # exactly as before - this only adds an owner-facing trace,
+                # it does not change delivery/retry semantics.
+                logger.exception(
+                    "agent_worker: turn for agent %s %s failed", agent_id, log_target
+                )
+                await _post_config_reply(
+                    session,
+                    agent,
+                    agent.owner_agent_chat_id,
+                    "Sorry, something went wrong on my end. Please try again in a moment.",
+                )
+                await session.commit()
+                raise
             finally:
                 await record_active_seconds(agent_id, time.monotonic() - started)
                 await release_turn_lock(agent_id, chat_id)

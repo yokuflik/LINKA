@@ -14,6 +14,7 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
+from modules.agents.attachment_judge import evaluate_attachment_match
 from modules.agents.cache import sync_agent_cache
 from modules.agents.crud import (
     ScheduleQuotaExceededError,
@@ -26,7 +27,6 @@ from modules.agents.models import Agent
 from modules.agents.schedule import sync_schedule_zset
 from modules.agents.tools.common import (
     ToolDeniedError,
-    _check_daily_send_quota,
     _chat_is_group,
     _consume_owner_send_budget,
     _resolve_sender_labels,
@@ -36,7 +36,13 @@ from modules.chats import service as chat_service
 from modules.chats.crud.crud_participant import is_participant
 from modules.messaging import service as message_service
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
-from modules.messaging.crud import count_messages_in_range, get_messages_in_range
+from modules.messaging.crud import (
+    count_messages_in_range,
+    get_latest_incoming_message,
+    get_message_by_id,
+    get_messages_in_range,
+    list_attached_files,
+)
 from modules.messaging.read_api import get_message_history
 from modules.search import service as search_service
 from modules.search.errors import SearchQueryTooShortError
@@ -61,6 +67,19 @@ async def _tool_send_message(session: AsyncSession, agent: Agent, arguments: dic
     chat_id = int(arguments["chat_id"])
     content = str(arguments["content"])
 
+    if chat_id == agent.owner_agent_chat_id:
+        # This tool is unioned into the Supervisor/Builder toolset (ADR 0062)
+        # so the owner can ask the agent to message a THIRD party directly
+        # mid-conversation. It must never target the agent's own config chat
+        # itself - that channel is exclusively the turn's own plain-text
+        # reply (_post_config_reply), posted once per turn. Without this
+        # guard, a config-mode turn could legally call send_message on its
+        # own owner_agent_chat_id in one round-trip and still fall through to
+        # a normal plain-text reply in a later round-trip, landing two
+        # separate messages in the owner's chat for a single turn (2026-09-28,
+        # user-reported: got a good reply immediately followed by a stray
+        # third-person status-report message).
+        raise ToolDeniedError("cannot use send_message on the agent's own config chat")
     if not agent.restrictions.get("can_send_messages", True):
         raise ToolDeniedError("can_send_messages is disabled")
     if chat_id in {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}:
@@ -75,7 +94,6 @@ async def _tool_send_message(session: AsyncSession, agent: Agent, arguments: dic
     if not is_group and not agent.restrictions.get("can_message_private", True):
         raise ToolDeniedError("can_message_private is disabled")
 
-    await _check_daily_send_quota(agent)
     await _consume_owner_send_budget(agent)
 
     message = await message_service.process_outgoing(
@@ -95,6 +113,10 @@ async def _tool_reply_message(session: AsyncSession, agent: Agent, arguments: di
     reply_to_message_id = int(arguments["reply_to_message_id"])
     content = str(arguments["content"])
 
+    if chat_id == agent.owner_agent_chat_id:
+        # Same reasoning as _tool_send_message above - never a valid target
+        # for this tool, only for the turn's own plain-text reply.
+        raise ToolDeniedError("cannot use reply_message on the agent's own config chat")
     if not agent.restrictions.get("can_send_messages", True):
         raise ToolDeniedError("can_send_messages is disabled")
     if chat_id in {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}:
@@ -109,7 +131,6 @@ async def _tool_reply_message(session: AsyncSession, agent: Agent, arguments: di
     if not is_group and not agent.restrictions.get("can_message_private", True):
         raise ToolDeniedError("can_message_private is disabled")
 
-    await _check_daily_send_quota(agent)
     await _consume_owner_send_budget(agent)
 
     message = await message_service.process_outgoing(
@@ -230,7 +251,9 @@ async def _tool_count_messages_in_range(session: AsyncSession, agent: Agent, arg
     if not await is_participant(session, chat_id, agent.owner_user_id):
         raise ToolDeniedError("owner is not a participant of chat_id")
 
-    count = await count_messages_in_range(session, chat_id, start_at=start_at, end_at=end_at)
+    count = await count_messages_in_range(
+        session, chat_id, agent.owner_user_id, start_at=start_at, end_at=end_at
+    )
 
     if count > settings.AGENT_BULK_FETCH_MAX_MESSAGES:
         agent.pending_confirmation = None
@@ -310,7 +333,9 @@ async def _tool_bulk_fetch_messages(session: AsyncSession, agent: Agent, argumen
             "calling bulk_fetch_messages"
         )
 
-    count = await count_messages_in_range(session, chat_id, start_at=start_at, end_at=end_at)
+    count = await count_messages_in_range(
+        session, chat_id, agent.owner_user_id, start_at=start_at, end_at=end_at
+    )
     if count > settings.AGENT_BULK_FETCH_MAX_MESSAGES:
         agent.pending_confirmation = None
         raise ToolDeniedError(
@@ -319,7 +344,7 @@ async def _tool_bulk_fetch_messages(session: AsyncSession, agent: Agent, argumen
         )
 
     messages = await get_messages_in_range(
-        session, chat_id, start_at=start_at, end_at=end_at, limit=fetch_limit
+        session, chat_id, agent.owner_user_id, start_at=start_at, end_at=end_at, limit=fetch_limit
     )
     agent.pending_confirmation = None
     await session.flush()
@@ -558,6 +583,103 @@ async def _tool_fetch_chunk(session: AsyncSession, agent: Agent, arguments: dict
     return {"document_id": str(chunk.document_id), "chunk_index": chunk.chunk_index, "content": chunk.content}
 
 
+ATTACHED_FILES_LIST_LIMIT = 20
+
+
+async def _tool_list_attached_files(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0083: what send_attached_file can resend - media messages the
+    owner personally sent into their own owner-agent chat. Deliberately
+    scoped to (owner_agent_chat_id, owner_user_id) here, not a model-supplied
+    chat_id - see the ADR's security-boundary section."""
+    limit = _clamp_tool_limit(arguments.get("limit"), default=ATTACHED_FILES_LIST_LIMIT)
+    files = await list_attached_files(session, agent.owner_agent_chat_id, agent.owner_user_id, limit=limit)
+    return {
+        "files": [
+            {
+                "file_id": str(f.id),
+                "filename": f.media_name,
+                "caption": f.content,
+                "kind": settings.MEDIA_KIND_BY_MESSAGE_TYPE.get(f.type),
+                "mime": f.media_mime,
+                "size_bytes": f.media_size,
+                "uploaded_at": f.created_at.isoformat(),
+            }
+            for f in files
+        ]
+    }
+
+
+async def _tool_send_attached_file(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0083: resend a file the owner previously attached in their own
+    owner-agent chat into a real target chat - same restriction/quota gate as
+    send_message, plus the file_id lookup re-verifies both chat_id and
+    sender_id at call time (never trusts a stale/model-fabricated file_id)."""
+    chat_id = int(arguments["chat_id"])
+    file_id = int(arguments["file_id"])
+    caption = arguments.get("caption")
+
+    if not agent.restrictions.get("can_send_messages", True):
+        raise ToolDeniedError("can_send_messages is disabled")
+    if chat_id in {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}:
+        raise ToolDeniedError("chat_id is in blocked_read_chat_ids")
+
+    source = await get_message_by_id(session, agent.owner_agent_chat_id, file_id)
+    if (
+        source is None
+        or source.sender_id != agent.owner_user_id
+        or source.media_key is None
+        or not (source.content or "").strip()
+        or source.deleted_at is not None
+        or source.purged_at is not None
+    ):
+        raise ToolDeniedError("file_id not found among files the owner attached in this chat")
+
+    if not await is_participant(session, chat_id, agent.owner_user_id):
+        raise ToolDeniedError("owner is not a participant of chat_id")
+
+    is_group = await _chat_is_group(session, chat_id)
+    if is_group and not agent.restrictions.get("can_message_groups", True):
+        raise ToolDeniedError("can_message_groups is disabled")
+    if not is_group and not agent.restrictions.get("can_message_private", True):
+        raise ToolDeniedError("can_message_private is disabled")
+
+    # ADR 0086: dedicated relevance judge - does this file plausibly match
+    # what the other party actually asked for? Judged from text only (their
+    # latest message + the owner's own caption/filename), separate from and
+    # in addition to judge.py's message-content gate.
+    requester_message = await get_latest_incoming_message(session, chat_id, agent.owner_user_id)
+    verdict = await evaluate_attachment_match(
+        session,
+        agent,
+        chat_id,
+        file_id,
+        requester_message=(requester_message.content or "") if requester_message else "",
+        caption=source.content or "",
+        filename=source.media_name or "",
+    )
+    if not verdict.is_approved:
+        raise ToolDeniedError(f"attachment does not appear to match the request: {verdict.reason}")
+
+    await _consume_owner_send_budget(agent)
+
+    message = await message_service.process_outgoing(
+        session,
+        sender_id=agent.owner_user_id,
+        chat_id=chat_id,
+        client_message_id=_new_client_message_id(),
+        content=str(caption) if caption else None,
+        type=source.type,
+        media={
+            "key": source.media_key,
+            "name": source.media_name,
+            "duration_seconds": source.media_duration_seconds,
+            "blur_hash": source.media_blur_hash,
+        },
+        sender_agent_id=agent.id,
+    )
+    return {"message_id": str(message.id)}
+
+
 async def _tool_pause_and_escalate(session: AsyncSession, agent: Agent, arguments: dict, chat_id: Optional[int] = None) -> dict:
     """ADR 0047 decision 5: freezes the agent for the *triggering chat only*
     and wakes the human owner. chat_id comes from the turn context (the tool
@@ -597,6 +719,8 @@ EXECUTION_TOOL_HANDLERS = {
     "search_knowledge_semantic": _tool_search_knowledge_semantic,
     "get_knowledge_index": _tool_get_knowledge_index,
     "fetch_chunk": _tool_fetch_chunk,
+    "list_attached_files": _tool_list_attached_files,
+    "send_attached_file": _tool_send_attached_file,
     "pause_and_escalate": _tool_pause_and_escalate,
 }
 

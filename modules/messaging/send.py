@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from modules.agents.crud import get_agent_by_owner_chat
 from modules.agents.trigger_engine import evaluate_triggers
 from modules.messaging.crud import create_message
 from modules.chats.crud.crud_participant import get_chat_participants
@@ -22,6 +23,7 @@ from modules.messaging.errors import MessageAlreadySentError
 from modules.messaging.errors import NotAParticipantError
 from modules.messaging.media_validation import _validate_media
 from modules.media import media_service
+from modules.media.errors import MediaValidationError
 from modules.vector_search.service import enqueue_message_for_embedding
 from infra.redis.client import redis_client
 from infra.ids.client import next_id
@@ -75,6 +77,19 @@ async def process_outgoing(
         raise NotAParticipantError(f"User {sender_id} is not a participant of chat {chat_id}")
 
     attachment = await _validate_media(session, type, media, sender_id=sender_id)
+
+    if attachment is not None and sender_agent_id is None:
+        # ADR 0086: a file attached by the owner into their own owner-agent
+        # chat must carry a caption - it's the only signal send_attached_file
+        # has later to match the file to a customer's request. Scoped to
+        # exactly this chat (never a normal chat/group) and to owner-authored
+        # sends (never the agent's own send_attached_file replay, which
+        # forwards the same caption it already validated at attach time).
+        owning_agent = await get_agent_by_owner_chat(session, chat_id)
+        if owning_agent is not None and not (content or "").strip():
+            raise MediaValidationError(
+                "please describe what this file is before attaching it"
+            )
 
     idem_key = _idempotency_key(chat_id, client_message_id)
 

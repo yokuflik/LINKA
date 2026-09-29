@@ -32,6 +32,25 @@ async def enqueue_invocation(*, agent_id: int, chat_id: int, message_id: int) ->
     )
 
 
+async def enqueue_knowledge_event(*, agent_id: int, chat_id: int, instruction: str) -> str:
+    """ADR 0085: append a knowledge-base ingestion outcome (success or PDF
+    parse failure) onto the same agent_invoke_stream, tagged kind=knowledge
+    so process_entry seeds the turn from the free-text instruction built by
+    the caller (router.py) instead of chat history. chat_id is always
+    agent.owner_agent_chat_id - the turn always lands in config-mode."""
+    return await redis_client.xadd(
+        settings.AGENT_INVOKE_STREAM_KEY,
+        {
+            "agent_id": _clean(agent_id),
+            "chat_id": _clean(chat_id),
+            "instruction": instruction,
+            "kind": "knowledge",
+        },
+        maxlen=settings.AGENT_INVOKE_STREAM_MAXLEN,
+        approximate=True,
+    )
+
+
 async def enqueue_schedule_fire(*, agent_id: int, schedule_id: str) -> str:
     """ADR 0046 decision 3: append a due on_schedule entry onto the same
     agent_invoke_stream, tagged kind=schedule so process_entry seeds the turn

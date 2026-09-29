@@ -161,6 +161,13 @@ const MessageList = {
     function openMedia(m) {
       openedMedia[m.id || m.client_message_id] = true;
     }
+    // File (type 5) cards: browsers preview PDFs inline, so only those get
+    // "Tap to open" - everything else just saves to disk, so say "download".
+    function isPdfFile(m) {
+      const mime = (m.media_mime || '').toLowerCase();
+      if (mime) return mime === 'application/pdf';
+      return /\.pdf$/i.test(m.media_name || '');
+    }
     // Human-readable byte size for the download button label.
     function formatBytes(n) {
       if (!n || n <= 0) return '';
@@ -210,6 +217,14 @@ const MessageList = {
     }
     function blurUrl(m) {
       return hasBlur(m) ? props.thumbHashToDataUrl(m.media_blur_hash) : null;
+    }
+    // Caps the bubble to the image/video box width when there's a caption,
+    // so the caption text can't wrap wider than the media above it.
+    function bubbleMaxWidthStyle(m) {
+      if (!m.content || !(m.type === 2 || m.type === 3)) return null;
+      const box = mediaBoxStyle(m);
+      const w = box ? parseInt(box.width, 10) : (imageOrientation(m.media_url) === 'portrait' ? 192 : 256);
+      return { maxWidth: w + 'px' };
     }
 
     // Small thumbnail for a quoted image/video reply: the real presigned URL
@@ -327,8 +342,8 @@ const MessageList = {
       messagesEl, onScroll, isBareMedia, rows,
       onTouchStart, onTouchMove, onTouchEnd,
       imageLoaded, markImageLoaded,
-      isMediaOpened, openMedia, mediaBoxStyle, blurUrl,
-      formatBytes, downloadMedia, mediaDownloading, mediaSrc,
+      isMediaOpened, openMedia, mediaBoxStyle, bubbleMaxWidthStyle, blurUrl,
+      formatBytes, downloadMedia, mediaDownloading, mediaSrc, isPdfFile,
       quotedReplyThumb, jumpToQuoted, highlightedId,
       formatMessageContent,
     };
@@ -372,6 +387,7 @@ const MessageList = {
         </template>
         <div class="min-w-0 flex-1">
         <div dir="auto" class="inline-block text-sm cursor-pointer max-w-full"
+             :style="bubbleMaxWidthStyle(m)"
              :class="[
                isBareMedia(m)
                  ? 'p-0 bg-transparent rounded-lg'
@@ -543,7 +559,7 @@ const MessageList = {
               <span class="block truncate text-sm font-medium">{{ m.media_name || 'File' }}</span>
               <span class="block text-[11px] opacity-70">{{ (m.media_size ? (m.media_size < 1048576
                 ? Math.max(1, Math.round(m.media_size / 1024)) + ' KB'
-                : (m.media_size / 1048576).toFixed(1) + ' MB') + ' · ' : '') + 'Tap to open' }}</span>
+                : (m.media_size / 1048576).toFixed(1) + ' MB') + ' · ' : '') + (isPdfFile(m) ? 'Tap to open' : 'Tap to download') }}</span>
             </span>
           </a>
           <div v-else-if="m.type >= 2 && m.type <= 5" class="mb-1 text-xs italic opacity-70">

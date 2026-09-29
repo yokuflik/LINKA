@@ -10,7 +10,7 @@ GEMINI_API_BASE = os.environ.get(
 GEMINI_EMBED_MODEL = os.environ.get("GEMINI_EMBED_MODEL", "gemini-embedding-001")
 VECTOR_EMBEDDING_DIM = int(os.environ.get("VECTOR_EMBEDDING_DIM", "768"))
 # Seconds to wait for one Gemini HTTP call before giving up on that batch.
-GEMINI_HTTP_TIMEOUT_SECONDS = float(os.environ.get("GEMINI_HTTP_TIMEOUT_SECONDS", "20"))
+GEMINI_HTTP_TIMEOUT_SECONDS = float(os.environ.get("GEMINI_HTTP_TIMEOUT_SECONDS", "60"))
 
 # --- IVFFlat index (ADR 0042) ---
 # Rejected HNSW: its in-RAM build graph risks OOM-killing the 1GB demo host.

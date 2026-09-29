@@ -4,12 +4,14 @@ against real Postgres/Redis + a real MinIO round trip. Skips cleanly if
 object storage isn't reachable (matching test_storage_media_service.py).
 """
 import hashlib
+import json
 import urllib.request
 import uuid
 
 import pytest
 import pytest_asyncio
 
+from modules.agents.models import Agent, DEFAULT_AGENT_RESTRICTIONS, DEFAULT_AGENT_TRIGGERS
 from modules.media.crud import reserve_blob
 from modules.users.crud import create_user
 from modules.chats import service as chat_service
@@ -203,3 +205,90 @@ async def test_history_attaches_a_presigned_media_url(db_session, redis_db):
     media_msg = next(m for m in history if m.media_key == key)
     assert media_msg.media_url and key in media_msg.media_url
     assert media_msg.media_duration_seconds == 7
+
+
+# --- ADR 0086: mandatory caption for a file attached into the owner-agent chat --
+
+
+async def _make_agent(session, owner_user_id: int, owner_agent_chat_id: int) -> Agent:
+    agent = Agent(
+        id=owner_agent_chat_id + 1_000_000,
+        owner_user_id=owner_user_id,
+        owner_agent_chat_id=owner_agent_chat_id,
+        is_enabled=True,
+        active_skill="support_agent",
+        triggers=json.loads(json.dumps(DEFAULT_AGENT_TRIGGERS)),
+        restrictions=json.loads(json.dumps(DEFAULT_AGENT_RESTRICTIONS)),
+    )
+    session.add(agent)
+    await session.flush()
+    await session.commit()
+    return agent
+
+
+async def test_captionless_attachment_into_owner_agent_chat_is_rejected(db_session, redis_db):
+    owner_chat_id = await _make_private(db_session, 100, 101)
+    await _make_agent(db_session, owner_user_id=100, owner_agent_chat_id=owner_chat_id)
+    key = await _upload(db_session, "file", "application/pdf", b"%PDF-1.4" + b"\x00" * 16)
+
+    with pytest.raises(MediaValidationError):
+        await message_service.process_outgoing(
+            db_session, sender_id=100, chat_id=owner_chat_id, client_message_id=str(uuid.uuid4()),
+            type=5, media={"key": key, "name": "pricelist.pdf"},
+        )
+
+
+async def test_blank_caption_attachment_into_owner_agent_chat_is_rejected(db_session, redis_db):
+    owner_chat_id = await _make_private(db_session, 102, 103)
+    await _make_agent(db_session, owner_user_id=102, owner_agent_chat_id=owner_chat_id)
+    key = await _upload(db_session, "file", "application/pdf", b"%PDF-1.4" + b"\x00" * 16)
+
+    with pytest.raises(MediaValidationError):
+        await message_service.process_outgoing(
+            db_session, sender_id=102, chat_id=owner_chat_id, client_message_id=str(uuid.uuid4()),
+            type=5, content="   ", media={"key": key, "name": "pricelist.pdf"},
+        )
+
+
+async def test_captioned_attachment_into_owner_agent_chat_is_accepted(db_session, redis_db):
+    owner_chat_id = await _make_private(db_session, 104, 105)
+    await _make_agent(db_session, owner_user_id=104, owner_agent_chat_id=owner_chat_id)
+    key = await _upload(db_session, "file", "application/pdf", b"%PDF-1.4" + b"\x00" * 16)
+
+    message = await message_service.process_outgoing(
+        db_session, sender_id=104, chat_id=owner_chat_id, client_message_id=str(uuid.uuid4()),
+        type=5, content="our current price list", media={"key": key, "name": "pricelist.pdf"},
+    )
+    assert message.content == "our current price list"
+
+
+async def test_captionless_media_into_a_normal_chat_is_unaffected(db_session, redis_db):
+    """The ADR 0086 caption requirement is scoped to the owner-agent chat
+    only - a normal chat between two regular users must be unaffected."""
+    chat_id = await _make_private(db_session, 106, 107)
+    key = await _upload(db_session, "file", "application/pdf", b"%PDF-1.4" + b"\x00" * 16)
+
+    message = await message_service.process_outgoing(
+        db_session, sender_id=106, chat_id=chat_id, client_message_id=str(uuid.uuid4()),
+        type=5, media={"key": key, "name": "pricelist.pdf"},
+    )
+    assert message.content is None
+
+
+async def test_agent_own_send_attached_file_replay_is_not_gated_on_caption(db_session, redis_db):
+    """process_outgoing's caption gate only applies to owner-authored sends
+    into their own agent chat (sender_agent_id is None) - the agent's own
+    send_attached_file replay into a DIFFERENT (target/customer) chat must
+    never be blocked by this, even though it forwards a caption that was
+    already validated once at attach time."""
+    owner_chat_id = await _make_private(db_session, 108, 109)
+    agent = await _make_agent(db_session, owner_user_id=108, owner_agent_chat_id=owner_chat_id)
+    await create_user(db_session, user_id=110, phone_number="+97250110")
+    target_chat = await chat_service.get_or_create_private_chat(db_session, 108, 110)
+    key = await _upload(db_session, "file", "application/pdf", b"%PDF-1.4" + b"\x00" * 16)
+
+    message = await message_service.process_outgoing(
+        db_session, sender_id=108, chat_id=target_chat.id, client_message_id=str(uuid.uuid4()),
+        type=5, media={"key": key, "name": "pricelist.pdf"}, sender_agent_id=agent.id,
+    )
+    assert message.media_key == key

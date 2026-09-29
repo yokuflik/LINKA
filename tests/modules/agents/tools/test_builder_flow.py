@@ -437,6 +437,7 @@ def test_builder_handler_set_includes_every_expected_config_and_handoff_tool():
     expected = {
         "set_agent_persona",
         "update_agent_rules",
+        "set_agent_identity",
         "set_trigger",
         "get_agent_status",
         "estimate_api_usage",
@@ -457,22 +458,30 @@ def test_builder_handler_set_includes_every_expected_config_and_handoff_tool():
     assert set(BUILDER_STATE_HANDLERS[BuilderState.BUILDER]) == expected
 
 
-def test_help_building_handler_set_is_exactly_its_three_transfer_tools():
-    # ADR 0065: every builder_state also gets no_reply_needed.
+def test_help_building_handler_set_is_exactly_its_transfer_and_knowledge_tools():
+    # ADR 0065: every builder_state also gets no_reply_needed. ADR 0084: both
+    # Help states also get read-only knowledge-base lookup.
     assert set(BUILDER_STATE_HANDLERS[BuilderState.HELP_BUILDING]) == {
         "transfer_to_builder",
         "transfer_to_help_general",
         "transfer_to_supervisor",
         "no_reply_needed",
+        "search_knowledge_semantic",
+        "get_knowledge_index",
+        "fetch_chunk",
     }
 
 
-def test_help_general_handler_set_is_exactly_its_two_transfer_tools():
-    # ADR 0065: every builder_state also gets no_reply_needed.
+def test_help_general_handler_set_is_exactly_its_transfer_and_knowledge_tools():
+    # ADR 0065: every builder_state also gets no_reply_needed. ADR 0084: both
+    # Help states also get read-only knowledge-base lookup.
     assert set(BUILDER_STATE_HANDLERS[BuilderState.HELP_GENERAL]) == {
         "transfer_to_help_building",
         "transfer_to_supervisor",
         "no_reply_needed",
+        "search_knowledge_semantic",
+        "get_knowledge_index",
+        "fetch_chunk",
     }
 
 
@@ -514,7 +523,8 @@ def test_supervisor_and_builder_both_have_both_help_transfers_and_resume_paused_
 def test_no_execution_only_tool_leaks_into_either_help_handler_set():
     # Supervisor and Builder are the deliberate ADR 0062-style exceptions
     # (both talk to the agent's own supervised owner) - neither Help state
-    # must ever see an execution-only tool.
+    # must ever see a tool that touches a real chat or writes config. ADR
+    # 0084 is the one deliberate exception: read-only knowledge-base lookup.
     execution_only_tools = {
         "send_message",
         "reply_message",
@@ -523,9 +533,8 @@ def test_no_execution_only_tool_leaks_into_either_help_handler_set():
         "read_history",
         "update_own_triggers",
         "search_messages",
-        "get_knowledge_index",
-        "fetch_chunk",
         "pause_and_escalate",
+        "save_knowledge_from_text",
     }
     for state in (BuilderState.HELP_BUILDING, BuilderState.HELP_GENERAL):
         assert not (execution_only_tools & set(BUILDER_STATE_HANDLERS[state]))

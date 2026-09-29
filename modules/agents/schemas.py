@@ -16,7 +16,6 @@ class AgentRestrictionsOut(BaseModel):
     can_message_new_private_contacts: bool
     can_leave_groups: bool
     blocked_read_chat_ids: List[IdStr]
-    max_messages_per_day: Optional[int]
 
 
 class AgentRestrictionsIn(BaseModel):
@@ -28,7 +27,6 @@ class AgentRestrictionsIn(BaseModel):
     can_message_new_private_contacts: Optional[bool] = None
     can_leave_groups: Optional[bool] = None
     blocked_read_chat_ids: Optional[List[IdStr]] = None
-    max_messages_per_day: Optional[int] = None
 
 
 class AgentTimeWindowOut(BaseModel):
@@ -133,6 +131,10 @@ class AgentOut(BaseModel):
     # transfer_to_help_general/transfer_to_help_building/
     # finish_building_agent tools change it, never PATCH /agents/me.
     builder_state: str
+    # Owner-chosen display name + AI-disclosure toggle (ADR 0081). Read-only
+    # here - only the set_agent_identity config tool writes them.
+    agent_name: Optional[str] = None
+    disclose_as_agent: bool = False
 
 
 class AgentKnowledgeUploadTicketIn(BaseModel):
@@ -164,6 +166,14 @@ class AgentKnowledgeDocumentOut(BaseModel):
     filename: str
     mime_type: str
     status: str
+
+
+class AgentKnowledgeFailureIn(BaseModel):
+    """ADR 0085: client-side PDF parse failure (zero extractable chunks) -
+    reason is a fixed enum, only one value exists today."""
+    filename: str
+    mime_type: str
+    reason: str = "no_extractable_text"
 
 
 class AgentTokenWindowOut(BaseModel):

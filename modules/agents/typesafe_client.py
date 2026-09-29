@@ -21,6 +21,19 @@ logger = logging.getLogger(__name__)
 
 _ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 
+# Module-level shared client (connection pooling) instead of one short-lived
+# AsyncClient per call - under concurrent judge/attachment-judge calls the
+# per-call connect overhead was contributing to httpx timeouts (which
+# stringify to "" with no message, making failures look blank in logs).
+_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=settings.JEV_HTTP_TIMEOUT_SECONDS)
+    return _client
+
 
 class TypeSafeError(Exception):
     """Raised on any HTTP/shape failure talking to the TypeSafe API. Callers
@@ -56,12 +69,11 @@ async def classify(*, state: str, questions: dict[str, dict]) -> dict[str, dict]
     logger.info("TypeSafe systemone request questions: %s", list(questions.keys()))
 
     try:
-        async with httpx.AsyncClient(timeout=settings.JEV_HTTP_TIMEOUT_SECONDS) as client:
-            resp = await client.post(
-                _ENDPOINT,
-                headers={"Authorization": f"Bearer {api_key}"},
-                json=body,
-            )
+        resp = await _get_client().post(
+            _ENDPOINT,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
         if resp.status_code == 429:
             raise TypeSafeError("TypeSafe rate limit / quota exceeded (429)")
         if resp.status_code >= 400:
@@ -73,8 +85,11 @@ async def classify(*, state: str, questions: dict[str, dict]) -> dict[str, dict]
             raise TypeSafeError("TypeSafe response 'answers' was not an object")
         return answers
     except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError) as exc:
-        logger.warning("TypeSafe systemone call failed: %s", exc)
-        raise TypeSafeError(str(exc)) from exc
+        # httpx timeout/connect exceptions often carry no message (str(exc)
+        # == "") - include the exception type so a blank message is still
+        # diagnosable (e.g. ReadTimeout vs ConnectTimeout vs PoolTimeout).
+        logger.warning("TypeSafe systemone call failed: %s: %s", type(exc).__name__, exc)
+        raise TypeSafeError(f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__) from exc
 
 
 def noul_value(answers: dict[str, dict], key: str) -> float:

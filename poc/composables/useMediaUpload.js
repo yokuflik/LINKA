@@ -18,6 +18,31 @@ function useMediaUpload(ctx) {
   const MEDIA_MESSAGE_TYPE = { image: 2, video: 3, audio: 4, file: 5 };
   const mediaUploadBusy = ref(false);
 
+  // Staged attachment: a file picked via the [+] menu is held here (not sent
+  // yet) so the composer can show a preview strip with a cancel (x) button
+  // and let the user type a caption before sending. { file, kind, forceKind,
+  // previewUrl, isImage } | null. Cleared on send, on manual cancel, or on
+  // chat switch (see useChatOpen.js).
+  const stagedAttachment = ref(null);
+
+  function stageAttachment(file, forceKind) {
+    if (stagedAttachment.value) URL.revokeObjectURL(stagedAttachment.value.previewUrl);
+    // An unsupported image/video MIME type falls back to a plain file
+    // attachment (kind 'file' accepts any content type) instead of showing
+    // an error - the user still gets their attachment staged.
+    const kind = mediaKindForMime(file.type, forceKind) || 'file';
+    stagedAttachment.value = {
+      file, kind, forceKind,
+      previewUrl: URL.createObjectURL(file),
+      isImage: kind === 'image',
+    };
+  }
+
+  function clearStagedAttachment() {
+    if (stagedAttachment.value) URL.revokeObjectURL(stagedAttachment.value.previewUrl);
+    stagedAttachment.value = null;
+  }
+
   // Per-outgoing-media upload progress, keyed by client_message_id:
   //   number 0..1 -> fraction of bytes uploaded (determinate ring)
   //   null        -> in flight but no measurable progress yet / offline
@@ -305,11 +330,9 @@ function useMediaUpload(ctx) {
       if (ctx.draftChat.value) ctx.messagesError.value = 'Send a message first to start the chat.';
       return;
     }
-    const kind = mediaKindForMime(file.type, forceKind);
-    if (!kind) {
-      ctx.messagesError.value = "That file type isn't supported. Please choose a photo, video, or document.";
-      return;
-    }
+    // An unsupported image/video MIME type falls back to a plain file
+    // attachment instead of erroring - mirrors stageAttachment.
+    const kind = mediaKindForMime(file.type, forceKind) || 'file';
     // A generic document can carry any content type; the browser sometimes
     // reports none at all, so fall back to a neutral one the backend accepts.
     const mimeType = file.type || 'application/octet-stream';
@@ -398,6 +421,24 @@ function useMediaUpload(ctx) {
     } finally {
       mediaUploadBusy.value = false;
     }
+  }
+
+  // Send button handler when an attachment is staged: sends the staged file
+  // + whatever caption is currently typed as one combined message (the
+  // caption-attach logic already lives in sendMediaMessage, which reads
+  // ctx.messageInput at send time), then clears the staged attachment.
+  async function sendStagedAttachment() {
+    const staged = stagedAttachment.value;
+    if (!staged) return;
+    clearStagedAttachment();
+    await sendMediaMessage(staged.file, staged.forceKind);
+  }
+
+  // Composer's single send-button entry point: routes to the staged-file +
+  // caption path when a file is staged, else the plain text send (unchanged).
+  async function sendMessageOrAttachment() {
+    if (stagedAttachment.value) await sendStagedAttachment();
+    else await ctx.sendMessage();
   }
 
   // Voice recording. First mic press starts a MediaRecorder; second press
@@ -579,7 +620,9 @@ function useMediaUpload(ctx) {
 
   return {
     sendMediaMessage, mediaUploadBusy, prepareMediaBlock, mediaKindForMime,
+    MEDIA_MESSAGE_TYPE,
     uploadProgress,
+    stagedAttachment, stageAttachment, clearStagedAttachment, sendStagedAttachment, sendMessageOrAttachment,
     isRecording, recordingSeconds, liveWaveform, startRecording, stopRecording,
   };
 }

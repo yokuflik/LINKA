@@ -148,10 +148,15 @@ considered and rejected: `docs/adr/0066-db-level-agent-restriction-enforcement.m
   "once", time|at, instruction, chat_id?, enabled}` entries, driven by the
   `agent_schedule_due` Redis ZSET + a poll loop in `agent_worker`. Capped
   at `AGENT_MAX_SCHEDULE_ENTRIES` (10).
-- `update_own_triggers` (execution-mode tool) and `set_trigger`
-  (config-mode tool) both write here via `modules/agents/crud.py::
-  update_agent_triggers` / `update_agent_config` - hard-scoped to the
-  caller's own `agent_id`, never touches `restrictions`. Both merge
+- `update_own_triggers` and `set_trigger` both write here via
+  `modules/agents/crud.py::update_agent_triggers` / `update_agent_config` -
+  hard-scoped to the caller's own `agent_id`, never touches `restrictions`.
+  Both are config-mode-only (`update_own_triggers` was execution-mode-
+  reachable until ADR 0091 removed it from `EXECUTION_TOOL_HANDLERS` as a
+  prompt-injection surface - a third party in an execution-mode chat could
+  otherwise steer the agent into rewriting its own wake-up triggers; it's
+  wired explicitly into Supervisor's/Builder's own handler dicts in
+  `builder_handoff.py` instead). Both merge
   `on_time_window`/`on_unknown_sender`/`on_any_message` one level deep
   (`crud.py::_merge_triggers`) rather than replacing the sub-object
   outright - a 2026-09-24 incident (`AgentOut` 500 on `GET /agents/me`)

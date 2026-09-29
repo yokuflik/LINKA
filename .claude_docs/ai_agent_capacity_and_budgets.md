@@ -6,7 +6,13 @@ tool), ADR 0058 (agent shares the owner's WS send-message budget), and ADR
 0059 (rolling token-usage windows + output cap). See `ai_agent.md` for the
 full rate-limit table these all feed into.
 
-## Capacity/rate-limit self-awareness tool (ADR 0057, 2026-09-26)
+**`get_capacity_status` (ADR 0057) was removed entirely by ADR 0091
+(2026-09-29)** - it was found never actually wired into any
+`builder_state`'s schema list, and removed rather than fixed. The section
+below is kept as historical build record only; the tool no longer exists in
+the codebase.
+
+## Capacity/rate-limit self-awareness tool (ADR 0057, 2026-09-26) - REMOVED by ADR 0091
 
 New Builder-state-only config tool `get_capacity_status`
 (`modules/agents/tools/config_mode.py::_tool_get_capacity_status`): read-only

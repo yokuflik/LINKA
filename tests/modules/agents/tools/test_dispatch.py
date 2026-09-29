@@ -172,10 +172,10 @@ async def test_get_tool_schemas_builder_state_sets_are_disjoint_from_execution_s
     # execution-mode toolset unioned in (Supervisor so the owner can issue
     # direct "act as me" commands from their idle chat; Builder so it can do
     # the same mid-interview without transferring out first). Help keeps the
-    # original ADR 0047 invariant of zero overlap with execution-mode schemas,
-    # except the three read-only knowledge-base tools carved out by ADR 0084.
+    # original ADR 0047 invariant of zero overlap with execution-mode schemas
+    # - ADR 0092 dropped ADR 0084's knowledge-base-tool carve-out too, so
+    # there is no exception left for Help states.
     execution_names = {schema["name"] for schema in TOOL_SCHEMAS}
-    knowledge_readonly_names = {"search_knowledge_semantic", "get_knowledge_index", "fetch_chunk"}
     for builder_state, schemas in BUILDER_STATE_TOOL_SCHEMAS.items():
         config_names = {schema["name"] for schema in schemas}
         if builder_state in (BuilderState.SUPERVISOR, BuilderState.BUILDER):
@@ -183,9 +183,8 @@ async def test_get_tool_schemas_builder_state_sets_are_disjoint_from_execution_s
                 f"{builder_state} must expose the full execution-mode toolset (ADR 0062)"
             )
         else:
-            assert not ((execution_names - knowledge_readonly_names) & config_names), (
-                f"{builder_state} tool schemas must not overlap execution-mode schemas "
-                "beyond the ADR 0084 read-only knowledge-base tools"
+            assert not (execution_names & config_names), (
+                f"{builder_state} tool schemas must not overlap execution-mode schemas"
             )
 
 
@@ -319,7 +318,6 @@ async def test_supervisor_state_rejects_builder_only_tools(fake_session, _mock_l
         "schedule_one_off_task",
         "resolve_user",
         "resume_paused_chat",
-        "get_capacity_status",
         "transfer_to_help_building",
         "transfer_to_help_general",
         "transfer_to_supervisor",

@@ -160,20 +160,6 @@ TOOL_SCHEMAS = [
         },
     },
     {
-        "name": "update_own_triggers",
-        "description": "Modify this agent's own wake-up trigger configuration (time window / per-chat keywords). Cannot touch restrictions.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "triggers": {
-                    "type": "object",
-                    "description": "Partial or full triggers object: {on_time_window: {enabled, start, end}, on_specific_chats: {chat_id: {keywords: [...]}}, on_any_message: {enabled}}",
-                }
-            },
-            "required": ["triggers"],
-        },
-    },
-    {
         "name": "search_messages",
         "description": (
             "Keyword-search the owner's own messages, optionally scoped to one chat and/or a "
@@ -305,6 +291,27 @@ TOOL_SCHEMAS = [
     },
 ]
 
+# Split out of TOOL_SCHEMAS: update_own_triggers is no longer reachable from
+# true execution-mode personas (sales_agent/support_agent/summarizer/
+# one_off_executor) talking to a third party - letting an agent that a
+# customer can send arbitrary text to rewrite its own wake-up triggers was a
+# prompt-injection surface. Still available in config-mode (owner-only
+# chat): explicitly added to Supervisor/Builder's own schema lists below.
+_UPDATE_OWN_TRIGGERS_SCHEMA = {
+    "name": "update_own_triggers",
+    "description": "Modify this agent's own wake-up trigger configuration (time window / per-chat keywords). Cannot touch restrictions.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "triggers": {
+                "type": "object",
+                "description": "Partial or full triggers object: {on_time_window: {enabled, start, end}, on_specific_chats: {chat_id: {keywords: [...]}}, on_any_message: {enabled}}",
+            }
+        },
+        "required": ["triggers"],
+    },
+}
+
 # Config-mode tool schemas (ADR 0047 decision 6) - reachable only when
 # is_config_mode(agent, chat_id) is True (the hard gate, dispatch.py).
 CONFIG_TOOL_SCHEMAS = [
@@ -399,10 +406,6 @@ CONFIG_TOOL_SCHEMAS = [
         },
     },
     {
-        "name": "get_capacity_status",
-        "description": "Get every rate limit relevant to this agent (activation quota, Gemini calls/min, daily active-time budget, per-sender unknown-contact quota, knowledge base size, schedule entries) alongside current usage, plus a rough estimate of how many new conversations per hour the agent can currently handle. Read-only, does not consume any quota. Use this near the end of setup, before finish_building_agent, so you can tell the owner roughly what to expect - phrase the estimate as approximate, never as a guarantee.",
-    },
-    {
         "name": "resume_paused_chat",
         "description": "Un-pause the agent for one specific chat, identified by that person's exact phone_number or username, so it starts responding there again. Use this when the owner asks to bring the agent back for a specific customer/chat it had paused/escalated (e.g. after pause_and_escalate). Provide exactly one of phone_number or username - never guess a chat_id.",
         "parameters": {
@@ -458,13 +461,6 @@ CONFIG_TOOL_SCHEMAS = [
 ]
 
 # --- Builder sub-state schema sets (ADR 0049) --------------------------------
-# ADR 0084: the two Help personas need read-only access to the agent's own
-# knowledge base (reference docs seeded for them) even though they otherwise
-# stay zero-action (ADR 0064) - pulled from TOOL_SCHEMAS the same way the
-# Supervisor/Builder-only refs below are pulled from CONFIG_TOOL_SCHEMAS.
-_SEARCH_KNOWLEDGE_SEMANTIC_SCHEMA = next(s for s in TOOL_SCHEMAS if s["name"] == "search_knowledge_semantic")
-_GET_KNOWLEDGE_INDEX_SCHEMA = next(s for s in TOOL_SCHEMAS if s["name"] == "get_knowledge_index")
-_FETCH_CHUNK_SCHEMA = next(s for s in TOOL_SCHEMAS if s["name"] == "fetch_chunk")
 _RESUME_PAUSED_CHAT_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "resume_paused_chat")
 _RESOLVE_USER_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "resolve_user")
 _FIND_CHAT_BY_NAME_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "find_chat_by_name")
@@ -476,9 +472,7 @@ _NO_REPLY_NEEDED_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "n
 # Supervisor's à-la-carte list the same way resolve_user/spawn_ephemeral_task
 # are (Builder already gets it via the full _BUILDER_TOOL_SCHEMAS union below).
 _SAVE_KNOWLEDGE_FROM_TEXT_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "save_knowledge_from_text")
-# get_capacity_status is deliberately excluded from the Builder interview flow (not called
-# during finishing, per user request) - it stays available to other config-mode contexts.
-_BUILDER_TOOL_SCHEMAS = [s for s in CONFIG_TOOL_SCHEMAS if s["name"] != "get_capacity_status"]
+_BUILDER_TOOL_SCHEMAS = CONFIG_TOOL_SCHEMAS
 
 # ADR 0062: Supervisor also gets the full execution-mode toolset (TOOL_SCHEMAS),
 # plus resolve_user + spawn_ephemeral_task (otherwise config-mode-only), so the
@@ -497,6 +491,7 @@ BUILDER_STATE_TOOL_SCHEMAS = {
         _SPAWN_EPHEMERAL_TASK_SCHEMA,
         _NO_REPLY_NEEDED_SCHEMA,
         _SAVE_KNOWLEDGE_FROM_TEXT_SCHEMA,
+        _UPDATE_OWN_TRIGGERS_SCHEMA,
         *TOOL_SCHEMAS,
     ],
     BuilderState.BUILDER: [
@@ -505,6 +500,7 @@ BUILDER_STATE_TOOL_SCHEMAS = {
         # builder_handoff.py's matching handler union.
         *TOOL_SCHEMAS,
         *_BUILDER_TOOL_SCHEMAS,
+        _UPDATE_OWN_TRIGGERS_SCHEMA,
         TRANSFER_TO_HELP_BUILDING_SCHEMA,
         TRANSFER_TO_HELP_GENERAL_SCHEMA,
         TRANSFER_TO_SUPERVISOR_SCHEMA,
@@ -520,16 +516,10 @@ BUILDER_STATE_TOOL_SCHEMAS = {
         TRANSFER_TO_HELP_GENERAL_SCHEMA,
         TRANSFER_TO_SUPERVISOR_SCHEMA,
         _NO_REPLY_NEEDED_SCHEMA,
-        _SEARCH_KNOWLEDGE_SEMANTIC_SCHEMA,
-        _GET_KNOWLEDGE_INDEX_SCHEMA,
-        _FETCH_CHUNK_SCHEMA,
     ],
     BuilderState.HELP_GENERAL: [
         TRANSFER_TO_HELP_BUILDING_SCHEMA,
         TRANSFER_TO_SUPERVISOR_SCHEMA,
         _NO_REPLY_NEEDED_SCHEMA,
-        _SEARCH_KNOWLEDGE_SEMANTIC_SCHEMA,
-        _GET_KNOWLEDGE_INDEX_SCHEMA,
-        _FETCH_CHUNK_SCHEMA,
     ],
 }

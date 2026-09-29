@@ -1,4 +1,4 @@
-# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051 / ADR 0053 / ADR 0057 / ADR 0059 / ADR 0063 / ADR 0064 / ADR 0065 / ADR 0066 / ADR 0067 / ADR 0071 / ADR 0072 / ADR 0073 / ADR 00732 / ADR 0075 / ADR 0077 / ADR 0078 / ADR 0080 / ADR 0081 / ADR 0082 / ADR 0083 / ADR 0084 / ADR 0085 / ADR 0089 / ADR 0090
+# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051 / ADR 0053 / ADR 0057 / ADR 0059 / ADR 0063 / ADR 0064 / ADR 0065 / ADR 0066 / ADR 0067 / ADR 0071 / ADR 0072 / ADR 0073 / ADR 00732 / ADR 0075 / ADR 0077 / ADR 0078 / ADR 0080 / ADR 0081 / ADR 0082 / ADR 0083 / ADR 0084 (superseded by 0092) / ADR 0085 / ADR 0089 / ADR 0090 / ADR 0092
 
 **BYOK removed (ADR 0090, 2026-09-29):** ADR 0046 decision 5/6 (owner-supplied
 Gemini API key) is gone entirely - no DB column, no schema fields, no
@@ -90,10 +90,15 @@ interface-only (never mention backend/infra/model/mechanism terms - see ADR
 
 **Execution mode** (any chat except `owner_agent_chat_id`, or a
 schedule-fired turn): `send_message`, `reply_message`, `create_chat`,
-`leave_group`, `read_history`, `update_own_triggers`, `search_messages`,
+`leave_group`, `read_history`, `count_messages_in_range`,
+`bulk_fetch_messages` (ADR 0072), `search_messages`,
 `search_semantic` (ADR 0069), `search_knowledge_semantic` (ADR 0078),
 `get_knowledge_index`, `fetch_chunk`, `list_attached_files`,
-`send_attached_file` (ADR 0083), `pause_and_escalate` - 14 tools.
+`send_attached_file` (ADR 0083), `pause_and_escalate` - 15 tools.
+`update_own_triggers` is config-mode-only as of ADR 0091 (was reachable
+here before - removed as a prompt-injection surface: an execution persona
+talking to a third party could otherwise be steered into rewriting its own
+wake-up triggers).
 `search_messages`/`search_semantic` both take optional `start_date`/`end_date`
 (ADR 0068), which now also accept a specific time of day, not just a calendar
 date (ADR 0070).
@@ -136,10 +141,10 @@ neither Help state does):
 
 | `builder_state` | Persona prompt | Tools |
 |---|---|---|
-| `supervisor` (default) | routes, AND acts directly for the owner (ADR 0062) | `transfer_to_builder`, `transfer_to_help_building`, `transfer_to_help_general` (ADR 0064), `resume_paused_chat` (ADR 0055), `resolve_user`, `find_chat_by_name` (ADR 0073), `spawn_ephemeral_task` (ADR 0061), `no_reply_needed` (ADR 0065), `save_knowledge_from_text` (ADR 0078), **plus the full execution-mode toolset** (`send_message`, `reply_message`, `create_chat`, `leave_group`, `read_history`, `update_own_triggers`, `search_messages`, `search_semantic`, `search_knowledge_semantic`, `get_knowledge_index`, `fetch_chunk`, `list_attached_files`, `send_attached_file` (ADR 0083), `pause_and_escalate`) |
+| `supervisor` (default) | routes, AND acts directly for the owner (ADR 0062) | `transfer_to_builder`, `transfer_to_help_building`, `transfer_to_help_general` (ADR 0064), `resume_paused_chat` (ADR 0055), `resolve_user`, `find_chat_by_name` (ADR 0073), `spawn_ephemeral_task` (ADR 0061), `no_reply_needed` (ADR 0065), `save_knowledge_from_text` (ADR 0078), `update_own_triggers` (config-mode-only, ADR 0091), **plus the full execution-mode toolset** (`send_message`, `reply_message`, `create_chat`, `leave_group`, `read_history`, `count_messages_in_range`, `bulk_fetch_messages`, `search_messages`, `search_semantic`, `search_knowledge_semantic`, `get_knowledge_index`, `fetch_chunk`, `list_attached_files`, `send_attached_file` (ADR 0083), `pause_and_escalate`) |
 | `builder_agent` | interviews the owner, AND acts directly for the owner too (2026-09-26) | the 6 ADR 0047 config tools (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`, `schedule_one_off_task`) + `set_agent_identity` (ADR 0081) + `resolve_user` + `find_chat_by_name` (ADR 0073) + `resume_paused_chat` (ADR 0055) + `no_reply_needed` (ADR 0065) + `save_knowledge_from_text` (ADR 0078) + `transfer_to_help_building` + `transfer_to_help_general` (ADR 0064) + `transfer_to_supervisor` + `finish_building_agent`, **plus the full execution-mode toolset** (same 14 tools as supervisor) |
-| `help_agent_building` (ADR 0064) | explains building/configuring an agent | `transfer_to_builder`, `transfer_to_help_general`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065), `search_knowledge_semantic`, `get_knowledge_index`, `fetch_chunk` (ADR 0084, read-only) |
-| `help_general` (ADR 0064) | explains using the Linka platform | `transfer_to_help_building`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065), `search_knowledge_semantic`, `get_knowledge_index`, `fetch_chunk` (ADR 0084, read-only) |
+| `help_agent_building` (ADR 0064) | explains building/configuring an agent | `transfer_to_builder`, `transfer_to_help_general`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065) - zero knowledge-base tools (ADR 0092) |
+| `help_general` (ADR 0064) | explains using the Linka platform | `transfer_to_help_building`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065) - zero knowledge-base tools (ADR 0092) |
 
 **ADR 0065 (2026-09-26):** `no_reply_needed` is a no-op config-mode tool
 available in all four `builder_state`s - lets the model end a config-mode
@@ -173,23 +178,38 @@ about anything beyond "answer, hand to my sibling, or give up to
 Supervisor." No schema/migration - `Agent.builder_state` is a plain string
 column, no DB-level enum constraint.
 
-**ADR 0084 (2026-09-28):** both Help states stayed pure prompt-knowledge
-under ADR 0064 - anything not hand-written into `HELP_GENERAL_PROMPT`/
-`HELP_BUILDING_PROMPT` had to be answered "I don't know." Gave both **read-only**
-access to the agent's own knowledge base (`search_knowledge_semantic`,
-`get_knowledge_index`, `fetch_chunk` - the same execution-mode handlers,
-`modules/agents/tools/builder_handoff.py`/`schemas.py`), so an owner can seed
-their own agent's knowledge base (`save_knowledge_from_text` or a file
-upload, same mechanism as any other reference doc) with real product
-documentation and have their Help personas answer from it. Both prompts now
-instruct the model to call `search_knowledge_semantic` first (fallback to
-`get_knowledge_index`+`fetch_chunk`) before answering, and to never mention
-the lookup or quote saved content verbatim. `save_knowledge_from_text` stays
-off both Help states' tool sets (read-only, no write) - ADR 0064's
-zero-action posture is otherwise unchanged (no execution/config tool
-reachable from either Help state), and knowledge stays hard-scoped per
-`agent_id` as everywhere else - no shared/global knowledge store across
-different owners' agents.
+**ADR 0084 (2026-09-28), superseded by ADR 0092 (2026-09-29):** ADR 0084 gave
+both Help states read-only access to the agent's *own* per-`agent_id`
+knowledge base (`search_knowledge_semantic`/`get_knowledge_index`/
+`fetch_chunk`), on the assumption an owner would seed it with real product
+documentation. In practice this never worked for a fresh agent: the
+per-agent knowledge base is populated only by the owner manually calling
+`save_knowledge_from_text`/uploading a file, so a brand-new agent (or the dev
+agent, whose only two seeded documents turned out to be unrelated
+computer-catalog demo PDFs for a `sales_agent` persona) had nothing to find -
+`search_knowledge_semantic` returned empty and Help had to say "I don't
+know" about Linka itself. It was also wiped by `POST /agents/me/reset`
+(ADR 0050 deletes the knowledge base), even though Help's reference material
+has nothing to do with any individual owner's config.
+
+**ADR 0092 (2026-09-29) fix:** two static markdown files -
+`docs/agent_knowledge/linka_general_help.md` and
+`docs/agent_knowledge/linka_agent_building_help.md` - are read once at import
+time by `modules/agents/help_docs.py` and inlined directly into
+`HELP_GENERAL_PROMPT`/`HELP_BUILDING_PROMPT` (`builder_flow.py`) as a
+"Reference material" section, replacing the tool-call instruction entirely.
+The three knowledge-base tools were removed from both Help states'
+`BUILDER_STATE_TOOL_SCHEMAS`/`BUILDER_STATE_HANDLERS` entries
+(`modules/agents/tools/schemas.py`/`builder_handoff.py`), returning both to
+ADR 0064's original zero-tool-call posture. No embedding, no per-`agent_id`
+storage, no DB row - editing either file and restarting the app updates every
+agent's Help persona at once, and `POST /agents/me/reset` can never touch it
+since it isn't agent-scoped state. `SUPERVISOR`/`BUILDER` keep the three
+knowledge tools unchanged (ADR 0062's execution-toolset union, untouched).
+Owner-seeded per-agent knowledge bases (e.g. the dev agent's catalog docs)
+remain reachable by execution-mode personas exactly as before - Help simply
+no longer looks at them. Full rationale:
+`docs/adr/0092-help-personas-static-inline-docs.md`.
 
 **ADR 0085 (2026-09-28): knowledge-ingestion notice to the owner.** A
 successful `POST /agents/me/knowledge` commit, and a client-side PDF parse
@@ -242,11 +262,11 @@ no tool that could message a third party at all (only `spawn_ephemeral_task`,
 and even that was missing from its schema list), so this exact request
 always failed with "I can't do that."
 
-`get_capacity_status` (ADR 0057) is deliberately excluded from the Builder's
-tool set (`schemas.py::_BUILDER_TOOL_SCHEMAS` filters it out of
-`CONFIG_TOOL_SCHEMAS`) and no longer called during `finish_building_agent` -
-removed by user request 2026-09-26; it remains defined/dispatchable for other
-config-mode contexts, just not offered to the interview flow.
+`get_capacity_status` (ADR 0057) was removed entirely (ADR 0091,
+2026-09-29): it turned out to have never actually been wired into any
+`builder_state`'s schema list (dead since introduction), and the user
+confirmed it's unwanted - deleted from `config_mode.py`/`schemas.py`
+rather than re-wired in.
 
 Selection is purely `chat_id`-then-`builder_state`-driven
 (`modules/agents/tools/dispatch.py::is_config_mode` + `BuilderState(agent.builder_state)`)

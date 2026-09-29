@@ -20,7 +20,7 @@ from modules.agents.tools.config_mode import (
     _tool_save_knowledge_from_text,
     _tool_spawn_ephemeral_task,
 )
-from modules.agents.tools.execution import EXECUTION_TOOL_HANDLERS
+from modules.agents.tools.execution import EXECUTION_TOOL_HANDLERS, _tool_update_own_triggers
 
 
 async def _tool_transfer_to_builder(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
@@ -125,6 +125,10 @@ BUILDER_STATE_HANDLERS = {
         "spawn_ephemeral_task": _tool_spawn_ephemeral_task,
         "no_reply_needed": _tool_no_reply_needed,
         "save_knowledge_from_text": _tool_save_knowledge_from_text,
+        # Config-mode-only (ADR: removed from execution-mode personas as a
+        # prompt-injection surface) - explicit here since it's no longer
+        # part of the **EXECUTION_TOOL_HANDLERS union above.
+        "update_own_triggers": _tool_update_own_triggers,
     },
     BuilderState.BUILDER: {
         # Same ADR 0062 reasoning as Supervisor: the Builder is talking to
@@ -135,6 +139,7 @@ BUILDER_STATE_HANDLERS = {
         # enforcement as any other execution-mode call.
         **EXECUTION_TOOL_HANDLERS,
         **CONFIG_TOOL_HANDLERS,
+        "update_own_triggers": _tool_update_own_triggers,
         "transfer_to_help_building": _tool_transfer_to_help_building,
         "transfer_to_help_general": _tool_transfer_to_help_general,
         "transfer_to_supervisor": _tool_transfer_to_supervisor,
@@ -142,26 +147,20 @@ BUILDER_STATE_HANDLERS = {
     },
     # ADR 0064: two disjoint Help personas, neither with any execution/config
     # tool beyond transfer - stays a zero-action posture for anything that
-    # touches a real chat. ADR 0084 adds read-only knowledge-base lookup
-    # (search_knowledge_semantic/get_knowledge_index/fetch_chunk, same
-    # handlers execution mode uses) so these two can actually answer from
-    # reference docs seeded into the agent's own knowledge base instead of
-    # only what's baked into their system prompt.
+    # touches a real chat. ADR 0092: their factual knowledge comes from
+    # static reference docs inlined directly into their system prompts
+    # (modules/agents/help_docs.py), not a knowledge-base lookup tool -
+    # superseding ADR 0084's read-only search_knowledge_semantic/
+    # get_knowledge_index/fetch_chunk carve-out.
     BuilderState.HELP_BUILDING: {
         "transfer_to_builder": _tool_transfer_to_builder,
         "transfer_to_help_general": _tool_transfer_to_help_general,
         "transfer_to_supervisor": _tool_transfer_to_supervisor,
         "no_reply_needed": _tool_no_reply_needed,
-        "search_knowledge_semantic": EXECUTION_TOOL_HANDLERS["search_knowledge_semantic"],
-        "get_knowledge_index": EXECUTION_TOOL_HANDLERS["get_knowledge_index"],
-        "fetch_chunk": EXECUTION_TOOL_HANDLERS["fetch_chunk"],
     },
     BuilderState.HELP_GENERAL: {
         "transfer_to_help_building": _tool_transfer_to_help_building,
         "transfer_to_supervisor": _tool_transfer_to_supervisor,
         "no_reply_needed": _tool_no_reply_needed,
-        "search_knowledge_semantic": EXECUTION_TOOL_HANDLERS["search_knowledge_semantic"],
-        "get_knowledge_index": EXECUTION_TOOL_HANDLERS["get_knowledge_index"],
-        "fetch_chunk": EXECUTION_TOOL_HANDLERS["fetch_chunk"],
     },
 }

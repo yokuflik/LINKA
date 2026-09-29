@@ -705,6 +705,13 @@ async def _tool_pause_and_escalate(session: AsyncSession, agent: Agent, argument
 # natural "search terms" to key off of). search_knowledge is dropped from
 # the registry - not implemented, per the ADR's "no migration cost, just
 # don't build the superseded tool."
+#
+# update_own_triggers is deliberately NOT registered here: it let an
+# execution-mode persona talking to a third party (sales_agent/support_agent/
+# one_off_executor/summarizer) rewrite its own wake-up triggers from
+# attacker-controlled chat text - a prompt-injection surface. It stays
+# config-mode-only, wired into Supervisor/Builder's handler dicts in
+# builder_handoff.py instead.
 EXECUTION_TOOL_HANDLERS = {
     "send_message": _tool_send_message,
     "reply_message": _tool_reply_message,
@@ -713,7 +720,6 @@ EXECUTION_TOOL_HANDLERS = {
     "read_history": _tool_read_history,
     "count_messages_in_range": _tool_count_messages_in_range,
     "bulk_fetch_messages": _tool_bulk_fetch_messages,
-    "update_own_triggers": _tool_update_own_triggers,
     "search_messages": _tool_search_messages,
     "search_semantic": _tool_search_semantic,
     "search_knowledge_semantic": _tool_search_knowledge_semantic,

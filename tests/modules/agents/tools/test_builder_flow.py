@@ -30,9 +30,11 @@ however the code happens to already work):
 - BUILDER_STATE_HANDLERS wires each BuilderState to its own tool-name set:
   supervisor -> {transfer_to_builder, transfer_to_help_building,
   transfer_to_help_general, resume_paused_chat, resolve_user,
-  spawn_ephemeral_task} + the full execution-mode toolset (ADR 0062);
+  spawn_ephemeral_task, update_own_triggers} + the full execution-mode
+  toolset minus update_own_triggers (ADR 0062; update_own_triggers is
+  config-mode-only - see below);
   builder_agent -> the 6 ADR 0047 config tools + resolve_user +
-  resume_paused_chat + get_capacity_status + transfer_to_help_building +
+  resume_paused_chat + update_own_triggers + transfer_to_help_building +
   transfer_to_help_general + transfer_to_supervisor + finish_building_agent +
   the full execution-mode toolset too (same ADR 0062 reasoning - the Builder
   talks to its own supervised owner, so it can act directly mid-interview);
@@ -42,6 +44,13 @@ however the code happens to already work):
   deliberate exceptions to the config/execution no-overlap invariant; both
   Help states keep it strictly (transfer tools only, no execution/config
   tool of their own).
+  get_capacity_status was removed entirely (dead tool, never actually wired
+  into any builder_state's schema list).
+  update_own_triggers was removed from EXECUTION_TOOL_HANDLERS and is no
+  longer reachable by execution-mode personas talking to a third party
+  (prompt-injection surface: it let attacker-controlled chat text rewrite
+  the agent's own wake-up triggers) - it is wired explicitly into
+  Supervisor's and Builder's own handler dicts instead, config-mode-only.
 - Every handler referenced in BUILDER_STATE_HANDLERS is an async callable
   accepting (session, agent, arguments) - dispatch.execute_tool_call always
   calls builder-state handlers with that 3-arg signature (none of these tools
@@ -425,6 +434,7 @@ def test_supervisor_handler_set_is_exactly_the_expected_tools():
         "spawn_ephemeral_task",
         "no_reply_needed",
         "save_knowledge_from_text",
+        "update_own_triggers",
         *EXECUTION_TOOL_HANDLERS,
     }
 
@@ -445,10 +455,10 @@ def test_builder_handler_set_includes_every_expected_config_and_handoff_tool():
         "resolve_user",
         "find_chat_by_name",
         "resume_paused_chat",
-        "get_capacity_status",
         "spawn_ephemeral_task",
         "no_reply_needed",
         "save_knowledge_from_text",
+        "update_own_triggers",
         "transfer_to_help_building",
         "transfer_to_help_general",
         "transfer_to_supervisor",
@@ -458,30 +468,26 @@ def test_builder_handler_set_includes_every_expected_config_and_handoff_tool():
     assert set(BUILDER_STATE_HANDLERS[BuilderState.BUILDER]) == expected
 
 
-def test_help_building_handler_set_is_exactly_its_transfer_and_knowledge_tools():
-    # ADR 0065: every builder_state also gets no_reply_needed. ADR 0084: both
-    # Help states also get read-only knowledge-base lookup.
+def test_help_building_handler_set_is_exactly_its_transfer_tools():
+    # ADR 0065: every builder_state also gets no_reply_needed. ADR 0092:
+    # factual knowledge is inlined into the system prompt (help_docs.py),
+    # not a tool call - superseding ADR 0084's knowledge-base lookup tools.
     assert set(BUILDER_STATE_HANDLERS[BuilderState.HELP_BUILDING]) == {
         "transfer_to_builder",
         "transfer_to_help_general",
         "transfer_to_supervisor",
         "no_reply_needed",
-        "search_knowledge_semantic",
-        "get_knowledge_index",
-        "fetch_chunk",
     }
 
 
-def test_help_general_handler_set_is_exactly_its_transfer_and_knowledge_tools():
-    # ADR 0065: every builder_state also gets no_reply_needed. ADR 0084: both
-    # Help states also get read-only knowledge-base lookup.
+def test_help_general_handler_set_is_exactly_its_transfer_tools():
+    # ADR 0065: every builder_state also gets no_reply_needed. ADR 0092:
+    # factual knowledge is inlined into the system prompt (help_docs.py),
+    # not a tool call - superseding ADR 0084's knowledge-base lookup tools.
     assert set(BUILDER_STATE_HANDLERS[BuilderState.HELP_GENERAL]) == {
         "transfer_to_help_building",
         "transfer_to_supervisor",
         "no_reply_needed",
-        "search_knowledge_semantic",
-        "get_knowledge_index",
-        "fetch_chunk",
     }
 
 
@@ -524,17 +530,19 @@ def test_no_execution_only_tool_leaks_into_either_help_handler_set():
     # Supervisor and Builder are the deliberate ADR 0062-style exceptions
     # (both talk to the agent's own supervised owner) - neither Help state
     # must ever see a tool that touches a real chat or writes config. ADR
-    # 0084 is the one deliberate exception: read-only knowledge-base lookup.
+    # 0092 dropped the ADR 0084 knowledge-base-lookup exception too - Help
+    # states are back to zero execution/config tools, full stop.
     execution_only_tools = {
         "send_message",
         "reply_message",
         "create_chat",
         "leave_group",
         "read_history",
-        "update_own_triggers",
         "search_messages",
         "pause_and_escalate",
-        "save_knowledge_from_text",
+        "search_knowledge_semantic",
+        "get_knowledge_index",
+        "fetch_chunk",
     }
     for state in (BuilderState.HELP_BUILDING, BuilderState.HELP_GENERAL):
         assert not (execution_only_tools & set(BUILDER_STATE_HANDLERS[state]))

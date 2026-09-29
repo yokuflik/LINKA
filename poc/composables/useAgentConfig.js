@@ -266,8 +266,6 @@ function useAgentConfig(ctx) {
     if (!myAgent.value) await loadMyAgent();
     agentForm.value = myAgent.value ? cloneForm(myAgent.value) : null;
     promptDirty.value = false;
-    byokKeyInput.value = '';
-    byokDirty.value = false;
     showAgentDrawer.value = true;
     if (myAgent.value) {
       ctx.clearUnreadCount(myAgent.value.owner_agent_chat_id);
@@ -367,66 +365,6 @@ function useAgentConfig(ctx) {
         restrictions: { ...agentForm.value.restrictions, [key]: !value },
       };
       ctx.showToast(ctx.friendlyError(err, "We couldn't update that restriction. Please try again."));
-    }
-  }
-
-  // --- BYOK: write-only Gemini key field (ADR 0046 decision 6). The server
-  // never echoes the key back (AgentOut only exposes has_custom_key), so the
-  // input always starts empty; typing something and saving replaces the
-  // stored key, clearing and saving with an empty value falls back to the
-  // shared key. Save/Cancel like the other text fields; Cancel just clears
-  // the local draft (there is nothing server-side to revert to).
-
-  const byokDirty = ref(false);
-  const byokKeyInput = ref('');
-
-  function onByokKeyInput(value) {
-    byokKeyInput.value = value;
-    byokDirty.value = true;
-  }
-
-  async function saveByokKey() {
-    if (!myAgent.value) return;
-    agentBusy.value = true;
-    agentError.value = '';
-    try {
-      myAgent.value = await ctx.apiFetch('/agents/me', {
-        method: 'PATCH',
-        body: JSON.stringify({ gemini_api_key: byokKeyInput.value.trim() || null }),
-      });
-      agentForm.value = cloneForm(myAgent.value);
-      byokKeyInput.value = '';
-      byokDirty.value = false;
-      ctx.showToast(myAgent.value.has_custom_key ? 'Custom Gemini key saved' : 'Custom Gemini key cleared');
-    } catch (err) {
-      agentError.value = ctx.friendlyError(err, "We couldn't save your Gemini key. Please try again.");
-    } finally {
-      agentBusy.value = false;
-    }
-  }
-
-  function cancelByokKeyEdit() {
-    byokKeyInput.value = '';
-    byokDirty.value = false;
-  }
-
-  async function clearByokKey() {
-    if (!myAgent.value || !myAgent.value.has_custom_key) return;
-    agentBusy.value = true;
-    agentError.value = '';
-    try {
-      myAgent.value = await ctx.apiFetch('/agents/me', {
-        method: 'PATCH',
-        body: JSON.stringify({ gemini_api_key: null }),
-      });
-      agentForm.value = cloneForm(myAgent.value);
-      byokKeyInput.value = '';
-      byokDirty.value = false;
-      ctx.showToast('Custom Gemini key cleared');
-    } catch (err) {
-      agentError.value = ctx.friendlyError(err, "We couldn't clear your Gemini key. Please try again.");
-    } finally {
-      agentBusy.value = false;
     }
   }
 
@@ -702,8 +640,6 @@ function useAgentConfig(ctx) {
       myAgent.value = await ctx.apiFetch('/agents/me/reset', { method: 'POST' });
       agentForm.value = cloneForm(myAgent.value);
       promptDirty.value = false;
-      byokDirty.value = false;
-      byokKeyInput.value = '';
       chatKeywordsDirty.value = {};
       // Every prior message in the chat was just hard-purged server-side
       // (content/media wiped, rows kept for the partition key - ADR 0021/
@@ -763,8 +699,6 @@ function useAgentConfig(ctx) {
     agentError.value = '';
     agentThinkingStatus.value = null;
     promptDirty.value = false;
-    byokDirty.value = false;
-    byokKeyInput.value = '';
     chatKeywordsDirty.value = {};
     stopAgentUsagePolling();
     agentUsage.value = null;
@@ -785,7 +719,6 @@ function useAgentConfig(ctx) {
     toggleAgentEnabled,
     promptDirty, onPromptInput, saveSoftPrompt, cancelSoftPromptEdit,
     setRestrictionCheckbox,
-    byokDirty, byokKeyInput, onByokKeyInput, saveByokKey, cancelByokKeyEdit, clearByokKey,
     addAgentChatTrigger, removeAgentChatTrigger, setTimeWindowField, setAnyMessageEnabled,
     chatKeywordsDirty, onChatTriggerKeywordsInput, saveChatTriggerKeywords, cancelChatTriggerKeywordsEdit,
     sendAgentChatMessage,

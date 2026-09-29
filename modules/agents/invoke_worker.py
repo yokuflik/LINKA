@@ -246,12 +246,6 @@ async def _run_turn(
             else:
                 contents = await _build_initial_contents(session, agent, chat_id)
 
-            # BYOK (ADR 0046 decision 5) is disabled for now (2026-09-24, not
-            # available yet in the frontend) - always use the shared key, even
-            # if an agent has a stored encrypted_gemini_api_key from before
-            # this was turned off. Decrypt logic (crypto.py) is left in place
-            # so re-enabling later is just removing this early return.
-            api_key: str | None = None
             # Explicit flag rather than `round_trip == 0` - the Gemini call
             # budget retry below can advance round_trip via `continue` while
             # still on the *first* iteration's Gemini call (never made yet),
@@ -307,7 +301,7 @@ async def _run_turn(
                     ended_status = "done"
                     return
 
-                if api_key is None and not await _check_gemini_call_budget(agent_id):
+                if not await _check_gemini_call_budget(agent_id):
                     # The per-minute call budget is a fixed window that resets
                     # within a minute on its own - a turn hitting it mid-flight
                     # is a transient stall, not a real failure, so back off and
@@ -335,7 +329,7 @@ async def _run_turn(
                             await mark_superseded(agent_id, chat_id)
                             superseded_while_waiting = True
                             break
-                        if api_key is not None or await _check_gemini_call_budget(agent_id):
+                        if await _check_gemini_call_budget(agent_id):
                             budget_ok = True
                             break
                     if superseded_while_waiting:
@@ -400,8 +394,7 @@ async def _run_turn(
                 # on a stale/tight estimate - Gemini would then genuinely
                 # truncate to nothing and report MAX_TOKENS, a self-inflicted
                 # false "out of budget" that had nothing to do with real
-                # capacity.) BYOK (api_key is not None) draws from the
-                # owner's own Gemini quota, not this project's budget.
+                # capacity.)
                 max_output_tokens = settings.AGENT_MAX_OUTPUT_TOKENS_CEILING
 
                 gemini_call_made = True
@@ -412,7 +405,6 @@ async def _run_turn(
                         system_prompt=system_prompt,
                         contents=contents,
                         tool_schemas=tool_schemas,
-                        api_key=api_key,
                         max_output_tokens=max_output_tokens,
                     )
                 except _TurnSuperseded:

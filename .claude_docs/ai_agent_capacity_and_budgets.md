@@ -118,9 +118,7 @@ existed anywhere in this codebase before this ADR. It also gained a
 `max_output_tokens` param forwarded as `generationConfig.maxOutputTokens` -
 also never set anywhere before this ADR.
 
-In `invoke_worker.py::_run_turn`'s round-trip loop (shared-key calls only -
-BYOK draws from the owner's own Gemini quota, same carve-out as the
-`agent_gemini_calls` check): before each call, estimates the call's own
+In `invoke_worker.py::_run_turn`'s round-trip loop: before each call, estimates the call's own
 input cost with a `len(text) // 4` char-per-token heuristic
 (`token_budget.estimate_tokens`) over `system_prompt + json.dumps(contents)
 + json.dumps(tool_schemas)`; if the tighter of the two windows' remaining

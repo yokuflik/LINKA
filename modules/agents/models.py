@@ -1,7 +1,7 @@
 import json
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, BigInteger, Boolean, LargeBinary, String, Text, DateTime, ForeignKey, text
+from sqlalchemy import Column, BigInteger, Boolean, String, Text, DateTime, ForeignKey, text
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.sql import func
 
@@ -127,12 +127,6 @@ class Agent(Base):
     # trigger, including the config-chat ones, fires while disabled. New
     # rows only, no migration/backfill (no-migrations convention).
     is_enabled = Column(Boolean, nullable=False, default=False, server_default=text("false"))
-
-    # BYOK (ADR 0046 decision 5): owner's own Gemini API key, Fernet-
-    # encrypted at rest (modules/agents/crypto.py). NULL means "use the
-    # shared settings.GEMINI_API_KEY" - never echoed back by the API, see
-    # AgentOut.has_custom_key.
-    encrypted_gemini_api_key = Column(LargeBinary, nullable=True)
 
     # Skill/persona in force for execution-mode turns (ADR 0047 decision 3) -
     # one of PERSONA_BASE_PROMPTS' keys (modules/agents/personas.py). Fixed

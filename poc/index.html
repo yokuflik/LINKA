@@ -616,7 +616,6 @@ const app = createApp({
       :usage="agentUsage" :usageBlocked="agentUsageBlocked"
       :promptDirty="promptDirty" :chatKeywordsDirty="chatKeywordsDirty"
       :knowledgeDocuments="knowledgeDocuments" :knowledgeUploadBusy="knowledgeUploadBusy" :knowledgeError="knowledgeError"
-      :byokDirty="byokDirty" :byokKeyInput="byokKeyInput"
       :resetBusy="agentResetBusy"
       :imageOrientation="imageOrientation" :thumbHashToDataUrl="thumbHashToDataUrl" :thumbHashToAspect="thumbHashToAspect"
       :uploadProgress="uploadProgress"
@@ -634,8 +633,7 @@ const app = createApp({
       @chat-keywords-input="onChatTriggerKeywordsInput" @save-chat-keywords="saveChatTriggerKeywords"
       @cancel-chat-keywords="cancelChatTriggerKeywordsEdit"
       @upload-knowledge-file="uploadKnowledgeFile" @delete-knowledge-document="deleteKnowledgeDocument"
-      @byok-key-input="onByokKeyInput" @save-byok-key="saveByokKey" @cancel-byok-key="cancelByokKeyEdit"
-      @clear-byok-key="clearByokKey" @reset-agent="resetAgentToDefault"
+      @reset-agent="resetAgentToDefault"
       @voice-played="onAgentVoicePlayed" />
 
     <SearchModal v-if="showSearchModal"

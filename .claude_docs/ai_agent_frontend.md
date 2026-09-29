@@ -8,6 +8,10 @@ for the backend counterpart of everything referenced here. Split again on
 in-chat search, and the "known follow-ups" list moved to
 `.claude_docs/ai_agent_frontend_usage_and_search.md`.
 
+**BYOK removed (ADR 0090, 2026-09-29):** every other mention of BYOK in this
+file below is historical narrative from before the removal - the actual
+"BYOK Gemini key" section further down records what was deleted.
+
 ## Current shape (drawer UI, supersedes the old centered modal)
 
 `AgentConfigModal.js` (the original step-5 centered modal) is **deleted**
@@ -129,31 +133,14 @@ away from whatever chat the user has open behind it.
   counter itself **is** shared state in `LinkaChatStore` (same map every
   other chat's badge uses) - only the *message list* is kept separate.
 
-## BYOK Gemini key (ADR 0046 decision 6, frontend)
+## BYOK Gemini key - REMOVED (ADR 0090)
 
-Backend (decision 5: `Agent.encrypted_gemini_api_key`, `PATCH /agents/me`'s
-write-only `gemini_api_key` field, `AgentOut.has_custom_key`) is documented
-in `ai_agent.md`. Frontend UI to set/clear it and show status:
-
-- `useAgentConfig.js`: `byokKeyInput` (write-only local draft, always starts
-  empty since `AgentOut` never echoes the stored key back) + `byokDirty`.
-  `saveByokKey` PATCHes `{gemini_api_key: byokKeyInput.trim() || null}`;
-  `clearByokKey` PATCHes `{gemini_api_key: null}` directly (enabled only
-  when `form.has_custom_key`, no draft needed to clear). Both reset the
-  local draft and re-clone `agentForm` from the response on success (so
-  `has_custom_key` updates). `openAgentDrawer` resets `byokKeyInput`/
-  `byokDirty` on every open, same as `promptDirty`/`hardTextDirty`.
-- `AgentSettingsView.js`: a plain bordered "Your own Gemini key" section
-  (not soft/hard-styled like the sections above it, since it isn't a
-  restriction) - status line (`has_custom_key` -> "Custom key set" + inline
-  Clear button, else "Using shared key"), a `type="password"` input
-  (`autocomplete="off"`, masked-with-asterisks per the user's explicit
-  request) for the write-only draft, Save/Cancel shown only while
-  `byokDirty`.
-- `AgentDrawer.js` / `index.html`: `byokDirty`/`byokKeyInput` threaded
-  through as props, four events (`byok-key-input`/`save-byok-key`/
-  `cancel-byok-key`/`clear-byok-key`) bubbled the same way as the other
-  hard-text-field events.
+ADR 0046 decision 6's frontend (masked key input, `byokKeyInput`/`byokDirty`
+state in `useAgentConfig.js`, the "Your own Gemini key" section in
+`AgentSettingsView.js`, and the four `byok-*` events threaded through
+`AgentDrawer.js`/`index.html`) is entirely deleted, alongside the backend
+(ADR 0090 reverses ADR 0046 decisions 5/6 completely). There is no BYOK UI
+or state anywhere in the frontend anymore.
 
 ## "Thinking" indicator no longer waits on the `done` event (2026-09-24)
 `onAgentChatMessage` (useAgentConfig.js) now calls `applyAgentThinking(null)` itself

@@ -20,7 +20,7 @@ class Agent(Base):
     restrictions: dict          # JSONB, hard/enforced - see below
     triggers: dict              # JSONB, Gatekeeper wake config - see below
     is_enabled: bool            # kill switch, default False (ADR 0047 decision 2), checked at trigger-eval AND worker-dequeue time
-    encrypted_gemini_api_key: bytes | None  # BYOK (ADR 0046 decision 5), Fernet ciphertext, NULL = shared key
+    # encrypted_gemini_api_key removed (ADR 0090) - BYOK (ADR 0046 decision 5) is gone entirely, always uses the shared key
     active_skill: str           # persona catalog key (ADR 0047 decision 3), default "one_off_executor"
     paused_chat_ids: dict       # JSONB list, default [] (ADR 0047 decision 5) - escalated chats; ADR 0054: list of {chat_id, paused_at, expires_at}, auto-expires after AGENT_ESCALATION_PAUSE_HOURS (default 24) or on human resume/owner-chat reply
     builder_state: str          # "supervisor"|"builder_agent"|"help_general"|"help_agent_building" (ADR 0049/0064), default "supervisor" - only meaningful in the config chat

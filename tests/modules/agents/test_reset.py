@@ -25,8 +25,7 @@ Behavioral expectations encoded here (not just "whatever the code does"):
   verified directly against the chunks table, not just via the document
   list), and each document's S3 object is deleted.
 - system_prompt / triggers / active_skill / builder_state / paused_chat_ids
-  / restrictions all return to their documented defaults, and a BYOK key
-  is cleared.
+  / restrictions all return to their documented defaults.
 - is_enabled is left untouched by reset (ADR 0050 is explicit about this) -
   true stays true, false stays false.
 - The function returns the same (mutated) Agent instance it was given.
@@ -300,7 +299,6 @@ async def test_reset_restores_all_soft_and_hard_settings_to_default(db_session: 
         builder_state="builder_agent",
         paused_chat_ids=[{"chat_id": "123", "paused_at": "x", "expires_at": "y"}],
         restrictions={**DEFAULT_AGENT_RESTRICTIONS, "can_message_groups": True},
-        encrypted_gemini_api_key=b"fake-encrypted-key",
     )
 
     await reset_agent_to_default(db_session, agent)
@@ -312,7 +310,6 @@ async def test_reset_restores_all_soft_and_hard_settings_to_default(db_session: 
     assert agent.builder_state == DEFAULT_AGENT_BUILDER_STATE
     assert agent.paused_chat_ids == []
     assert agent.restrictions == DEFAULT_AGENT_RESTRICTIONS
-    assert agent.encrypted_gemini_api_key is None
 
 
 @pytest.mark.parametrize("is_enabled", [True, False])

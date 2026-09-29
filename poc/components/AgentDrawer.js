@@ -32,9 +32,6 @@ const AgentDrawer = {
     knowledgeDocuments: { type: Array, default: () => [] },
     knowledgeUploadBusy: { type: Boolean, default: false },
     knowledgeError: { type: String, default: '' },
-    // BYOK (ADR 0046 decision 6)
-    byokDirty: { type: Boolean, required: true },
-    byokKeyInput: { type: String, required: true },
     resetBusy: { type: Boolean, default: false },
     // Media-rendering helpers threaded through to AgentChatView so image/
     // video/voice/file bubbles render identically to the main chat pane.
@@ -50,7 +47,6 @@ const AgentDrawer = {
     'add-chat-trigger', 'remove-chat-trigger', 'set-time-window', 'set-any-message',
     'chat-keywords-input', 'save-chat-keywords', 'cancel-chat-keywords',
     'upload-knowledge-file', 'delete-knowledge-document',
-    'byok-key-input', 'save-byok-key', 'cancel-byok-key', 'clear-byok-key',
     'reset-agent', 'voice-played',
   ],
   template: `

@@ -115,9 +115,6 @@ class AgentOut(BaseModel):
     restrictions: AgentRestrictionsOut
     triggers: AgentTriggersOut
     is_enabled: bool
-    # BYOK (ADR 0046 decision 5): never echoes the key itself, only whether
-    # one is set. Computed from encrypted_gemini_api_key in the router.
-    has_custom_key: bool = False
     # Skill/persona in force for execution-mode turns (ADR 0047 decision 3).
     # Read-only here - writing it goes through the set_agent_persona config
     # tool (ADR 0047 decision 6) or a future config-UI picker, not PATCH.
@@ -200,7 +197,3 @@ class AgentConfigPatchIn(BaseModel):
     is_enabled: Optional[bool] = None
     restrictions: Optional[AgentRestrictionsIn] = None
     triggers: Optional[AgentTriggersIn] = None
-    # BYOK (ADR 0046 decision 5): write-only, never echoed back. Absent =
-    # leave the stored key untouched; "" or null clears it (falls back to
-    # the shared settings.GEMINI_API_KEY); a non-empty string replaces it.
-    gemini_api_key: Optional[str] = None

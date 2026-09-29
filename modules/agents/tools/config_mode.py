@@ -295,7 +295,6 @@ async def _tool_get_capacity_status(session: AsyncSession, agent: Agent, argumen
         },
         "gemini_calls": {
             "used": gemini_used, "max": gemini_max, "window_seconds": gemini_window,
-            "note": "not enforced (unlimited) when the owner has set their own Gemini API key" if agent.encrypted_gemini_api_key else None,
         },
         "daily_active_seconds": {"used": active_seconds_used, "max": daily_seconds_max},
         "unknown_sender_daily_quota": {

@@ -41,48 +41,27 @@ Behavioral expectations encoded here (confirmed with the user, not just
   `instruction` and (when set) `chat_id`, and with `message_id` absent
   (schedule-fired turns have no triggering message).
 """
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from infra.redis.client import redis_client
 from modules.agents.invoke_worker import (
     AgentInvokeConsumer,
     _fire_schedule_entry,
+    _run_turn,
     _schedule_poll_loop,
 )
-from modules.agents.models import Agent, DEFAULT_AGENT_RESTRICTIONS, DEFAULT_AGENT_TRIGGERS
-from modules.agents.schedule import sync_schedule_zset
-from modules.chats.crud.crud_chat import create_chat
-from modules.chats.crud.crud_participant import add_participant_to_chat
-from modules.users.crud import create_user
+from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
+from modules.messaging.crud import get_chat_messages
+from tests.modules.agents._factories import make_agent as _make_agent
+from tests.modules.agents._factories import make_chat as _make_chat
+from tests.modules.agents._factories import make_user as _make_user
+from tests.modules.agents._factories import next_id as _next_id
+from tests.modules.agents._gemini_stub import function_call_result, mock_gemini_turn, text_result
 
 pytestmark = pytest.mark.asyncio
-
-_ID = 0
-
-
-def _next_id() -> int:
-    global _ID
-    _ID += 1
-    return 990_000_000 + _ID
-
-
-async def _make_user(session: AsyncSession) -> int:
-    user_id = _next_id()
-    await create_user(session, user_id=user_id, phone_number=f"+1555{user_id}")
-    return user_id
-
-
-async def _make_chat(session: AsyncSession, *user_ids: int) -> int:
-    chat_id = _next_id()
-    await create_chat(session, chat_id=chat_id, is_group=False)
-    for uid in user_ids:
-        await add_participant_to_chat(session, chat_id=chat_id, user_id=uid)
-    return chat_id
 
 
 def _recurring_entry(*, time_str: str = "09:00", enabled: bool = True, schedule_id: str, instruction: str = "say hi") -> dict:
@@ -94,31 +73,6 @@ def _once_entry(*, at: str = "2026-06-01T12:00:00Z", enabled: bool = True, sched
     if chat_id is not None:
         entry["chat_id"] = chat_id
     return entry
-
-
-async def _make_agent(
-    session: AsyncSession,
-    owner_user_id: int,
-    owner_agent_chat_id: int,
-    *,
-    is_enabled: bool = True,
-    on_schedule: list | None = None,
-) -> Agent:
-    triggers = json.loads(json.dumps(DEFAULT_AGENT_TRIGGERS))
-    triggers["on_schedule"] = on_schedule or []
-    agent = Agent(
-        id=_next_id(),
-        owner_user_id=owner_user_id,
-        owner_agent_chat_id=owner_agent_chat_id,
-        is_enabled=is_enabled,
-        triggers=triggers,
-        restrictions=json.loads(json.dumps(DEFAULT_AGENT_RESTRICTIONS)),
-    )
-    session.add(agent)
-    await session.flush()
-    await session.commit()
-    await sync_schedule_zset(agent)
-    return agent
 
 
 async def _stream_entries() -> list[dict]:
@@ -398,3 +352,48 @@ async def test_process_entry_records_active_seconds_for_a_schedule_turn(db_sessi
 
     mock_record.assert_awaited_once()
     assert mock_record.await_args.args[0] == agent.id
+
+
+# --- schedule-fired turns through the real _run_turn body (Step 6) -----------
+#
+# Everything above proves process_entry dispatches to _run_turn with the
+# right arguments (_run_turn itself always mocked). These tests instead let
+# _run_turn genuinely run - _build_schedule_contents seeds the turn, real
+# tool dispatch executes, real messages land - mocking only
+# invoke_turn_helpers.generate_turn (the Gemini HTTP seam), same as
+# test_run_turn_execution_mode.py / test_run_turn_config_mode.py.
+
+async def test_schedule_fired_turn_with_chat_id_sends_a_real_message(db_session, redis_db):
+    owner = await _make_user(db_session)
+    owner_chat = await _make_chat(db_session, owner)
+    target_chat = await _make_chat(db_session, owner)
+    agent = await _make_agent(db_session, owner, owner_chat)
+
+    with mock_gemini_turn(
+        function_call_result("send_message", {"chat_id": str(target_chat), "content": "Good morning!"}),
+        text_result("done"),
+    ):
+        await _run_turn(agent.id, target_chat, schedule_instruction="Say good morning")
+
+    messages = await get_chat_messages(db_session, chat_id=target_chat)
+    assert len(messages) == 1
+    reply = messages[0]
+    assert reply.content == "Good morning!"
+    assert reply.sender_agent_id == agent.id
+    assert reply.type == AGENT_REPLY_MESSAGE_TYPE
+
+
+async def test_schedule_fired_turn_with_no_chat_id_runs_execution_mode_tools(db_session, redis_db):
+    """A schedule entry with no chat_id still dispatches execution-mode tool
+    schemas (is_config_mode returns False for chat_id=None per dispatch.py) -
+    a plain text reply must not be force-posted anywhere, matching the
+    execution-mode text-reply behavior in test_run_turn_execution_mode.py."""
+    owner = await _make_user(db_session)
+    owner_chat = await _make_chat(db_session, owner)
+    agent = await _make_agent(db_session, owner, owner_chat)
+
+    with mock_gemini_turn(text_result("Nothing to report today.")):
+        await _run_turn(agent.id, None, schedule_instruction="Summarize my day")
+
+    owner_chat_messages = await get_chat_messages(db_session, chat_id=owner_chat)
+    assert owner_chat_messages == []

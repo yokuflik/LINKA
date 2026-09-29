@@ -185,9 +185,9 @@ async def main(drop: bool) -> None:
                 "  released_at TIMESTAMPTZ NOT NULL,"
                 "  expires_at TIMESTAMPTZ NOT NULL"
                 ")",
-                # BYOK Gemini key (ADR 0046 decision 5). Fernet ciphertext,
-                # NULL = use the shared settings.GEMINI_API_KEY.
-                "ALTER TABLE agents ADD COLUMN IF NOT EXISTS encrypted_gemini_api_key BYTEA",
+                # BYOK Gemini key removed (ADR 0090, reverses ADR 0046
+                # decision 5) - no owner-supplied Gemini key anymore.
+                "ALTER TABLE agents DROP COLUMN IF EXISTS encrypted_gemini_api_key",
                 # Trigger-shape drift safety net: a column's server_default is
                 # fixed at DDL time, so create_all never re-applies it after
                 # DEFAULT_AGENT_TRIGGERS gains new keys (on_unknown_sender -

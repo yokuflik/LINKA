@@ -387,14 +387,6 @@ AGENT_TOKEN_MIN_VIABLE_BUDGET = int(os.environ.get("AGENT_TOKEN_MIN_VIABLE_BUDGE
 # just because a window happens to be nearly full.
 AGENT_MAX_OUTPUT_TOKENS_CEILING = int(os.environ.get("AGENT_MAX_OUTPUT_TOKENS_CEILING", "8192"))
 
-# --- BYOK: bring your own Gemini key (ADR 0046, decision 5) ---
-# Fernet key used to encrypt Agent.encrypted_gemini_api_key at rest. Only
-# required if any owner actually sets a custom key - modules/agents/crypto.py
-# raises at encrypt/decrypt time (not at import time) if this is unset, so a
-# deployment that never uses BYOK doesn't need it. Separate from
-# GEMINI_API_KEY (the shared key) and JWT_SECRET_KEY.
-AGENT_BYOK_ENCRYPTION_KEY = os.environ.get("AGENT_BYOK_ENCRYPTION_KEY", "")
-
 __all__ = [
     "AGENT_INVOKE_STREAM_KEY",
     "AGENT_INVOKE_STREAM_MAXLEN",
@@ -445,7 +437,6 @@ __all__ = [
     "AGENT_KNOWLEDGE_NOTICE_PREVIEW_CHUNKS",
     "AGENT_KNOWLEDGE_NOTICE_PREVIEW_MAX_CHARS",
     "AGENT_ESTIMATED_SECONDS_PER_TURN",
-    "AGENT_BYOK_ENCRYPTION_KEY",
     "JEV_API_KEY",
     "JEV_MODEL",
     "JEV_HTTP_TIMEOUT_SECONDS",

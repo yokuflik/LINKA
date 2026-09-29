@@ -74,7 +74,6 @@ async def reset_agent_to_default(session: AsyncSession, agent: Agent) -> Agent:
     agent.builder_state = DEFAULT_AGENT_BUILDER_STATE
     agent.paused_chat_ids = []
     agent.pending_confirmation = None
-    agent.encrypted_gemini_api_key = None
     agent.restrictions = dict(DEFAULT_AGENT_RESTRICTIONS)
 
     await session.flush()

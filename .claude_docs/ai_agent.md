@@ -1,4 +1,10 @@
-# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051 / ADR 0053 / ADR 0057 / ADR 0059 / ADR 0063 / ADR 0064 / ADR 0065 / ADR 0066 / ADR 0067 / ADR 0071 / ADR 0072 / ADR 0073 / ADR 00732 / ADR 0075 / ADR 0077 / ADR 0078 / ADR 0080 / ADR 0081 / ADR 0082 / ADR 0083 / ADR 0084 / ADR 0085 / ADR 0089
+# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051 / ADR 0053 / ADR 0057 / ADR 0059 / ADR 0063 / ADR 0064 / ADR 0065 / ADR 0066 / ADR 0067 / ADR 0071 / ADR 0072 / ADR 0073 / ADR 00732 / ADR 0075 / ADR 0077 / ADR 0078 / ADR 0080 / ADR 0081 / ADR 0082 / ADR 0083 / ADR 0084 / ADR 0085 / ADR 0089 / ADR 0090
+
+**BYOK removed (ADR 0090, 2026-09-29):** ADR 0046 decision 5/6 (owner-supplied
+Gemini API key) is gone entirely - no DB column, no schema fields, no
+endpoint logic, no frontend UI. Every mention of BYOK below and in the
+changelog/history files describes a since-removed feature; every agent turn
+always uses the shared `settings.GEMINI_API_KEY`.
 
 `docs/adr/0082-invoke-worker-domain-split.md`: `modules/agents/invoke_worker.py`
 (1165 lines) split by responsibility. `_run_turn`/`AgentInvokeConsumer`/
@@ -263,8 +269,9 @@ class Agent(Base):
     __tablename__ = "agents"
     # id, owner_user_id (FK users, UNIQUE), owner_agent_chat_id (FK chats),
     # system_prompt, restrictions (JSONB), triggers (JSONB), is_enabled,
-    # encrypted_gemini_api_key, active_skill, paused_chat_ids (JSONB),
+    # active_skill, paused_chat_ids (JSONB),
     # builder_state, agent_name, disclose_as_agent, created_at, updated_at
+    # (encrypted_gemini_api_key removed by ADR 0090 - BYOK is gone)
 
 class AgentToolCallLog(Base):
     __tablename__ = "agent_tool_call_log"
@@ -285,7 +292,7 @@ retrieval: **`.claude_docs/ai_agent_schema.md`**.
 
 | Limit | Scope | Mechanism |
 |---|---|---|
-| Gemini API calls | 30/min per-agent (ADR 0047 decision 1; skipped when BYOK key present) | `agent_gemini_calls:{agent_id}` |
+| Gemini API calls | 30/min per-agent (ADR 0047 decision 1) | `agent_gemini_calls:{agent_id}` |
 | LLM Judge calls | 60/min per-agent (ADR 0053, own bucket, never shares the Gemini API calls budget above) | `ratelimit:agent_judge_calls:{agent_id}` |
 | Function-call recursion | 8 round-trips/turn (ADR 0047 decision 1) | in-process cap |
 | Trigger activation quota | 100/hour per-agent | `ratelimit:agent_activation:{agent_id}`, Redis fixed-window |

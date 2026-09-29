@@ -1,8 +1,10 @@
 // Settings body of the AI agent drawer (AGENT_DRAWER_UI_PLAN.md Step 8).
 // Frontend-only trim (2026-09-28, no ADR): shows ONLY the hard,
-// server-enforced restrictions. Soft guidance, triggers, knowledge base and
-// BYOK sections removed from this view per explicit user request - backend
-// fields/endpoints are untouched, this is display-only.
+// server-enforced restrictions. Soft guidance, triggers, and knowledge base
+// sections removed from this view per explicit user request, display-only
+// (backend fields/endpoints for those were untouched). BYOK (bring-your-own
+// Gemini key) was removed from this view the same way, then later removed
+// from the backend entirely (ADR 0090) - there is no BYOK anywhere anymore.
 const AgentSettingsView = {
   props: {
     form: { type: Object, required: true }, // agentForm - never null while this view is shown

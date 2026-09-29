@@ -49,8 +49,8 @@ class GeminiChatError(Exception):
     chat, just logged and the turn abandoned."""
 
 
-def _require_api_key(api_key: Optional[str]) -> str:
-    key = api_key or settings.GEMINI_API_KEY
+def _require_api_key() -> str:
+    key = settings.GEMINI_API_KEY
     if not key:
         raise GeminiChatError("GEMINI_API_KEY is not configured")
     return key
@@ -73,7 +73,6 @@ async def generate_turn(
     system_prompt: str,
     contents: list[dict],
     tool_schemas: list[dict],
-    api_key: Optional[str] = None,
     max_output_tokens: Optional[int] = None,
 ) -> TurnResult:
     """One generateContent call. `contents` is the running conversation in
@@ -85,14 +84,11 @@ async def generate_turn(
     "STOP", "MAX_TOKENS"), `.usage` is the parsed `usageMetadata` (ADR 0059 -
     fed into modules/agents/token_budget.py's counters).
 
-    `api_key` overrides the shared settings.GEMINI_API_KEY - used for BYOK
-    owners (ADR 0046 decision 5); omit to use the shared key.
-
     `max_output_tokens` caps generationConfig.maxOutputTokens (ADR 0059) so a
     single completion can't exceed the caller's remaining token budget; omit
     to leave Gemini's own default cap in place.
     """
-    api_key = _require_api_key(api_key)
+    api_key = _require_api_key()
     url = f"{settings.GEMINI_API_BASE}/v1beta/models/{GEMINI_CHAT_MODEL}:generateContent"
     body: dict = {
         "contents": contents,
@@ -164,15 +160,13 @@ async def generate_structured(
     classification response (ADR 0053's LLM Judge). Deliberately a separate
     function from generate_turn rather than a mode flag on it: no `contents`
     history, no `tools`/function-calling, structured output only via
-    `responseMimeType: application/json` + `responseSchema`. Always uses the
-    shared settings.GEMINI_API_KEY (the judge never runs under BYOK - it's a
-    platform-level cost/safety gate, not a per-owner turn).
+    `responseMimeType: application/json` + `responseSchema`.
 
     Returns the parsed JSON object. Raises GeminiChatError on any HTTP/shape
     failure, exactly like generate_turn - callers decide their own failure
     posture (the judge gate fails open, per the ADR).
     """
-    api_key = _require_api_key(None)
+    api_key = _require_api_key()
     url = f"{settings.GEMINI_API_BASE}/v1beta/models/{model}:generateContent"
     body: dict = {
         "contents": [{"role": "user", "parts": [{"text": user_text}]}],

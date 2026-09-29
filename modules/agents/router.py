@@ -17,7 +17,6 @@ from modules.agents import crud as agent_crud
 from modules.agents import knowledge_service
 from modules.agents.cache import sync_agent_cache
 from modules.agents.crud import KnowledgeQuotaExceededError, ScheduleQuotaExceededError, resume_agent_chat
-from modules.agents.crypto import ByokKeyError, encrypt_api_key
 from modules.agents.knowledge_service import KnowledgeValidationError
 from modules.agents.models import Agent
 from modules.agents.reset import reset_agent_to_default
@@ -55,18 +54,14 @@ async def _get_my_agent_or_404(session: AsyncSession, user_id: int) -> Agent:
 
 
 def _agent_out(agent: Agent) -> AgentOut:
-    """AgentOut.has_custom_key is derived, not a DB column - never echoes the
-    key itself (ADR 0046 decision 5). paused_chat_ids on the row is now a
-    list of {chat_id, paused_at, expires_at} objects (ADR 0054); the API
-    still exposes a plain list of active chat_ids, so it's projected down
-    before validation."""
+    """paused_chat_ids on the row is now a list of {chat_id, paused_at,
+    expires_at} objects (ADR 0054); the API still exposes a plain list of
+    active chat_ids, so it's projected down before validation."""
     from modules.agents.crud import _active_pauses
 
     fields = {name: getattr(agent, name) for name in AgentOut.model_fields if hasattr(agent, name)}
     fields["paused_chat_ids"] = [entry["chat_id"] for entry in _active_pauses(agent)]
-    out = AgentOut.model_validate(fields)
-    out.has_custom_key = agent.encrypted_gemini_api_key is not None
-    return out
+    return AgentOut.model_validate(fields)
 
 
 @router.get("/me", response_model=AgentOut)
@@ -143,29 +138,14 @@ async def patch_my_agent(
     if patch.get("triggers") is not None:
         patch["triggers"] = {k: v for k, v in patch["triggers"].items() if v is not None}
 
-    # BYOK (ADR 0046 decision 5): handled separately from update_agent_config
-    # since it's not a JSONB shallow-merge field - "" or null clears the key
-    # (falls back to the shared GEMINI_API_KEY), a non-empty string encrypts
-    # and replaces it, and the key is simply absent from `patch` if the
-    # client didn't send it at all (leaves the stored key untouched).
-    gemini_key_patch = patch.pop("gemini_api_key", "__unset__")
-    if gemini_key_patch != "__unset__":
-        if gemini_key_patch:
-            try:
-                agent.encrypted_gemini_api_key = encrypt_api_key(gemini_key_patch)
-            except ByokKeyError as exc:
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
-        else:
-            agent.encrypted_gemini_api_key = None
-
     try:
         updated = await agent_crud.update_agent_config(session, agent, patch)
     except ScheduleQuotaExceededError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     # update_agent_config only flushes (shared with update_own_triggers,
     # which intentionally lets its caller batch further writes) - this
-    # request's writes (including the BYOK key set above) end here, so
-    # commit now rather than relying on get_db() (which never auto-commits).
+    # request's writes end here, so commit now rather than relying on
+    # get_db() (which never auto-commits).
     await session.commit()
     await sync_agent_cache(updated)
     if "triggers" in patch and "on_schedule" in patch["triggers"]:

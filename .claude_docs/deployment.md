@@ -143,6 +143,7 @@ image tag (unset ⇒ `linka-ws-gateway:latest`, which `docker load` provides).
 Caddy (`deploy/Caddyfile`): `/ws` → `ws_gateway:8081`; `/ws-legacy` →
 `app:8000` (rewrite `* /ws`) for rollback; `/internal*` → `404`; `@api` matcher
 includes `/scheduled-messages*` (the top-level `scheduled_router`).
+**Every new top-level router prefix must be added to the Caddy `@api` matcher** (currently `/auth* /users* /agents* /chats* /scheduled-messages* /search* /healthz /docs* /redoc* /openapi.json`); otherwise Caddy serves it from the static PoC and it 404s only in prod (missed `/agents*` once: `/agents/me` 404 → agent chat leaked into the sidebar, drawer dead). Also: `.dockerignore` must keep `docs/agent_knowledge/` (read at import by `modules/agents/help_docs.py`).
 `.dockerignore` excludes `target/`.
 
 **`ALLOWED_HOSTS`:** the gateway calls `http://app:8000/internal/*` with

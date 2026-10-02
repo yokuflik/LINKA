@@ -26,7 +26,9 @@ poc/                     # served by Caddy from a bind mount, not the image
 
 # Docs & planning.
 *.md
-docs/
+# docs/agent_knowledge/*.md is read at import time by modules/agents/help_docs.py (ADR 0092)
+docs/*
+!docs/agent_knowledge
 .claude_docs/
 PROMPT_LOG.md
 

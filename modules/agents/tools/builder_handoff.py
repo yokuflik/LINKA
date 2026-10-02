@@ -1,9 +1,16 @@
-"""Builder sub-state handoff tools (ADR 0049, split from tools.py).
+"""Builder sub-state tools (ADR 0049, split from tools.py; restructured by
+ADR 0093).
 
-Only reachable from within config mode's builder_agent/supervisor/help_agent
+Only reachable from within config mode's builder_agent/one_off_action/help
 states (see BUILDER_STATE_HANDLERS below) - never from an execution-mode
 chat. All writes go through update_agent_config, the same single write path
 every other config tool uses.
+
+ADR 0093 Phase 3: the transfer_to_* handoff tools/handlers that used to live
+here are deleted - builder_state now changes only via
+modules/agents/owner_chat_router.py::route_owner_turn, which runs once
+before every config-mode turn in invoke_worker.py. No tool in this module
+writes builder_state anymore.
 """
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,147 +27,104 @@ from modules.agents.tools.config_mode import (
     _tool_save_knowledge_from_text,
     _tool_spawn_ephemeral_task,
 )
-from modules.agents.tools.execution import EXECUTION_TOOL_HANDLERS, _tool_update_own_triggers
-
-
-async def _tool_transfer_to_builder(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
-    updated = await update_agent_config(session, agent, {"builder_state": BuilderState.BUILDER.value})
-    # invoke_worker.py now re-derives system_prompt/tool_schemas every
-    # round-trip (ADR 0049 handoff fix, 2026-09-25), so the very next Gemini
-    # call in this same turn already runs as the Builder with its own tools.
-    # Nudge it explicitly to act on the user's own message that triggered the
-    # handoff instead of just acknowledging the transfer - without this the
-    # model tends to emit a generic "you're now with the builder" line and
-    # stop, leaving the user's actual request unanswered until their next
-    # message.
-    return {
-        "status": "transferred",
-        "to": updated.builder_state,
-        "instruction": "You are now the Builder Agent. This handoff is invisible to the user - "
-        "never mention it, never say anything like 'switching you to the builder'. Just look at "
-        "the user's own preceding message in this conversation and respond to it directly, "
-        "continuing the interview from there.",
-    }
-
-
-async def _tool_transfer_to_help_building(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
-    updated = await update_agent_config(session, agent, {"builder_state": BuilderState.HELP_BUILDING.value})
-    return {
-        "status": "transferred",
-        "to": updated.builder_state,
-        "instruction": "You are now the Agent-Building Help Agent. This handoff is invisible to "
-        "the user - never mention it, never say anything like 'switching you to help'. Just look "
-        "at the user's own preceding message in this conversation and answer their actual "
-        "question directly.",
-    }
-
-
-async def _tool_transfer_to_help_general(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
-    updated = await update_agent_config(session, agent, {"builder_state": BuilderState.HELP_GENERAL.value})
-    return {
-        "status": "transferred",
-        "to": updated.builder_state,
-        "instruction": "You are now the general Help Agent. This handoff is invisible to the "
-        "user - never mention it, never say anything like 'switching you to help'. Just look at "
-        "the user's own preceding message in this conversation and answer their actual question "
-        "directly.",
-    }
-
-
-async def _tool_transfer_to_supervisor(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
-    """Escape hatch out of the Builder interview (or Help) without finishing
-    the checklist and without activating the agent - unlike
-    _tool_finish_building_agent. Whatever was already saved via the
-    incremental config tools stays saved; this only flips builder_state."""
-    updated = await update_agent_config(session, agent, {"builder_state": BuilderState.SUPERVISOR.value})
-    return {
-        "status": "transferred",
-        "to": updated.builder_state,
-        "instruction": "You are now back with the Supervisor. This handoff is invisible to the "
-        "user - never mention it, never say anything like 'switching you back' or 'transferring "
-        "you to the regular agent'. Just look at the user's own preceding message in this "
-        "conversation and respond to it directly as the Supervisor would (or simply continue the "
-        "conversation naturally if they just wanted to pause setup).",
-    }
+from modules.agents.tools.goal_task_tools import _tool_cancel_goal_task, _tool_start_goal_task
+from modules.agents.tools.execution import (
+    EXECUTION_TOOL_HANDLERS,
+    _tool_delete_own_trigger,
+    _tool_update_own_triggers,
+    _tool_update_own_triggers_disposable,
+)
 
 
 async def _tool_finish_building_agent(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
-    """Wrap-up signal, not a bulk config-apply - the 6 config tools already
-    save incrementally during the interview (ADR 0049, confirmed with the
-    user 2026-09-24). Auto-enables the agent, unlike every other config tool
+    """Wrap-up signal, not a bulk config-apply - the config tools already save
+    incrementally during the interview (ADR 0049, confirmed with the user
+    2026-09-24). Auto-enables the agent, unlike every other config tool
     write, so sync_agent_cache is required here (is_enabled is part of the
-    trigger pre-filter cache payload, unlike builder_state)."""
-    updated = await update_agent_config(
-        session, agent, {"builder_state": BuilderState.SUPERVISOR.value, "is_enabled": True}
-    )
+    trigger pre-filter cache payload).
+
+    ADR 0093 Phase 3 final shape: sets only is_enabled - no builder_state
+    write. The next config-mode turn's router pass decides where the owner
+    lands next (almost always one_off_action, since the interview is done),
+    rather than this tool guessing/hardcoding a destination."""
+    updated = await update_agent_config(session, agent, {"is_enabled": True})
     await sync_agent_cache(updated)
     return {"status": "agent_activated"}
 
 
 # Extends the config-mode gate (dispatch.is_config_mode - chat_id decides
 # execution vs. config, unchanged). Within config mode, agent.builder_state
-# picks one of three disjoint handler sets - never a fallback to another
+# picks one of these disjoint handler sets - never a fallback to another
 # state's tools, same one-decision-point discipline as is_config_mode itself.
+# ADR 0093 Phase 3: no handler set writes builder_state anymore - every
+# transfer_to_* handler is gone, replaced entirely by
+# owner_chat_router.py::route_owner_turn running once before every
+# config-mode turn (invoke_worker.py).
 BUILDER_STATE_HANDLERS = {
-    BuilderState.SUPERVISOR: {
+    BuilderState.ONE_OFF_ACTION: {
         # ADR 0062: the owner's own chat, while idle/routing, also gets the
         # full execution-mode toolset so a direct "send X a message"-style
-        # command can be carried out without first transferring into the
-        # Builder interview flow. Handler bodies are unchanged - same
-        # Agent.restrictions/quota enforcement as any other execution-mode
-        # invocation.
-        **EXECUTION_TOOL_HANDLERS,
-        "transfer_to_builder": _tool_transfer_to_builder,
-        "transfer_to_help_building": _tool_transfer_to_help_building,
-        "transfer_to_help_general": _tool_transfer_to_help_general,
-        # ADR 0055: reachable straight from the Supervisor, without a full
-        # Builder interview first - it's an action, not a setup step.
+        # command can be carried out directly. Handler bodies are unchanged -
+        # same Agent.restrictions/quota enforcement as any other
+        # execution-mode invocation.
+        # pause_and_escalate excluded (ADR 0098): it always pauses the
+        # triggering chat, which here is the owner's own agent chat.
+        **{k: v for k, v in EXECUTION_TOOL_HANDLERS.items() if k != "pause_and_escalate"},
+        # ADR 0055/0093: an action, not a setup step - stays reachable here.
         "resume_paused_chat": _tool_resume_paused_chat,
-        # ADR 0061/0062: resolving a named person and spawning a one-off
-        # relay-and-summarize task are config-mode-only tools, not part of
-        # EXECUTION_TOOL_HANDLERS - added explicitly so Supervisor's
-        # "message X and tell me what they say" path actually has both ends.
+        # ADR 0061/0062/0093: resolving a named person, spawning a one-off
+        # relay-and-summarize task, saving reference text, and scheduling a
+        # one-time future action are all one-shot actions, not persistent
+        # config.
         "resolve_user": _tool_resolve_user,
         "find_chat_by_name": _tool_find_chat_by_name,
         "spawn_ephemeral_task": _tool_spawn_ephemeral_task,
+        # ADR 0099: multi-turn goal-driven conversation + its cancel.
+        "start_goal_task": _tool_start_goal_task,
+        "cancel_goal_task": _tool_cancel_goal_task,
         "no_reply_needed": _tool_no_reply_needed,
         "save_knowledge_from_text": _tool_save_knowledge_from_text,
-        # Config-mode-only (ADR: removed from execution-mode personas as a
-        # prompt-injection surface) - explicit here since it's no longer
-        # part of the **EXECUTION_TOOL_HANDLERS union above.
-        "update_own_triggers": _tool_update_own_triggers,
+        "schedule_one_off_task": CONFIG_TOOL_HANDLERS["schedule_one_off_task"],
+        # ADR 0095: disposable-only trigger write access (every entry must
+        # carry expires_at/max_fires, enforced server-side in the handler) -
+        # a permanent trigger still requires BuilderState.BUILDER. Also fixes
+        # a pre-existing drift bug: ONE_OFF_ACTION_PROMPT already mentioned
+        # update_own_triggers but it was never actually wired in here.
+        "update_own_triggers": _tool_update_own_triggers_disposable,
+        "delete_own_trigger": _tool_delete_own_trigger,
+    },
+    # ADR 0093: zero-action state - only no_reply_needed. The router lands
+    # here when it can't confidently distinguish one_off_action from
+    # builder_agent; the model must ask a disambiguating question in plain
+    # text instead of calling a tool.
+    BuilderState.CLARIFY: {
+        "no_reply_needed": _tool_no_reply_needed,
     },
     BuilderState.BUILDER: {
-        # Same ADR 0062 reasoning as Supervisor: the Builder is talking to
-        # its own supervised owner, so it also gets the full execution-mode
-        # toolset unioned in - a mid-interview "actually, send X a message"
-        # request works directly instead of needing transfer_to_supervisor
-        # first. Handler bodies unchanged - same restrictions/quota
-        # enforcement as any other execution-mode call.
-        **EXECUTION_TOOL_HANDLERS,
-        **CONFIG_TOOL_HANDLERS,
+        # ADR 0093: the ADR 0062 execution-tool union is removed - builder_agent
+        # owns persistent configuration only.
+        "set_agent_persona": CONFIG_TOOL_HANDLERS["set_agent_persona"],
+        "update_agent_rules": CONFIG_TOOL_HANDLERS["update_agent_rules"],
+        "set_agent_identity": CONFIG_TOOL_HANDLERS["set_agent_identity"],
+        "set_trigger": CONFIG_TOOL_HANDLERS["set_trigger"],
+        "get_agent_status": CONFIG_TOOL_HANDLERS["get_agent_status"],
+        "estimate_api_usage": CONFIG_TOOL_HANDLERS["estimate_api_usage"],
         "update_own_triggers": _tool_update_own_triggers,
-        "transfer_to_help_building": _tool_transfer_to_help_building,
-        "transfer_to_help_general": _tool_transfer_to_help_general,
-        "transfer_to_supervisor": _tool_transfer_to_supervisor,
+        "delete_own_trigger": _tool_delete_own_trigger,
+        "resolve_user": _tool_resolve_user,
+        "find_chat_by_name": _tool_find_chat_by_name,
+        "no_reply_needed": _tool_no_reply_needed,
         "finish_building_agent": _tool_finish_building_agent,
     },
-    # ADR 0064: two disjoint Help personas, neither with any execution/config
-    # tool beyond transfer - stays a zero-action posture for anything that
-    # touches a real chat. ADR 0092: their factual knowledge comes from
-    # static reference docs inlined directly into their system prompts
-    # (modules/agents/help_docs.py), not a knowledge-base lookup tool -
-    # superseding ADR 0084's read-only search_knowledge_semantic/
-    # get_knowledge_index/fetch_chunk carve-out.
+    # ADR 0064/0093: two disjoint Help personas, purely zero-action - no
+    # execution/config tool and no transfer tool, only no_reply_needed. ADR
+    # 0092: their factual knowledge comes from static reference docs inlined
+    # directly into their system prompts (modules/agents/help_docs.py), not
+    # a knowledge-base lookup tool.
     BuilderState.HELP_BUILDING: {
-        "transfer_to_builder": _tool_transfer_to_builder,
-        "transfer_to_help_general": _tool_transfer_to_help_general,
-        "transfer_to_supervisor": _tool_transfer_to_supervisor,
         "no_reply_needed": _tool_no_reply_needed,
     },
     BuilderState.HELP_GENERAL: {
-        "transfer_to_help_building": _tool_transfer_to_help_building,
-        "transfer_to_supervisor": _tool_transfer_to_supervisor,
         "no_reply_needed": _tool_no_reply_needed,
     },
 }

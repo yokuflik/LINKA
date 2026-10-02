@@ -5,19 +5,13 @@ TOOL_SCHEMAS and config-mode CONFIG_TOOL_SCHEMAS - plus the ADR 0049 builder
 sub-state schema sets, which are assembled here since they reuse
 CONFIG_TOOL_SCHEMAS entries and builder_flow's handoff schemas.
 """
-from modules.agents.builder_flow import (
-    FINISH_BUILDING_AGENT_SCHEMA,
-    TRANSFER_TO_BUILDER_SCHEMA,
-    TRANSFER_TO_HELP_BUILDING_SCHEMA,
-    TRANSFER_TO_HELP_GENERAL_SCHEMA,
-    TRANSFER_TO_SUPERVISOR_SCHEMA,
-    BuilderState,
-)
+from modules.agents.builder_flow import FINISH_BUILDING_AGENT_SCHEMA, BuilderState
+from modules.agents.tools.goal_task_schemas import CANCEL_GOAL_TASK_SCHEMA, START_GOAL_TASK_SCHEMA
 
 TOOL_SCHEMAS = [
     {
         "name": "send_message",
-        "description": "Send a new text message into an existing chat the owner already participates in.",
+        "description": "Send a new text message into an existing chat the owner already participates in. When the owner asked you to message someone, call this directly with the chat_id you already have - do not read that chat's history first just to deliver the message.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -68,7 +62,11 @@ TOOL_SCHEMAS = [
             "oldest first, each with sender_id/timestamp/content. The result includes has_more: "
             "if true, this is only part of the history - call again with before_id set to "
             "next_before_id to go further back in parts. Never claim you've seen the whole "
-            "conversation when has_more is true."
+            "conversation when has_more is true. Only call this when you actually need what was "
+            "said - the owner asked about a conversation's contents, or you are replying to "
+            "someone and need their earlier messages for context. Do NOT call it to figure out "
+            "who a person is (use find_chat_by_name/resolve_user for that), and do NOT call it "
+            "just before delivering a message the owner told you to send to someone."
         ),
         "parameters": {
             "type": "object",
@@ -312,6 +310,58 @@ _UPDATE_OWN_TRIGGERS_SCHEMA = {
     },
 }
 
+# ADR 0095: used only from ONE_OFF_ACTION's schema list (see
+# BUILDER_STATE_TOOL_SCHEMAS below) - same underlying tool name/handler as
+# BUILDER's _UPDATE_OWN_TRIGGERS_SCHEMA, but the description makes the
+# disposable-only server-side rule explicit so the model doesn't attempt a
+# permanent trigger from here and get denied.
+_UPDATE_OWN_TRIGGERS_DISPOSABLE_SCHEMA = {
+    "name": "update_own_triggers",
+    "description": (
+        "Create or edit a DISPOSABLE wake-up trigger - every on_specific_chats entry, and the "
+        "on_unknown_sender/on_any_message objects, MUST set expires_at (ISO datetime) and/or "
+        "max_fires (int, decremented on each match) here, or the call is denied. Use this for a "
+        "one-off instruction like 'wake up on replies from this chat until you get an answer, then "
+        "stop' - set expires_at generously for an open-ended wait, or max_fires for a fixed number "
+        "of expected replies. A permanent trigger (neither field set) cannot be created from here."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "triggers": {
+                "type": "object",
+                "description": "Partial triggers object: {on_specific_chats: {chat_id: {keywords: [...], expires_at: '...', max_fires: N}}, on_unknown_sender: {enabled, expires_at, max_fires}, on_any_message: {enabled, expires_at, max_fires}}",
+            }
+        },
+        "required": ["triggers"],
+    },
+}
+
+_DELETE_OWN_TRIGGER_SCHEMA = {
+    "name": "delete_own_trigger",
+    "description": (
+        "Delete one of this agent's own wake-up triggers outright - the explicit way to say 'I'm "
+        "done, stop watching this' once a one-off task's real-world condition is confirmed met "
+        "(e.g. the owner got the final answer they were waiting for). Never guess that a condition "
+        "is met - only call this once it's actually confirmed in the conversation."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["on_specific_chats", "on_unknown_sender", "on_any_message"],
+                "description": "Which trigger type to delete.",
+            },
+            "chat_id": {
+                "type": "string",
+                "description": "Required when kind=on_specific_chats - the chat_id whose trigger entry to remove.",
+            },
+        },
+        "required": ["kind"],
+    },
+}
+
 # Config-mode tool schemas (ADR 0047 decision 6) - reachable only when
 # is_config_mode(agent, chat_id) is True (the hard gate, dispatch.py).
 CONFIG_TOOL_SCHEMAS = [
@@ -398,7 +448,7 @@ CONFIG_TOOL_SCHEMAS = [
     },
     {
         "name": "find_chat_by_name",
-        "description": "Find which of the owner's own chats a name/nickname they mentioned refers to (e.g. 'message Dana', 'what did mom say') - matches against chat titles (group names, or the other person's display name/username), NOT message content. Use this instead of resolve_user whenever the owner names someone informally rather than giving an exact phone number or username. Returns 0-5 candidate matches, best first. If it returns 0 matches, tell the owner you couldn't find a chat by that name and offer resolve_user (exact phone/username) as a fallback. If it returns exactly 1 match, proceed with that chat_id directly. If it returns 2+ matches, NEVER guess - list the candidate names back to the owner and ask which one they meant before doing anything with a chat_id.",
+        "description": "Find which of the owner's own chats a name/nickname they mentioned refers to (e.g. 'message Dana', 'what did mom say') - matches against chat titles (group names, or the other person's display name/username), NOT message content. Use this instead of resolve_user whenever the owner names someone informally rather than giving an exact phone number or username. Returns 0-5 candidate matches, best first. Names only - this is all you need to identify the recipient; never read the chat's message history to identify or confirm who someone is. If it returns 0 matches, tell the owner you couldn't find a chat by that name and offer resolve_user (exact phone/username) as a fallback. If it returns exactly 1 match, proceed with that chat_id directly. If it returns 2+ matches, NEVER guess - list the candidate names back to the owner and ask which one they meant before doing anything with a chat_id.",
         "parameters": {
             "type": "object",
             "properties": {"name": {"type": "string", "description": "The name/nickname the owner used, as they said it"}},
@@ -460,7 +510,7 @@ CONFIG_TOOL_SCHEMAS = [
     },
 ]
 
-# --- Builder sub-state schema sets (ADR 0049) --------------------------------
+# --- Builder sub-state schema sets (ADR 0049, restructured by ADR 0093) ---
 _RESUME_PAUSED_CHAT_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "resume_paused_chat")
 _RESOLVE_USER_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "resolve_user")
 _FIND_CHAT_BY_NAME_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "find_chat_by_name")
@@ -468,58 +518,84 @@ _SPAWN_EPHEMERAL_TASK_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] 
 # ADR 0065: every builder_state - including the two zero-action Help states -
 # needs a way to end a turn without posting a message.
 _NO_REPLY_NEEDED_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "no_reply_needed")
-# ADR 0078: config-mode-only, decided by the model mid-turn - needed in the
-# Supervisor's à-la-carte list the same way resolve_user/spawn_ephemeral_task
-# are (Builder already gets it via the full _BUILDER_TOOL_SCHEMAS union below).
+# ADR 0078: config-mode-only, decided by the model mid-turn.
 _SAVE_KNOWLEDGE_FROM_TEXT_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "save_knowledge_from_text")
-_BUILDER_TOOL_SCHEMAS = CONFIG_TOOL_SCHEMAS
+_SCHEDULE_ONE_OFF_TASK_SCHEMA = next(s for s in CONFIG_TOOL_SCHEMAS if s["name"] == "schedule_one_off_task")
+# ADR 0093: builder_agent's own persistent-configuration tools - the 7 ADR
+# 0047 config tools minus everything ADR 0093 moved to one_off_action
+# (schedule_one_off_task, resume_paused_chat, spawn_ephemeral_task,
+# save_knowledge_from_text).
+_BUILDER_CONFIG_TOOL_SCHEMAS = [
+    s
+    for s in CONFIG_TOOL_SCHEMAS
+    if s["name"]
+    in {
+        "set_agent_persona",
+        "update_agent_rules",
+        "set_agent_identity",
+        "set_trigger",
+        "get_agent_status",
+        "estimate_api_usage",
+    }
+]
 
-# ADR 0062: Supervisor also gets the full execution-mode toolset (TOOL_SCHEMAS),
-# plus resolve_user + spawn_ephemeral_task (otherwise config-mode-only), so the
-# owner can issue direct "act as me" commands (send/reply/create_chat/search/
-# etc targeting OTHER chats, or "message X and tell me what they say") from
-# their own agent chat without being routed into the Builder interview flow
-# first. See dispatch.py's matching handler union in builder_handoff.py.
+# ADR 0093 Phase 3: builder_state is now purely router-driven
+# (owner_chat_router.py::route_owner_turn runs before every config-mode
+# turn) - no state transitions itself anymore, so every transfer_to_* schema
+# is gone. ONE_OFF_ACTION still inherits the ADR 0062 execution-tool union
+# (direct "act as me" owner commands) plus every one-shot action tool
+# (resolve_user/find_chat_by_name/resume_paused_chat/spawn_ephemeral_task/
+# save_knowledge_from_text/schedule_one_off_task), plus (ADR 0095)
+# disposable-only trigger write access + delete_own_trigger.
 BUILDER_STATE_TOOL_SCHEMAS = {
-    BuilderState.SUPERVISOR: [
-        TRANSFER_TO_BUILDER_SCHEMA,
-        TRANSFER_TO_HELP_BUILDING_SCHEMA,
-        TRANSFER_TO_HELP_GENERAL_SCHEMA,
+    BuilderState.ONE_OFF_ACTION: [
         _RESUME_PAUSED_CHAT_SCHEMA,
         _RESOLVE_USER_SCHEMA,
         _FIND_CHAT_BY_NAME_SCHEMA,
         _SPAWN_EPHEMERAL_TASK_SCHEMA,
+        # ADR 0099: multi-turn goal-driven conversation + its cancel.
+        START_GOAL_TASK_SCHEMA,
+        CANCEL_GOAL_TASK_SCHEMA,
         _NO_REPLY_NEEDED_SCHEMA,
         _SAVE_KNOWLEDGE_FROM_TEXT_SCHEMA,
-        _UPDATE_OWN_TRIGGERS_SCHEMA,
-        *TOOL_SCHEMAS,
+        _SCHEDULE_ONE_OFF_TASK_SCHEMA,
+        # ADR 0095: disposable-trigger write access + explicit deletion -
+        # fixes a pre-existing drift bug (ONE_OFF_ACTION_PROMPT already
+        # referenced update_own_triggers, but it was never actually wired
+        # into this schema list).
+        _UPDATE_OWN_TRIGGERS_DISPOSABLE_SCHEMA,
+        _DELETE_OWN_TRIGGER_SCHEMA,
+        # pause_and_escalate always freezes the *triggering* chat - here that
+        # would be the owner's own agent chat, so it is excluded (ADR 0098).
+        *[s for s in TOOL_SCHEMAS if s["name"] != "pause_and_escalate"],
     ],
+    # ADR 0093: zero-action state - the router lands here only when it can't
+    # confidently tell one_off_action and builder_agent apart. No tool but
+    # no_reply_needed; the model must ask one disambiguating question in
+    # plain text instead (see CLARIFY_PROMPT). The router alone decides
+    # where the owner's next message goes - clarify never transitions itself.
+    BuilderState.CLARIFY: [
+        _NO_REPLY_NEEDED_SCHEMA,
+    ],
+    # ADR 0093: the ADR 0062 execution-tool union is removed entirely -
+    # builder_agent now owns persistent configuration only.
     BuilderState.BUILDER: [
-        # ADR 0062-style union: the Builder is talking to its own supervised
-        # owner too, so it also gets the full execution-mode toolset - see
-        # builder_handoff.py's matching handler union.
-        *TOOL_SCHEMAS,
-        *_BUILDER_TOOL_SCHEMAS,
+        *_BUILDER_CONFIG_TOOL_SCHEMAS,
         _UPDATE_OWN_TRIGGERS_SCHEMA,
-        TRANSFER_TO_HELP_BUILDING_SCHEMA,
-        TRANSFER_TO_HELP_GENERAL_SCHEMA,
-        TRANSFER_TO_SUPERVISOR_SCHEMA,
+        _DELETE_OWN_TRIGGER_SCHEMA,
+        _RESOLVE_USER_SCHEMA,
+        _FIND_CHAT_BY_NAME_SCHEMA,
+        _NO_REPLY_NEEDED_SCHEMA,
         FINISH_BUILDING_AGENT_SCHEMA,
     ],
-    # ADR 0064: two disjoint Help personas, replacing the single help_agent
-    # state. Neither gathers/saves config - only transfer tools, same
-    # zero-action posture the original Help state had. Each can reach the
-    # other directly, or fall back to the Supervisor when unsure - the
-    # Supervisor is the one state that always knows where to route next.
+    # ADR 0064/0093: two disjoint Help personas. Neither gathers/saves
+    # config, and neither has any tool but no_reply_needed - purely
+    # zero-action, the router alone decides where the owner's next message
+    # goes.
     BuilderState.HELP_BUILDING: [
-        TRANSFER_TO_BUILDER_SCHEMA,
-        TRANSFER_TO_HELP_GENERAL_SCHEMA,
-        TRANSFER_TO_SUPERVISOR_SCHEMA,
         _NO_REPLY_NEEDED_SCHEMA,
     ],
     BuilderState.HELP_GENERAL: [
-        TRANSFER_TO_HELP_BUILDING_SCHEMA,
-        TRANSFER_TO_SUPERVISOR_SCHEMA,
         _NO_REPLY_NEEDED_SCHEMA,
     ],
 }

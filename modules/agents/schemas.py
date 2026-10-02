@@ -42,7 +42,7 @@ class AgentTimeWindowIn(BaseModel):
 
 
 class AgentSpecificChatOut(BaseModel):
-    keywords: List[str]
+    keywords: List[str] = []
 
 
 class AgentSpecificChatIn(BaseModel):
@@ -122,11 +122,11 @@ class AgentOut(BaseModel):
     # Chats the agent paused itself in via pause_and_escalate (ADR 0047
     # decision 5) - human-only resume via POST /agents/me/resume-chat/{id}.
     paused_chat_ids: List[IdStr] = []
-    # Sub-state inside the config chat (ADR 0049): "supervisor" |
-    # "builder_agent" | "help_general" | "help_agent_building" (ADR 0064).
-    # Read-only here - only the agent's own transfer_to_builder/
-    # transfer_to_help_general/transfer_to_help_building/
-    # finish_building_agent tools change it, never PATCH /agents/me.
+    # Sub-state inside the config chat (ADR 0049, restructured by ADR 0093):
+    # "one_off_action" | "clarify" | "builder_agent" | "help_general" |
+    # "help_agent_building" (ADR 0064).
+    # Read-only here - only owner_chat_router.py::route_owner_turn (ADR 0093
+    # Phase 3) changes it, never PATCH /agents/me, never a model-called tool.
     builder_state: str
     # Owner-chosen display name + AI-disclosure toggle (ADR 0081). Read-only
     # here - only the set_agent_identity config tool writes them.

@@ -14,11 +14,13 @@ already work):
   cross.
 - chat_id=None (schedule-fired turn) is always execution mode, never config
   mode, even if some other check might treat "no chat" as a wildcard.
-- Each of the three builder_state sub-modes (supervisor/builder_agent/
-  help_agent) gets its own disjoint tool allowlist; a tool valid in one
-  builder_state must be rejected in the others (e.g. send_message, an
-  execution-only tool, must never run in any config-mode state; a builder
-  config tool must never run in supervisor/help_agent state).
+- Each of the five builder_state sub-modes (one_off_action/clarify/
+  builder_agent/help_general/help_agent_building, ADR 0093) gets its own
+  disjoint tool allowlist; a tool valid in one builder_state must be
+  rejected in the others (e.g. send_message, an execution-only tool, must
+  never run in any config-mode state except one_off_action, which
+  deliberately unions in the full execution toolset per ADR 0062; a builder
+  config tool must never run in one_off_action/clarify/either help state).
 - execute_tool_call re-derives the allowlist independently of whatever
   schema list was actually sent to Gemini (defense in depth) - so calling it
   directly with a tool_name outside the current mode's allowlist must be
@@ -73,13 +75,14 @@ OWNER_AGENT_CHAT_ID = 555
 OTHER_CHAT_ID = 999
 
 
-def _agent(builder_state: str = BuilderState.SUPERVISOR.value) -> SimpleNamespace:
+def _agent(builder_state: str = BuilderState.ONE_OFF_ACTION.value) -> SimpleNamespace:
     return SimpleNamespace(
         id=1,
         owner_user_id=42,
         owner_agent_chat_id=OWNER_AGENT_CHAT_ID,
         builder_state=builder_state,
         restrictions={},
+        triggers={},
     )
 
 
@@ -159,7 +162,13 @@ async def test_get_tool_schemas_returns_execution_schemas_when_chat_id_none():
 
 @pytest.mark.parametrize(
     "builder_state",
-    [BuilderState.SUPERVISOR, BuilderState.BUILDER, BuilderState.HELP_GENERAL, BuilderState.HELP_BUILDING],
+    [
+        BuilderState.ONE_OFF_ACTION,
+        BuilderState.CLARIFY,
+        BuilderState.BUILDER,
+        BuilderState.HELP_GENERAL,
+        BuilderState.HELP_BUILDING,
+    ],
 )
 async def test_get_tool_schemas_returns_the_matching_builder_state_schema_set(builder_state):
     agent = _agent(builder_state=builder_state.value)
@@ -167,19 +176,20 @@ async def test_get_tool_schemas_returns_the_matching_builder_state_schema_set(bu
 
 
 async def test_get_tool_schemas_builder_state_sets_are_disjoint_from_execution_schemas():
-    # ADR 0062: Supervisor and Builder are the deliberate exceptions - both
-    # talk to the agent's own supervised owner, so both get the full
-    # execution-mode toolset unioned in (Supervisor so the owner can issue
-    # direct "act as me" commands from their idle chat; Builder so it can do
-    # the same mid-interview without transferring out first). Help keeps the
-    # original ADR 0047 invariant of zero overlap with execution-mode schemas
-    # - ADR 0092 dropped ADR 0084's knowledge-base-tool carve-out too, so
-    # there is no exception left for Help states.
+    # ADR 0093: one_off_action (ex-supervisor) is now the sole deliberate
+    # exception - it talks to the agent's own supervised owner, so it gets
+    # the full execution-mode toolset unioned in (direct "act as me" commands
+    # from the owner's idle chat). builder_agent lost the ADR 0062 union
+    # entirely under ADR 0093 - it owns persistent configuration only. Both
+    # Help states and the new clarify state keep the original ADR 0047
+    # invariant of zero overlap with execution-mode schemas.
     execution_names = {schema["name"] for schema in TOOL_SCHEMAS}
     for builder_state, schemas in BUILDER_STATE_TOOL_SCHEMAS.items():
         config_names = {schema["name"] for schema in schemas}
-        if builder_state in (BuilderState.SUPERVISOR, BuilderState.BUILDER):
-            assert execution_names <= config_names, (
+        if builder_state is BuilderState.ONE_OFF_ACTION:
+            # ADR 0098: pause_and_escalate is the one execution tool withheld.
+            assert "pause_and_escalate" not in config_names
+            assert (execution_names - {"pause_and_escalate"}) <= config_names, (
                 f"{builder_state} must expose the full execution-mode toolset (ADR 0062)"
             )
         else:
@@ -278,13 +288,16 @@ async def test_config_mode_rejects_an_execution_only_tool_in_a_state_without_it(
 @pytest.mark.parametrize(
     "tool_name,builder_state",
     [
-        ("transfer_to_builder", BuilderState.SUPERVISOR),
-        ("transfer_to_help_building", BuilderState.SUPERVISOR),
-        ("transfer_to_help_general", BuilderState.SUPERVISOR),
-        ("resume_paused_chat", BuilderState.SUPERVISOR),
+        ("resume_paused_chat", BuilderState.ONE_OFF_ACTION),
+        ("schedule_one_off_task", BuilderState.ONE_OFF_ACTION),
+        ("spawn_ephemeral_task", BuilderState.ONE_OFF_ACTION),
+        ("save_knowledge_from_text", BuilderState.ONE_OFF_ACTION),
+        # ADR 0095
+        ("update_own_triggers", BuilderState.ONE_OFF_ACTION),
+        ("delete_own_trigger", BuilderState.ONE_OFF_ACTION),
     ],
 )
-async def test_supervisor_state_allows_its_own_tools(monkeypatch, fake_session, _mock_log_call, tool_name, builder_state):
+async def test_one_off_action_state_allows_its_own_tools(monkeypatch, fake_session, _mock_log_call, tool_name, builder_state):
     async def _fake_handler(session, agent, arguments):
         return {"ok": True}
 
@@ -298,13 +311,36 @@ async def test_supervisor_state_allows_its_own_tools(monkeypatch, fake_session, 
 
 
 @pytest.mark.parametrize("tool_name", ["set_agent_persona", "update_agent_rules", "finish_building_agent"])
-async def test_supervisor_state_rejects_builder_only_tools(fake_session, _mock_log_call, tool_name):
-    agent = _agent(builder_state=BuilderState.SUPERVISOR.value)
+async def test_one_off_action_state_rejects_builder_only_tools(fake_session, _mock_log_call, tool_name):
+    agent = _agent(builder_state=BuilderState.ONE_OFF_ACTION.value)
     result = await execute_tool_call(fake_session, agent, tool_name, {}, chat_id=OWNER_AGENT_CHAT_ID)
 
     assert "error" in result
     assert _mock_log_call[-1]["allowed"] is False
-    assert "config/supervisor" in _mock_log_call[-1]["denial_reason"]
+    assert "config/one_off_action" in _mock_log_call[-1]["denial_reason"]
+
+
+async def test_clarify_state_allows_only_no_reply_needed(monkeypatch, fake_session, _mock_log_call):
+    async def _fake_handler(session, agent, arguments):
+        return {"ok": True}
+
+    monkeypatch.setitem(builder_handoff_module.BUILDER_STATE_HANDLERS[BuilderState.CLARIFY], "no_reply_needed", _fake_handler)
+
+    agent = _agent(builder_state=BuilderState.CLARIFY.value)
+    result = await execute_tool_call(fake_session, agent, "no_reply_needed", {}, chat_id=OWNER_AGENT_CHAT_ID)
+
+    assert result == {"ok": True}
+    assert _mock_log_call[-1]["allowed"] is True
+
+
+@pytest.mark.parametrize("tool_name", ["send_message", "set_agent_persona", "resume_paused_chat"])
+async def test_clarify_state_rejects_everything_else(fake_session, _mock_log_call, tool_name):
+    agent = _agent(builder_state=BuilderState.CLARIFY.value)
+    result = await execute_tool_call(fake_session, agent, tool_name, {}, chat_id=OWNER_AGENT_CHAT_ID)
+
+    assert "error" in result
+    assert _mock_log_call[-1]["allowed"] is False
+    assert "config/clarify" in _mock_log_call[-1]["denial_reason"]
 
 
 @pytest.mark.parametrize(
@@ -312,15 +348,15 @@ async def test_supervisor_state_rejects_builder_only_tools(fake_session, _mock_l
     [
         "set_agent_persona",
         "update_agent_rules",
+        "set_agent_identity",
         "set_trigger",
         "get_agent_status",
         "estimate_api_usage",
-        "schedule_one_off_task",
+        "update_own_triggers",
+        "delete_own_trigger",
         "resolve_user",
-        "resume_paused_chat",
-        "transfer_to_help_building",
-        "transfer_to_help_general",
-        "transfer_to_supervisor",
+        "find_chat_by_name",
+        "no_reply_needed",
         "finish_building_agent",
     ],
 )
@@ -337,36 +373,18 @@ async def test_builder_state_allows_every_builder_tool(monkeypatch, fake_session
     assert _mock_log_call[-1]["allowed"] is True
 
 
-async def test_builder_state_rejects_transfer_to_builder_it_does_not_have(fake_session, _mock_log_call):
-    """transfer_to_builder only makes sense from supervisor/help_agent, not
-    from inside the builder itself - the Builder's own schema set
-    deliberately omits it."""
+@pytest.mark.parametrize("tool_name", ["resume_paused_chat", "spawn_ephemeral_task", "save_knowledge_from_text", "schedule_one_off_task", "send_message"])
+async def test_builder_state_rejects_tools_moved_to_one_off_action_by_adr_0093(fake_session, _mock_log_call, tool_name):
     agent = _agent(builder_state=BuilderState.BUILDER.value)
-    result = await execute_tool_call(fake_session, agent, "transfer_to_builder", {}, chat_id=OWNER_AGENT_CHAT_ID)
+    result = await execute_tool_call(fake_session, agent, tool_name, {}, chat_id=OWNER_AGENT_CHAT_ID)
 
     assert "error" in result
     assert _mock_log_call[-1]["allowed"] is False
 
 
-async def test_help_building_state_allows_transfer_to_builder(monkeypatch, fake_session, _mock_log_call):
-    async def _fake_handler(session, agent, arguments):
-        return {"status": "transferred", "to": "builder_agent"}
-
-    monkeypatch.setitem(
-        builder_handoff_module.BUILDER_STATE_HANDLERS[BuilderState.HELP_BUILDING], "transfer_to_builder", _fake_handler
-    )
-
-    agent = _agent(builder_state=BuilderState.HELP_BUILDING.value)
-    result = await execute_tool_call(fake_session, agent, "transfer_to_builder", {}, chat_id=OWNER_AGENT_CHAT_ID)
-
-    assert result == {"status": "transferred", "to": "builder_agent"}
-    assert _mock_log_call[-1]["allowed"] is True
-
-
 @pytest.mark.parametrize(
     "tool_name",
     [
-        "transfer_to_builder",
         "resume_paused_chat",
         "set_agent_persona",
         "update_agent_rules",
@@ -398,6 +416,24 @@ async def test_help_building_state_rejects_tools_it_does_not_have(fake_session, 
     assert "error" in result
     assert _mock_log_call[-1]["allowed"] is False
     assert "config/help_agent_building" in _mock_log_call[-1]["denial_reason"]
+
+
+async def test_no_transfer_tool_is_ever_allowed_anywhere(fake_session, _mock_log_call):
+    """ADR 0093 Phase 3: every transfer_to_* tool was deleted - calling one
+    by name must be denied as an unknown tool in every builder_state,
+    including states that used to have it."""
+    for builder_state in BuilderState:
+        agent = _agent(builder_state=builder_state.value)
+        for tool_name in (
+            "transfer_to_builder",
+            "transfer_to_help_building",
+            "transfer_to_help_general",
+            "transfer_to_one_off_action",
+            "transfer_to_supervisor",
+        ):
+            result = await execute_tool_call(fake_session, agent, tool_name, {}, chat_id=OWNER_AGENT_CHAT_ID)
+            assert "error" in result
+            assert _mock_log_call[-1]["allowed"] is False
 
 
 async def test_config_mode_denial_reason_reflects_current_builder_state(fake_session, _mock_log_call):

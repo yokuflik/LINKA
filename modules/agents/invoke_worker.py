@@ -43,8 +43,18 @@ from config import settings
 from infra.db.connection import session_scope
 from infra.redis.client import redis_client
 from modules.agents.builder_flow import BuilderState, get_builder_state_prompt
-from modules.agents.crud import get_agent_by_id, get_agents_with_ephemeral_tasks
+from modules.agents.clarify import generate_clarify_question
+from modules.agents.crud import get_agent_by_id, get_agents_with_ephemeral_tasks, update_agent_config
 from modules.agents.ephemeral_tasks import fire_summary_and_complete, sweep_expired_task_ids
+from modules.agents.goal_tasks import (
+    CONVERSE_MODE,
+    TERMINAL_TOOL_NAMES,
+    begin_goal_turn,
+    build_goal_prompt,
+    close_goal_task,
+    find_goal_task_for_chat,
+    record_turn_outcome,
+)
 from modules.agents.invoke_debounce import (
     acquire_turn_lock,
     arm_debounce,
@@ -73,17 +83,21 @@ from modules.agents.gemini_client import (
     function_response_part,
 )
 from modules.agents.invoke_turn_helpers import (
+    _ROUTED_STATE_THINKING_LABELS,
     _TOOL_THINKING_LABELS,
     _TurnSuperseded,
     _build_initial_contents,
     _build_knowledge_contents,
     _build_schedule_contents,
     _check_gemini_call_budget,
+    _format_history_transcript,
     _generate_turn_or_supersede,
     _pending_confirmation_note,
     _post_config_reply,
 )
 from modules.agents.judge import evaluate_message, local_redirect_text
+from modules.agents.outcome_judge import evaluate_tool_outcome, notify_outcome_mismatch
+from modules.agents.owner_chat_router import route_owner_turn
 from modules.agents.tools.common import escalate_chat
 from modules.agents.personas import get_persona_system_prompt
 from modules.agents.schedule import due_members, remove_due_member, reschedule_recurring
@@ -93,9 +107,61 @@ from modules.agents.tools import execute_tool_call, get_tool_schemas_for_chat, i
 from modules.messaging import service as message_service
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
 from modules.messaging.crud import get_message_by_id
-from realtime.fanout.base_worker import BaseStreamConsumer
+from modules.messaging.read_api import get_message_history
+from realtime.fanout.base_worker import BaseStreamConsumer, touch_app_liveness
 
 logger = logging.getLogger(__name__)
+
+
+async def _check_outcome_mismatch(
+    session: AsyncSession,
+    agent,
+    chat_id: int | None,
+    *,
+    goal_text: str,
+    tool_name: str | None,
+    tool_error: str | None,
+) -> None:
+    """ADR 0096: runs only at a turn's actual end points, only when the turn
+    is ending right on top of an unresolved tool failure. No-ops when there
+    is nothing to check (no failure, or no chat to notify into - a
+    schedule-fired turn with chat_id=None has no owner_agent_chat_id
+    concept distinct from chat_id itself, but agent.owner_agent_chat_id is
+    always set regardless, so this only needs tool_name/tool_error to be
+    present). Never raises - a broken notify path must not crash the turn
+    that already successfully ended."""
+    if tool_name is None or tool_error is None:
+        return
+    try:
+        verdict = await evaluate_tool_outcome(
+            session, agent, chat_id if chat_id is not None else agent.owner_agent_chat_id,
+            goal_text=goal_text, tool_name=tool_name, tool_error=tool_error,
+        )
+        await session.commit()
+        if verdict.is_mismatch:
+            await notify_outcome_mismatch(
+                session, agent, goal_text=goal_text, tool_name=tool_name, tool_error=tool_error,
+            )
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "agent_worker: outcome-mismatch check failed for agent %s chat %s tool %s",
+            agent.id, chat_id, tool_name,
+        )
+
+
+def _format_router_recent_turns(history, exclude_message_id: int) -> list[str]:
+    """Renders an owner-agent chat history window into the recent_turns list
+    route_owner_turn expects - reuses _format_history_transcript's per-line
+    'Agent: .../Customer: ...' rendering (ADR 0093's router needs the same
+    short, cheap context, not a second formatting convention), dropping the
+    triggering message itself (passed to route_owner_turn separately as
+    new_message) and returning one transcript line per list entry rather
+    than a single joined block, since RouterDecision's recent_turns is
+    already a list."""
+    filtered = [m for m in history if m.id != exclude_message_id]
+    transcript = _format_history_transcript(filtered)
+    return transcript.split("\n") if transcript else []
 
 
 async def _run_turn(
@@ -186,7 +252,8 @@ async def _run_turn(
                 # enforced downstream by the receipt_log worker.
                 await message_service.mark_as_read(session, agent.owner_user_id, chat_id, message_id)
                 verdict = await evaluate_message(
-                    session, agent, chat_id, message_id, message.content if message else None, message
+                    session, agent, chat_id, message_id, message.content if message else None, message,
+                    goal_task_active=find_goal_task_for_chat(agent.triggers, chat_id) is not None,
                 )
                 await session.commit()
                 if not verdict.is_approved:
@@ -239,12 +306,92 @@ async def _run_turn(
                     ended_status = "done"
                     return
 
+            # ADR 0093 Phase 3: the jev router is the sole way builder_state
+            # changes now - runs once per config-mode owner-chat turn (a real
+            # message, not a schedule/knowledge-notice turn, which have no
+            # owner utterance to classify and keep whatever builder_state is
+            # already set), before deciding CLARIFY vs. the normal
+            # round-trip loop below. Fail-frozen by construction:
+            # route_owner_turn always returns *some* RouterDecision (the
+            # agent's current builder_state, unchanged, on any internal
+            # failure) - so this unconditionally persists whatever it
+            # returns rather than branching on success/failure itself.
+            if config_mode_turn and message_id is not None:
+                router_message = await get_message_by_id(session, chat_id, message_id)
+                history = await get_message_history(
+                    session, agent.owner_user_id, chat_id, limit=settings.AGENT_ROUTER_CONTEXT_TURNS
+                )
+                recent_turns = _format_router_recent_turns(history, exclude_message_id=message_id)
+                decision = await route_owner_turn(
+                    session,
+                    agent,
+                    chat_id,
+                    recent_turns,
+                    router_message.content if router_message else "",
+                )
+                if decision.state != BuilderState(agent.builder_state):
+                    agent = await update_agent_config(session, agent, {"builder_state": decision.state.value})
+                await session.commit()
+                await _publish_agent_thinking(
+                    owner_user_id,
+                    "routed",
+                    _ROUTED_STATE_THINKING_LABELS.get(agent.builder_state, "Thinking…"),
+                )
+
+            # ADR 0093: BuilderState.CLARIFY is a deliberate exception to the
+            # normal per-round-trip Gemini turn every other builder_state
+            # uses - a dedicated minimal call (no chat history, no tool
+            # schemas, its own cheap model tier), mirroring judge.py's
+            # redirect-text call.
+            if config_mode_turn and message_id is not None and BuilderState(agent.builder_state) == BuilderState.CLARIFY:
+                clarify_message = await get_message_by_id(session, chat_id, message_id)
+                question = await generate_clarify_question(
+                    agent, clarify_message.content if clarify_message else ""
+                )
+                await _post_config_reply(session, agent, chat_id, question)
+                await session.commit()
+                ended_status = "done"
+                return
+
             if knowledge_instruction is not None:
                 contents = await _build_knowledge_contents(session, agent, knowledge_instruction)
+                goal_text = knowledge_instruction
             elif schedule_instruction is not None:
                 contents = await _build_schedule_contents(session, agent, schedule_instruction, chat_id)
+                goal_text = schedule_instruction
             else:
                 contents = await _build_initial_contents(session, agent, chat_id)
+                # ADR 0096: the outcome-mismatch judge needs the triggering
+                # message's own text, not the full history transcript
+                # _build_initial_contents seeds the turn with - re-fetched
+                # here rather than threaded through that helper, since only
+                # this one caller (the outcome check at the end of the turn)
+                # needs it standalone.
+                goal_text = ""
+                if message_id is not None:
+                    goal_message = await get_message_by_id(session, chat_id, message_id)
+                    goal_text = (goal_message.content if goal_message else "") or ""
+
+            # Last tool result the turn produced, tracked past the loop body
+            # so the two turn-ending branches below can tell whether the
+            # turn is ending right on top of an unresolved failure (ADR
+            # 0096) - never inspected mid-loop, only at those two exit
+            # points, so a failure a later round-trip recovers from never
+            # reaches it.
+            last_tool_error: str | None = None
+            last_tool_name: str | None = None
+
+            # ADR 0099: an active goal task targeting this chat - counts the
+            # turn, and force-closes if its turn budget was already spent.
+            goal_turn = None
+            goal_acted = False
+            if chat_id is not None and not config_mode_turn:
+                goal_turn = await begin_goal_turn(session, agent, chat_id)
+                if goal_turn is not None:
+                    await session.commit()
+                    if goal_turn.closed:
+                        ended_status = "done"
+                        return
 
             # Explicit flag rather than `round_trip == 0` - the Gemini call
             # budget retry below can advance round_trip via `continue` while
@@ -352,23 +499,21 @@ async def _run_turn(
                         return
 
                 # Re-derived every round-trip, not just once before the loop:
-                # a config-mode handoff tool (transfer_to_builder/
-                # transfer_to_help_building/transfer_to_help_general/
-                # finish_building_agent, ADR 0049/0064) flips
-                # agent.builder_state mid-turn, and without this the very next
-                # Gemini call would still run under the OLD state's prompt and
-                # (more importantly) its OLD, now-wrong tool_schemas - unable
-                # to actually act as the new state. Refreshing here means a
-                # handoff takes effect immediately within the same turn, so
-                # e.g. Supervisor->Builder responds to the user's original
-                # request ("I want an agent that sells iPhones") in the same
-                # reply instead of a generic "handed off" line, then going
-                # silent until the user's next message. ADR 0047 decisions
-                # 3+4 are otherwise unchanged: tool set is still decided
+                # agent.builder_state is now decided once by
+                # owner_chat_router.py::route_owner_turn before this loop
+                # starts (ADR 0093 Phase 3) and no tool changes it mid-turn
+                # anymore, but this still reads it fresh each round-trip
+                # rather than caching a local copy, matching the same
+                # "chat_id + current DB state decide the tool set" discipline
+                # ADR 0047 decisions 3+4 established - tool set is decided
                 # purely by chat_id (+ builder_state for config mode), never
                 # by active_skill/system_prompt/anything model-controlled.
                 tool_schemas = get_tool_schemas_for_chat(agent, chat_id)
-                if scoped_system_prompt:
+                if goal_turn is not None:
+                    # ADR 0099: goal-task turns run under a per-turn goal prompt
+                    # (goal / done_when / turns left) - never the persona.
+                    system_prompt = build_goal_prompt(goal_turn.entry)
+                elif scoped_system_prompt:
                     # ADR 0061: a scoped one-off/ephemeral turn runs under its
                     # own short-lived prompt instead of the agent's persistent
                     # persona/system_prompt/builder_state prompt - deliberately
@@ -523,6 +668,15 @@ async def _run_turn(
                         else:
                             await _post_config_reply(session, agent, chat_id, text)
                         await session.commit()
+                    if goal_turn is not None:
+                        # ADR 0099: a goal turn ending without a terminal call -
+                        # enforces the idle-turn and last-turn caps.
+                        await record_turn_outcome(session, agent, goal_turn.task_id, acted=goal_acted)
+                        await session.commit()
+                    await _check_outcome_mismatch(
+                        session, agent, chat_id,
+                        goal_text=goal_text, tool_name=last_tool_name, tool_error=last_tool_error,
+                    )
                     ended_status = "done"
                     return
 
@@ -559,6 +713,17 @@ async def _run_turn(
                         _ROUND_TRIP_CAP_NOTICE,
                     )
                     await session.commit()
+                    if goal_turn is not None:
+                        await record_turn_outcome(session, agent, goal_turn.task_id, acted=goal_acted)
+                        await session.commit()
+                    # ADR 0096: the cap itself is the failure here - the call
+                    # that hit it never got to run, regardless of whether the
+                    # last *dispatched* tool succeeded.
+                    await _check_outcome_mismatch(
+                        session, agent, chat_id,
+                        goal_text=goal_text, tool_name=call["name"],
+                        tool_error="tool round-trip limit reached for this turn",
+                    )
                     ended_status = "done"
                     return
 
@@ -593,6 +758,25 @@ async def _run_turn(
                     )
                 tool_result = await execute_tool_call(session, agent, call["name"], call["args"], chat_id=chat_id)
                 await session.commit()
+                # ADR 0096: remember only the LAST tool outcome - a success
+                # here clears any earlier failure, since the turn is no
+                # longer "ending on top of" it. Checked only at the two
+                # turn-ending branches below, never mid-loop.
+                if isinstance(tool_result, dict) and "error" in tool_result:
+                    last_tool_error = str(tool_result["error"])
+                    last_tool_name = call["name"]
+                else:
+                    last_tool_error = None
+                    last_tool_name = None
+                if goal_turn is not None:
+                    # ADR 0099: a successful terminal tool closed the task (and
+                    # queued the owner summary) - the turn is over.
+                    tool_ok = not (isinstance(tool_result, dict) and "error" in tool_result)
+                    if tool_ok and call["name"] in TERMINAL_TOOL_NAMES:
+                        ended_status = "done"
+                        return
+                    if tool_ok and call["name"] in _MESSAGE_SENDING_TOOL_NAMES:
+                        goal_acted = True
                 if call["name"] == "no_reply_needed":
                     # ADR 0065: the model explicitly chose to end this
                     # config-mode turn without posting anything - stop right
@@ -678,122 +862,210 @@ class AgentInvokeConsumer(BaseStreamConsumer):
     def stream_key_for_shard(self, shard: int) -> str:
         return settings.AGENT_INVOKE_STREAM_KEY
 
+    async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:
+        """ADR 0094: overrides BaseStreamConsumer.run_forever entirely - the
+        default _run_shard loop `await`s drain_once (one xreadgroup batch,
+        fully processed) before looping back to read again, so even a
+        gather()-based concurrent _drain_shard override still can't pick up
+        an entry that lands in Redis *after* the current batch was read but
+        *before* the current batch finishes (found via direct testing: two
+        messages ~7s apart landed in separate xreadgroup batches and the
+        second never started until the first's full ~90s-capped turn ended -
+        the read loop itself was the thing blocking, not the semaphore).
+
+        Fix: decouple "read entries from the stream" from "wait for them to
+        finish processing" entirely. One tight pump loop keeps calling
+        xreadgroup/XAUTOCLAIM and fire-and-forget dispatches a task per
+        entry; a separate bounded set of in-flight tasks (capped at
+        AGENT_WORKER_CONCURRENCY via self._semaphore, acquired inside each
+        task before it does any real work) is all that limits how many
+        turns run at once - the pump itself never awaits a turn's own
+        completion before reading the next batch."""
+        try:
+            await self.ensure_group()
+        except Exception:
+            logger.exception("%s: ensure_group failed, will retry", self.name)
+
+        stop_event = stop_event or asyncio.Event()
+        in_flight: set[asyncio.Task] = set()
+        stream_key = settings.AGENT_INVOKE_STREAM_KEY
+
+        async def _process_one(entry_id, fields: dict) -> None:
+            async with self._semaphore:
+                async with session_scope() as entry_session:
+                    try:
+                        await self.process_entry(entry_session, fields)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception(
+                            "%s: entry %s failed transiently, will be reclaimed",
+                            self.name, entry_id,
+                        )
+                        await entry_session.rollback()
+                        return
+            await self._ack_with_retry(stream_key, [entry_id])
+
+        try:
+            while not stop_event.is_set():
+                try:
+                    response = await redis_client.xreadgroup(
+                        self.group,
+                        self.consumer_name,
+                        {stream_key: ">"},
+                        count=self.default_batch,
+                        block=self.block_ms or None,
+                    )
+                    entries: list = list(response[0][1]) if response else []
+
+                    if len(entries) < self.default_batch:
+                        entries.extend(
+                            await self._claim_stale(stream_key, self.default_batch - len(entries))
+                        )
+
+                    for entry_id, fields in entries:
+                        task = asyncio.create_task(_process_one(entry_id, fields))
+                        in_flight.add(task)
+                        task.add_done_callback(in_flight.discard)
+
+                    await touch_app_liveness()
+                    if not entries:
+                        await asyncio.sleep(0)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("%s: drain iteration failed", self.name)
+                    await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            for task in in_flight:
+                task.cancel()
+            for task in list(in_flight):
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            raise
+
+        if in_flight:
+            await asyncio.gather(*in_flight, return_exceptions=True)
+
     async def process_entry(self, session: AsyncSession, fields: dict) -> None:
+        # ADR 0094: concurrency is now bounded by _drain_shard's own
+        # semaphore acquisition (one per dispatched entry, around this whole
+        # call) rather than here - process_entry itself no longer touches
+        # self._semaphore.
         agent_id = int(fields["agent_id"])
         kind = fields.get("kind", "message")
 
-        async with self._semaphore:
-            agent = await get_agent_by_id(session, agent_id)
-            if agent is None or not agent.is_enabled:
-                logger.info("agent_worker: skipping disabled/missing agent %s", agent_id)
+        agent = await get_agent_by_id(session, agent_id)
+        if agent is None or not agent.is_enabled:
+            logger.info("agent_worker: skipping disabled/missing agent %s", agent_id)
+            return
+
+        if not await has_budget_remaining(agent_id):
+            logger.info("agent_worker: agent %s over daily time budget, skipping", agent_id)
+            await _notify_daily_budget_exhausted(session, agent)
+            return
+
+        if kind == "schedule":
+            # ADR 0046 decision 3: re-load the live entry (defense in
+            # depth for the enqueue-to-dequeue window, same pattern as
+            # the is_enabled re-check above) - an edited/removed/
+            # disabled entry since the poller enqueued it is a no-op.
+            schedule_id = fields["schedule_id"]
+            entry = next(
+                (e for e in agent.triggers.get("on_schedule", []) if e.get("id") == schedule_id),
+                None,
+            )
+            if entry is None or not entry.get("enabled", True):
+                logger.info("agent_worker: schedule entry %s gone/disabled, skipping", schedule_id)
                 return
+            chat_id = int(entry["chat_id"]) if entry.get("chat_id") else None
+            coro = _run_turn(
+                agent_id,
+                chat_id,
+                schedule_instruction=entry["instruction"],
+                scoped_system_prompt=entry.get("scoped_system_prompt"),
+            )
+            log_target = f"schedule {schedule_id}"
+        elif kind == "knowledge":
+            # ADR 0085: always targets the owner-agent chat - config-mode
+            # by construction (is_config_mode), no chat history to seed
+            # from, just the caller-built instruction string.
+            chat_id = int(fields["chat_id"])
+            coro = _run_turn(agent_id, chat_id, knowledge_instruction=fields["instruction"])
+            log_target = f"knowledge notice, chat {chat_id}"
+        else:
+            chat_id = int(fields["chat_id"])
+            message_id = int(fields["message_id"])
+            coro = _run_turn(agent_id, chat_id, message_id)
+            log_target = f"chat {chat_id}"
 
-            if not await has_budget_remaining(agent_id):
-                logger.info("agent_worker: agent %s over daily time budget, skipping", agent_id)
-                await _notify_daily_budget_exhausted(session, agent)
-                return
+        # Per-(agent_id, chat_id) turn mutex (ADR 0063): a debounced fire
+        # landing while a previous turn for the same pair is still
+        # running (up to AGENT_TURN_TIMEOUT_SECONDS) must not start a
+        # second concurrent turn - re-arm the debounce timer instead of
+        # dropping the message, so it retries right after the current
+        # turn finishes. chat_id=None (schedule-fired, no chat target)
+        # never contends with anything.
+        if not await acquire_turn_lock(agent_id, chat_id):
+            logger.info(
+                "agent_worker: turn already running for agent %s %s, marking superseded "
+                "and re-arming debounce",
+                agent_id, log_target,
+            )
+            if chat_id is not None:
+                # ADR 00732: the in-flight turn for this pair checks this
+                # flag and ends without delivering its (now-stale) reply,
+                # instead of letting it reach the chat before the new
+                # message gets its own turn.
+                await mark_superseded(agent_id, chat_id)
+                await arm_debounce(agent_id, chat_id)
+            return
 
-            if kind == "schedule":
-                # ADR 0046 decision 3: re-load the live entry (defense in
-                # depth for the enqueue-to-dequeue window, same pattern as
-                # the is_enabled re-check above) - an edited/removed/
-                # disabled entry since the poller enqueued it is a no-op.
-                schedule_id = fields["schedule_id"]
-                entry = next(
-                    (e for e in agent.triggers.get("on_schedule", []) if e.get("id") == schedule_id),
-                    None,
-                )
-                if entry is None or not entry.get("enabled", True):
-                    logger.info("agent_worker: schedule entry %s gone/disabled, skipping", schedule_id)
-                    return
-                chat_id = int(entry["chat_id"]) if entry.get("chat_id") else None
-                coro = _run_turn(
-                    agent_id,
-                    chat_id,
-                    schedule_instruction=entry["instruction"],
-                    scoped_system_prompt=entry.get("scoped_system_prompt"),
-                )
-                log_target = f"schedule {schedule_id}"
-            elif kind == "knowledge":
-                # ADR 0085: always targets the owner-agent chat - config-mode
-                # by construction (is_config_mode), no chat history to seed
-                # from, just the caller-built instruction string.
-                chat_id = int(fields["chat_id"])
-                coro = _run_turn(agent_id, chat_id, knowledge_instruction=fields["instruction"])
-                log_target = f"knowledge notice, chat {chat_id}"
-            else:
-                chat_id = int(fields["chat_id"])
-                message_id = int(fields["message_id"])
-                coro = _run_turn(agent_id, chat_id, message_id)
-                log_target = f"chat {chat_id}"
-
-            # Per-(agent_id, chat_id) turn mutex (ADR 0063): a debounced fire
-            # landing while a previous turn for the same pair is still
-            # running (up to AGENT_TURN_TIMEOUT_SECONDS) must not start a
-            # second concurrent turn - re-arm the debounce timer instead of
-            # dropping the message, so it retries right after the current
-            # turn finishes. chat_id=None (schedule-fired, no chat target)
-            # never contends with anything.
-            if not await acquire_turn_lock(agent_id, chat_id):
-                logger.info(
-                    "agent_worker: turn already running for agent %s %s, marking superseded "
-                    "and re-arming debounce",
-                    agent_id, log_target,
-                )
-                if chat_id is not None:
-                    # ADR 00732: the in-flight turn for this pair checks this
-                    # flag and ends without delivering its (now-stale) reply,
-                    # instead of letting it reach the chat before the new
-                    # message gets its own turn.
-                    await mark_superseded(agent_id, chat_id)
-                    await arm_debounce(agent_id, chat_id)
-                return
-
-            started = time.monotonic()
-            try:
-                await asyncio.wait_for(coro, timeout=settings.AGENT_TURN_TIMEOUT_SECONDS)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "agent_worker: turn for agent %s %s timed out after %ss",
-                    agent_id, log_target, settings.AGENT_TURN_TIMEOUT_SECONDS,
-                )
-                # Generic, non-technical notice to the owner - always posted to
-                # their dedicated agent chat regardless of which chat/schedule
-                # entry triggered the turn (frontend error UX rule: no raw
-                # timeout/technical detail surfaced to the user).
-                await _post_config_reply(
-                    session,
-                    agent,
-                    agent.owner_agent_chat_id,
-                    "This took a bit too long to process. Please try again in a moment.",
-                )
-                await session.commit()
-            except Exception:
-                # ADR 0089: any other unhandled failure inside _run_turn used
-                # to propagate to _drain_shard's catch-all, which only logs
-                # and leaves the entry unacked for reclaim - completely
-                # silent from the owner's side (agent_thinking flips to
-                # "error" in _run_turn's own finally, but that pub/sub event
-                # has no replay and the frontend currently renders "error"
-                # identically to "done"). Post the same fixed, non-technical
-                # notice the timeout path above already uses, then re-raise
-                # so the entry is still left unacked for reclaim/retry
-                # exactly as before - this only adds an owner-facing trace,
-                # it does not change delivery/retry semantics.
-                logger.exception(
-                    "agent_worker: turn for agent %s %s failed", agent_id, log_target
-                )
-                await _post_config_reply(
-                    session,
-                    agent,
-                    agent.owner_agent_chat_id,
-                    "Sorry, something went wrong on my end. Please try again in a moment.",
-                )
-                await session.commit()
-                raise
-            finally:
-                await record_active_seconds(agent_id, time.monotonic() - started)
-                await release_turn_lock(agent_id, chat_id)
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(coro, timeout=settings.AGENT_TURN_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "agent_worker: turn for agent %s %s timed out after %ss",
+                agent_id, log_target, settings.AGENT_TURN_TIMEOUT_SECONDS,
+            )
+            # Generic, non-technical notice to the owner - always posted to
+            # their dedicated agent chat regardless of which chat/schedule
+            # entry triggered the turn (frontend error UX rule: no raw
+            # timeout/technical detail surfaced to the user).
+            await _post_config_reply(
+                session,
+                agent,
+                agent.owner_agent_chat_id,
+                "This took a bit too long to process. Please try again in a moment.",
+            )
+            await session.commit()
+        except Exception:
+            # ADR 0089: any other unhandled failure inside _run_turn used
+            # to propagate to _drain_shard's catch-all, which only logs
+            # and leaves the entry unacked for reclaim - completely
+            # silent from the owner's side (agent_thinking flips to
+            # "error" in _run_turn's own finally, but that pub/sub event
+            # has no replay and the frontend currently renders "error"
+            # identically to "done"). Post the same fixed, non-technical
+            # notice the timeout path above already uses, then re-raise
+            # so the entry is still left unacked for reclaim/retry
+            # exactly as before - this only adds an owner-facing trace,
+            # it does not change delivery/retry semantics.
+            logger.exception(
+                "agent_worker: turn for agent %s %s failed", agent_id, log_target
+            )
+            await _post_config_reply(
+                session,
+                agent,
+                agent.owner_agent_chat_id,
+                "Sorry, something went wrong on my end. Please try again in a moment.",
+            )
+            await session.commit()
+            raise
+        finally:
+            await record_active_seconds(agent_id, time.monotonic() - started)
+            await release_turn_lock(agent_id, chat_id)
 
 
 async def _fire_schedule_entry(session: AsyncSession, agent_id: int, schedule_id: str) -> None:
@@ -848,6 +1120,13 @@ async def _sweep_expired_ephemeral_tasks() -> None:
             for task_id in sweep_expired_task_ids(agent):
                 entry = agent.triggers.get("on_ephemeral_task", {}).get(task_id)
                 if entry is None:
+                    continue
+                if entry.get("mode") == CONVERSE_MODE:
+                    # ADR 0099: goal tasks close via the shared owner-notice path.
+                    await close_goal_task(
+                        session, agent, task_id, status="timed_out",
+                        summary="No resolution before the deadline.",
+                    )
                     continue
                 await fire_summary_and_complete(session, agent, task_id, entry)
         await session.commit()

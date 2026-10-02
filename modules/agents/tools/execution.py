@@ -18,6 +18,8 @@ from modules.agents.attachment_judge import evaluate_attachment_match
 from modules.agents.cache import sync_agent_cache
 from modules.agents.crud import (
     ScheduleQuotaExceededError,
+    TriggerNotFoundError,
+    delete_agent_trigger,
     get_knowledge_chunk,
     list_knowledge_index,
     update_agent_triggers,
@@ -364,12 +366,43 @@ async def _tool_bulk_fetch_messages(session: AsyncSession, agent: Agent, argumen
     }
 
 
-async def _tool_update_own_triggers(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+def _check_require_expiry(patch: dict) -> None:
+    """ADR 0095: ONE_OFF_ACTION may only create/edit disposable triggers -
+    every on_specific_chats entry and the on_unknown_sender/on_any_message
+    objects in the patch must carry expires_at and/or max_fires. A patch
+    value of None (deleting a chat entry) is exempt - deletion needs no
+    expiry. Permanent triggers stay exclusive to BuilderState.BUILDER (its
+    call site passes require_expiry=False, the default)."""
+    chats = patch.get("on_specific_chats")
+    if isinstance(chats, dict):
+        for chat_id, chat_patch in chats.items():
+            if chat_patch is None:
+                continue
+            if not (chat_patch.get("expires_at") or chat_patch.get("max_fires")):
+                raise ToolDeniedError(
+                    f"on_specific_chats[{chat_id}] must set expires_at and/or max_fires here - "
+                    "only BuilderState.BUILDER can create a permanent trigger"
+                )
+    for flag in ("on_unknown_sender", "on_any_message"):
+        flag_patch = patch.get(flag)
+        if isinstance(flag_patch, dict) and flag_patch.get("enabled"):
+            if not (flag_patch.get("expires_at") or flag_patch.get("max_fires")):
+                raise ToolDeniedError(
+                    f"{flag} must set expires_at and/or max_fires here - "
+                    "only BuilderState.BUILDER can create a permanent trigger"
+                )
+
+
+async def _tool_update_own_triggers(
+    session: AsyncSession, agent: Agent, arguments: dict, *, require_expiry: bool = False
+) -> dict:
     # Hard-scoped to the caller's own agent_id and only the triggers column -
     # never restrictions, never another agent's row (ADR 0045).
     patch = arguments.get("triggers")
     if not isinstance(patch, dict):
         raise ToolDeniedError("triggers argument must be an object")
+    if require_expiry:
+        _check_require_expiry(patch)
 
     try:
         updated = await update_agent_triggers(session, agent.id, patch)
@@ -378,6 +411,28 @@ async def _tool_update_own_triggers(session: AsyncSession, agent: Agent, argumen
     await sync_agent_cache(updated)
     if "on_schedule" in patch:
         await sync_schedule_zset(updated)
+    return {"triggers": updated.triggers}
+
+
+async def _tool_update_own_triggers_disposable(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0095: ONE_OFF_ACTION's dispatch entry - same handler, require_expiry
+    pinned True so the schema/handler wiring in builder_handoff.py stays a
+    plain {name: handler} dict like every other entry."""
+    return await _tool_update_own_triggers(session, agent, arguments, require_expiry=True)
+
+
+async def _tool_delete_own_trigger(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0095: explicit, model-invoked removal of one trigger - the
+    counterpart to expires_at/max_fires lapsing on their own. Reachable from
+    both ONE_OFF_ACTION and BUILDER (deleting a trigger, unlike creating a
+    permanent one, isn't a privileged action)."""
+    kind = arguments.get("kind")
+    chat_id = arguments.get("chat_id")
+    try:
+        updated = await delete_agent_trigger(session, agent.id, kind, chat_id=chat_id)
+    except TriggerNotFoundError as exc:
+        raise ToolDeniedError(str(exc))
+    await sync_agent_cache(updated)
     return {"triggers": updated.triggers}
 
 
@@ -415,9 +470,10 @@ async def _tool_search_messages(session: AsyncSession, agent: Agent, arguments: 
     start_at = _parse_tool_datetime(arguments.get("start_date"), is_end=False)
     end_at = _parse_tool_datetime(arguments.get("end_date"), is_end=True)
 
+    blocked_ids = [int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])]
     if chat_id is not None:
         chat_id = int(chat_id)
-        if chat_id in {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}:
+        if chat_id in blocked_ids:
             raise ToolDeniedError("chat_id is in blocked_read_chat_ids")
 
     try:
@@ -441,6 +497,7 @@ async def _tool_search_messages(session: AsyncSession, agent: Agent, arguments: 
                 limit=limit,
                 start_at=start_at,
                 end_at=end_at,
+                exclude_chat_ids=blocked_ids,
             )
     except SearchQueryTooShortError as exc:
         raise ToolDeniedError(str(exc))
@@ -485,9 +542,10 @@ async def _tool_search_semantic(session: AsyncSession, agent: Agent, arguments: 
     start_at = _parse_tool_datetime(arguments.get("start_date"), is_end=False)
     end_at = _parse_tool_datetime(arguments.get("end_date"), is_end=True)
 
+    blocked_ids = [int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])]
     if chat_id is not None:
         chat_id = int(chat_id)
-        if chat_id in {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}:
+        if chat_id in blocked_ids:
             raise ToolDeniedError("chat_id is in blocked_read_chat_ids")
 
     try:
@@ -499,6 +557,7 @@ async def _tool_search_semantic(session: AsyncSession, agent: Agent, arguments: 
             limit=limit,
             start_at=start_at,
             end_at=end_at,
+            exclude_chat_ids=blocked_ids,
         )
     except VectorSearchQueryTooShortError as exc:
         raise ToolDeniedError(str(exc))
@@ -706,12 +765,12 @@ async def _tool_pause_and_escalate(session: AsyncSession, agent: Agent, argument
 # the registry - not implemented, per the ADR's "no migration cost, just
 # don't build the superseded tool."
 #
-# update_own_triggers is deliberately NOT registered here: it let an
-# execution-mode persona talking to a third party (sales_agent/support_agent/
-# one_off_executor/summarizer) rewrite its own wake-up triggers from
-# attacker-controlled chat text - a prompt-injection surface. It stays
-# config-mode-only, wired into Supervisor/Builder's handler dicts in
-# builder_handoff.py instead.
+# update_own_triggers/delete_own_trigger are deliberately NOT registered
+# here: it let an execution-mode persona talking to a third party
+# (sales_agent/support_agent/one_off_executor/summarizer) rewrite its own
+# wake-up triggers from attacker-controlled chat text - a prompt-injection
+# surface. They stay config-mode-only, wired into ONE_OFF_ACTION/BUILDER's
+# handler dicts in builder_handoff.py instead (ADR 0091/0095).
 EXECUTION_TOOL_HANDLERS = {
     "send_message": _tool_send_message,
     "reply_message": _tool_reply_message,

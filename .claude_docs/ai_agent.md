@@ -1,4 +1,4 @@
-# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 / ADR 0051 / ADR 0053 / ADR 0057 / ADR 0059 / ADR 0063 / ADR 0064 / ADR 0065 / ADR 0066 / ADR 0067 / ADR 0071 / ADR 0072 / ADR 0073 / ADR 00732 / ADR 0075 / ADR 0077 / ADR 0078 / ADR 0080 / ADR 0081 / ADR 0082 / ADR 0083 / ADR 0084 (superseded by 0092) / ADR 0085 / ADR 0089 / ADR 0090 / ADR 0092
+# AI Agent (service account, Gemini tool calling) - ADR 0045 / ADR 0046 / ADR 0047 / ADR 0049 (superseded by 0093) / ADR 0051 / ADR 0053 / ADR 0057 / ADR 0059 / ADR 0063 / ADR 0064 / ADR 0065 / ADR 0066 / ADR 0067 / ADR 0071 / ADR 0072 / ADR 0073 / ADR 00732 / ADR 0075 / ADR 0077 / ADR 0078 / ADR 0080 / ADR 0081 / ADR 0082 / ADR 0083 / ADR 0084 (superseded by 0092) / ADR 0085 / ADR 0089 / ADR 0090 / ADR 0092 / ADR 0093 / ADR 0096
 
 **BYOK removed (ADR 0090, 2026-09-29):** ADR 0046 decision 5/6 (owner-supplied
 Gemini API key) is gone entirely - no DB column, no schema fields, no
@@ -69,6 +69,8 @@ split threshold:
 | `.claude_docs/ai_agent_capacity_and_budgets.md` | ADR 0057 (`get_capacity_status` tool + `peek_fixed_window`), ADR 0058 (agent shares owner's WS send-message sliding-window budget + `peek_sliding_window`), ADR 0059 (5h/500k + 7d/3M rolling token-usage windows, output-token cap, `GET /agents/me/usage`, `UsageProgressBar.js`). |
 | `.claude_docs/ai_agent_frontend.md` | AI agent PoC frontend: `AgentDrawer.js`/`AgentChatView.js`/`AgentSettingsView.js`, `useAgentConfig.js`, BYOK frontend, peer-visible typing indicator frontend detail, the chat attach menu (content file / attached file). |
 | `.claude_docs/ai_agent_frontend_usage_and_search.md` | AI agent PoC frontend, split out of `ai_agent_frontend.md`: the token-usage ring+popover widget (`UsageProgressBar.js`, ADR 0059), in-chat search wiring, known frontend follow-ups. |
+| `.claude_docs/ai_agent_owner_chat_router.md` | ADR 0093 owner-chat jev router: contract (`route_owner_turn`, fail-frozen policy), the `one_off_action`/`clarify`/`builder_agent`/`help_*` state set and tool reassignment, `AgentRouterLog` shape, margin-tuning notes for Phase 5. |
+| `.claude_docs/ai_agent_outcome_judge.md` | ADR 0096 tool-outcome-mismatch judge: the two turn-ending hook points in `_run_turn`, `modules/agents/outcome_judge.py` contract (fail-open-to-silence, own rate bucket, `AgentOutcomeJudgeLog`), the `❗` notice glyph, explanation-generation fallback. |
 
 **Standing obligation (2026-09-25, updated 2026-09-26 by ADR 0064, process
 note, not code)**: the Help Agent used to be one state
@@ -95,10 +97,11 @@ schedule-fired turn): `send_message`, `reply_message`, `create_chat`,
 `search_semantic` (ADR 0069), `search_knowledge_semantic` (ADR 0078),
 `get_knowledge_index`, `fetch_chunk`, `list_attached_files`,
 `send_attached_file` (ADR 0083), `pause_and_escalate` - 15 tools.
-`update_own_triggers` is config-mode-only as of ADR 0091 (was reachable
-here before - removed as a prompt-injection surface: an execution persona
-talking to a third party could otherwise be steered into rewriting its own
-wake-up triggers).
+`update_own_triggers`/`delete_own_trigger` are config-mode-only as of ADR
+0091/0095 (`update_own_triggers` was reachable here before ADR 0091 -
+removed as a prompt-injection surface: an execution persona talking to a
+third party could otherwise be steered into rewriting its own wake-up
+triggers).
 `search_messages`/`search_semantic` both take optional `start_date`/`end_date`
 (ADR 0068), which now also accept a specific time of day, not just a calendar
 date (ADR 0070).
@@ -135,16 +138,21 @@ match, ask which one on multiple matches, and never claim to send something
 that isn't there.
 
 **Config mode** (`chat_id == owner_agent_chat_id` only) further branches on
-`Agent.builder_state` (ADR 0049, ADR 0064) into four sub-sets (supervisor/
-builder_agent deliberately overlap with execution mode, per ADR 0062 below;
-neither Help state does):
+`Agent.builder_state` (ADR 0093, replacing ADR 0049's model-self-directed
+handoff) into five sub-states, chosen deterministically by a jev router
+(`modules/agents/owner_chat_router.py::route_owner_turn`) that runs once
+before every config-mode turn with a real owner message - the model inside a
+state never transitions `builder_state` itself anymore (all `transfer_to_*`
+tools are gone). Full router contract, fail-frozen policy, and
+`AgentRouterLog` shape: `.claude_docs/ai_agent_owner_chat_router.md`.
 
 | `builder_state` | Persona prompt | Tools |
 |---|---|---|
-| `supervisor` (default) | routes, AND acts directly for the owner (ADR 0062) | `transfer_to_builder`, `transfer_to_help_building`, `transfer_to_help_general` (ADR 0064), `resume_paused_chat` (ADR 0055), `resolve_user`, `find_chat_by_name` (ADR 0073), `spawn_ephemeral_task` (ADR 0061), `no_reply_needed` (ADR 0065), `save_knowledge_from_text` (ADR 0078), `update_own_triggers` (config-mode-only, ADR 0091), **plus the full execution-mode toolset** (`send_message`, `reply_message`, `create_chat`, `leave_group`, `read_history`, `count_messages_in_range`, `bulk_fetch_messages`, `search_messages`, `search_semantic`, `search_knowledge_semantic`, `get_knowledge_index`, `fetch_chunk`, `list_attached_files`, `send_attached_file` (ADR 0083), `pause_and_escalate`) |
-| `builder_agent` | interviews the owner, AND acts directly for the owner too (2026-09-26) | the 6 ADR 0047 config tools (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`, `schedule_one_off_task`) + `set_agent_identity` (ADR 0081) + `resolve_user` + `find_chat_by_name` (ADR 0073) + `resume_paused_chat` (ADR 0055) + `no_reply_needed` (ADR 0065) + `save_knowledge_from_text` (ADR 0078) + `transfer_to_help_building` + `transfer_to_help_general` (ADR 0064) + `transfer_to_supervisor` + `finish_building_agent`, **plus the full execution-mode toolset** (same 14 tools as supervisor) |
-| `help_agent_building` (ADR 0064) | explains building/configuring an agent | `transfer_to_builder`, `transfer_to_help_general`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065) - zero knowledge-base tools (ADR 0092) |
-| `help_general` (ADR 0064) | explains using the Linka platform | `transfer_to_help_building`, `transfer_to_supervisor`, `no_reply_needed` (ADR 0065) - zero knowledge-base tools (ADR 0092) |
+| `one_off_action` (default) | acts directly for the owner - immediate or time-delayed single actions (ADR 0093, absorbs ADR 0062's action-union role) | `resume_paused_chat` (ADR 0055), `resolve_user`, `find_chat_by_name` (ADR 0073), `spawn_ephemeral_task` (ADR 0061), `start_goal_task`/`cancel_goal_task` (ADR 0099, see `ai_agent_goal_tasks.md`), `no_reply_needed` (ADR 0065), `save_knowledge_from_text` (ADR 0078), `schedule_one_off_task`, `update_own_triggers` (ADR 0095, **disposable-only** - every entry must set `expires_at`/`max_fires`, server-enforced), `delete_own_trigger` (ADR 0095), **plus the full execution-mode toolset** (`send_message`, `reply_message`, `create_chat`, `leave_group`, `read_history`, `count_messages_in_range`, `bulk_fetch_messages`, `search_messages`, `search_semantic`, `search_knowledge_semantic`, `get_knowledge_index`, `fetch_chunk`, `list_attached_files`, `send_attached_file` (ADR 0083), `pause_and_escalate`) |
+| `clarify` | zero-action; asks one disambiguating question between `one_off_action` and `builder_agent` when the router's margin is too close to call (ADR 0093) | `no_reply_needed` only |
+| `builder_agent` | interviews the owner to configure persistent behavior only - the ADR 0062 execution-tool union was removed (ADR 0093) | the 6 ADR 0047 config tools minus `schedule_one_off_task` (`set_agent_persona`, `update_agent_rules`, `set_trigger`, `get_agent_status`, `estimate_api_usage`) + `set_agent_identity` (ADR 0081) + `update_own_triggers` (config-mode-only, ADR 0091; **permanent triggers only reachable here**, ADR 0095) + `delete_own_trigger` (ADR 0095) + `resolve_user` + `find_chat_by_name` (ADR 0073) + `no_reply_needed` (ADR 0065) + `finish_building_agent` |
+| `help_agent_building` (ADR 0064) | explains building/configuring an agent | `no_reply_needed` (ADR 0065) only - zero knowledge-base tools (ADR 0092), zero transfer tools (ADR 0093) |
+| `help_general` (ADR 0064) | explains using the Linka platform | `no_reply_needed` (ADR 0065) only - zero knowledge-base tools (ADR 0092), zero transfer tools (ADR 0093) |
 
 **ADR 0065 (2026-09-26):** `no_reply_needed` is a no-op config-mode tool
 available in all four `builder_state`s - lets the model end a config-mode
@@ -220,47 +228,12 @@ third `agent_invoke_stream` `kind` (`"knowledge"`, alongside
 voice - not a toast, not a fixed string. Full detail:
 `docs/adr/0085-agent-knowledge-ingestion-notice.md`.
 
-**`transfer_to_supervisor` (2026-09-26):** Builder-only escape hatch back to
-Supervisor, distinct from `finish_building_agent` - does not require the
-checklist to be complete and does not set `is_enabled`/touch
-`sync_agent_cache` (whatever was already saved via the incremental config
-tools just stays saved). Lets the owner drop out of the interview mid-way to
-pause setup for later. `builder_flow.py::BUILDER_PROMPT` instructs the
-Builder to call it when the user explicitly wants to stop/pause, or their
-intent has clearly shifted away from configuration for the rest of the
-conversation - not for a one-off direct action mid-interview, since the
-Builder can now just do those itself (see below).
-
-**Every handoff tool's transfer must be invisible to the user (2026-09-26):**
-`transfer_to_builder`/`transfer_to_help_building`/`transfer_to_help_general`/
-`transfer_to_supervisor` each return
-an `instruction` string that explicitly forbids announcing the switch (no
-"switching you to the builder" / "transferring you back to the regular
-agent") - the model must just act on the user's message as if it had been
-handling it all along. This was a real observed failure mode (the model
-narrated the handoff instead of silently continuing) before the instruction
-text was strengthened.
-
-**ADR 0062 (2026-09-26), extended 2026-09-26 to cover Builder too:**
-Supervisor and Builder are both deliberate exceptions to ADR 0047's
-"config-mode and execution-mode schemas never overlap" invariant
-(`schemas.py::BUILDER_STATE_TOOL_SCHEMAS[SUPERVISOR]` and `[BUILDER]` both
-union in the full `TOOL_SCHEMAS`; `builder_handoff.py::BUILDER_STATE_HANDLERS`
-unions in `EXECUTION_TOOL_HANDLERS` for both the same way). This lets the
-owner issue a direct "act as me" command - "send a message to +972-5-xxx and
-tell me what they say" - from either their idle chat (Supervisor) or
-mid-interview (Builder), without needing `transfer_to_supervisor` first: the
-owner is the agent's own supervised user in both states, so there's no
-prompt-injection concern in giving Builder the same reach as Supervisor. Same
-handler bodies, same `Agent.restrictions`/quota enforcement as any other
-execution-mode call (ADR 0045) - only which tools are *reachable* changed,
-not what any of them do once called. Both Help states (ADR 0064) keep the
-original zero-overlap invariant unchanged (no supervised-owner-only
-exception applies there - Help never acts, only explains). Fixed a real bug:
-before ADR 0062, Supervisor had
-no tool that could message a third party at all (only `spawn_ephemeral_task`,
-and even that was missing from its schema list), so this exact request
-always failed with "I can't do that."
+**ADR 0093 (2026-09-29): the handoff mechanism above is retired.** Every
+`transfer_to_*` tool is deleted - no model-self-directed `builder_state`
+transition exists anywhere anymore; a jev router decides instead. Supersedes
+the Supervisor persona and relocates ADR 0062's execution-tool union onto
+`one_off_action` only. Detail: `.claude_docs/ai_agent_owner_chat_router.md`;
+pre-0093 handoff history: `ai_agent_changelog_early.md`/`ai_agent_changelog_mid.md`.
 
 `get_capacity_status` (ADR 0057) was removed entirely (ADR 0091,
 2026-09-29): it turned out to have never actually been wired into any
@@ -271,7 +244,8 @@ rather than re-wired in.
 Selection is purely `chat_id`-then-`builder_state`-driven
 (`modules/agents/tools/dispatch.py::is_config_mode` + `BuilderState(agent.builder_state)`)
 - never `active_skill`, `system_prompt`, or anything the model says about
-itself. See ADR 0047 decision 4 (outer gate) and ADR 0049 (inner sub-states).
+itself. See ADR 0047 decision 4 (outer gate) and ADR 0093 (inner sub-states,
+router-driven - supersedes ADR 0049's model-self-directed version).
 Full per-tool build detail: `ai_agent_history.md` (original registry),
 `ai_agent_judge_and_escalation.md` (`resolve_user`, `pause_and_escalate`),
 `ai_agent_capacity_and_budgets.md` (`get_capacity_status`).
@@ -324,6 +298,7 @@ retrieval: **`.claude_docs/ai_agent_schema.md`**.
 | Send-message throughput | shared with the owner's own WS budget: 3/1s + 40/60s (ADR 0058) | `rlsw:send_message(_burst):{owner_user_id}` |
 | Token usage - session | 500,000 tokens / 5h per-agent, combined input+output (ADR 0059) | `ratelimit:agent_tokens_5h:{agent_id}`, Redis fixed-window, token-weighted |
 | Token usage - weekly | 3,000,000 tokens / 7d per-agent, combined input+output (ADR 0059) | `ratelimit:agent_tokens_7d:{agent_id}`, Redis fixed-window, token-weighted |
+| Tool-outcome-mismatch judge calls | 60/min per-agent (ADR 0096, own bucket) | `ratelimit:agent_outcome_judge_calls:{agent_id}` - detail: `ai_agent_outcome_judge.md` |
 
 When the daily time budget is exhausted: finish the in-flight turn, then go
 dormant until the daily window resets - `process_entry` does call
@@ -337,3 +312,7 @@ history `[already handled]` marker (ADR 0071), bulk-fetch confirmation gate
 (config-mode language fix + silent-turn-failure gaps)** all moved to
 `.claude_docs/ai_agent_changelog.md` (2026-09-28 split, this file kept
 re-crossing the ~300-line threshold).
+
+**Owner-chat jev router calls** (ADR 0093, own bucket, never shares the
+Gemini-calls-per-minute budget) - rate/config detail, `AgentRouterLog` shape,
+and margin-tuning notes: `.claude_docs/ai_agent_owner_chat_router.md`.

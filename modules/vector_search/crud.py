@@ -44,6 +44,7 @@ async def semantic_search_messages(
     chat_id: Optional[int] = None,
     start_at: Optional[datetime] = None,
     end_at: Optional[datetime] = None,
+    exclude_chat_ids: Optional[Sequence[int]] = None,
 ):
     """Cosine-nearest messages, membership enforced by the participants JOIN
     (ADR 0040's pattern) - a removed member's chats never surface, checked at
@@ -59,6 +60,8 @@ async def semantic_search_messages(
         where_extra += "AND m.created_at >= :start_at "
     if end_at is not None:
         where_extra += "AND m.created_at <= :end_at "
+    if exclude_chat_ids:
+        where_extra += "AND m.chat_id <> ALL(:exclude_chat_ids) "
     stmt = text(
         "SELECT m.id, m.chat_id, m.sender_id, m.type, m.content, m.created_at, "
         "m.embedding <=> CAST(:query_embedding AS vector) AS distance "
@@ -79,6 +82,8 @@ async def semantic_search_messages(
     }
     if chat_id is not None:
         params["chat_id"] = chat_id
+    if exclude_chat_ids:
+        params["exclude_chat_ids"] = [int(c) for c in exclude_chat_ids]
     if start_at is not None:
         params["start_at"] = start_at
     if end_at is not None:

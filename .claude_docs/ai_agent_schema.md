@@ -108,7 +108,15 @@ The last two read `current_setting('app.current_agent_id', true)` - a
 keyword-only `sender_agent_id` param) inside the same transaction as the
 mutation - transaction-scoped so it's safe under PgBouncer transaction
 pooling, never persisted anywhere, never used for anything except these
-triggers. `blocked_read_chat_ids` on the *read* side (`read_history`/
+triggers. **ADR 0097 (2026-10-02):** the message trigger returns early for the agent's own
+`owner_agent_chat_id` (config replies/greetings/notices must still reach the
+owner even with `can_send_messages`/`can_message_private` off); owner-wide
+`search_messages`/`search_semantic` now pass `exclude_chat_ids` (=
+`blocked_read_chat_ids`) into the SQL, closing a leak when no `chat_id` was
+given. Trigger tests: `tests/modules/agents/test_restriction_db_backstop.py`.
+Deployed DBs need `python3 -m scripts.init_db` to refresh the function.
+
+`blocked_read_chat_ids` on the *read* side (`read_history`/
 `search_messages`) is deliberately NOT given a DB trigger (no
 `BEFORE SELECT` in Postgres) - stays application-only, a known/accepted gap,
 not an oversight. DDL applied via `scripts/init_db.py` +
@@ -124,9 +132,38 @@ considered and rejected: `docs/adr/0066-db-level-agent-restriction-enforcement.m
   "on_specific_chats": {},
   "on_unknown_sender": {"enabled": false},
   "on_any_message": {"enabled": false},
-  "on_schedule": []
+  "on_schedule": [],
+  "on_ephemeral_task": {}
 }
 ```
+
+**Self-expiring triggers (ADR 0095, 2026-10-01):** `on_specific_chats` entries
+and the `on_unknown_sender`/`on_any_message` objects each additionally accept
+two optional keys - `expires_at` (ISO datetime) and/or `max_fires` (int,
+decremented by one on every match). Neither set = permanent (pre-0095
+behavior, unchanged). An expired/exhausted entry is treated as a non-match by
+`trigger_engine._matches_trigger_config`/`_matches_unknown_sender`/
+`_matches_any_message` (pure read-only checks, `_trigger_entry_expired`);
+the actual decrement-or-delete happens once, post-match, in
+`_evaluate_triggers` right before the debounce is armed, via
+`crud.py::consume_matched_trigger_fire` (re-syncs the pre-filter cache
+afterwards). `on_schedule`/`on_ephemeral_task` are untouched by this - they
+already self-clean via their own `kind=once`/lazy-expiry mechanisms.
+
+Two new tools reach this: `update_own_triggers` now also has a disposable-only
+variant (`_tool_update_own_triggers_disposable`, `require_expiry=True`) wired
+into `BuilderState.ONE_OFF_ACTION` - every `on_specific_chats` entry/
+`on_unknown_sender`/`on_any_message` write from there must carry
+`expires_at`/`max_fires` or the call is denied (`ToolDeniedError`); only
+`BuilderState.BUILDER` can still create a *permanent* trigger. New
+`delete_own_trigger` tool (`crud.py::delete_agent_trigger`,
+`TriggerNotFoundError` if nothing to remove) is the explicit, model-invoked
+way to remove a trigger outright once its one-off condition is actually
+confirmed met - reachable from both `ONE_OFF_ACTION` and `BUILDER`. This also
+fixed a pre-existing drift bug: `ONE_OFF_ACTION_PROMPT` already *mentioned*
+`update_own_triggers` in its tool list, but it was never actually wired into
+`BUILDER_STATE_HANDLERS`/`BUILDER_STATE_TOOL_SCHEMAS[ONE_OFF_ACTION]` until
+now.
 - `on_specific_chats` maps `chat_id -> {"keywords": [...]}`. Empty keywords
   = wake on any message in that chat; non-empty = case-insensitive
   substring match (deliberately not regex - avoids ReDoS from

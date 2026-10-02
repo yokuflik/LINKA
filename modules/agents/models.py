@@ -1,7 +1,7 @@
 import json
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Column, BigInteger, Boolean, String, Text, DateTime, ForeignKey, text
+from sqlalchemy import Column, BigInteger, Boolean, Float, String, Text, DateTime, ForeignKey, text
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.sql import func
 
@@ -46,6 +46,14 @@ DEFAULT_AGENT_RESTRICTIONS = {
 # expected_chat_id has replied or expires_at lapses (lazy expiry, checked in
 # the Trigger Rule Engine and the schedule poll loop - see trigger_engine.py /
 # modules/agents/ephemeral_tasks.py). Capped at AGENT_MAX_EPHEMERAL_TASKS.
+# ADR 0095: on_specific_chats entries and the on_unknown_sender/on_any_message
+# objects each additionally accept optional "expires_at" (ISO datetime) and/or
+# "max_fires" (int) keys - a self-expiring trigger. expires_at lapsing, or
+# max_fires reaching zero after a match, auto-deletes that one trigger entry
+# (lazy expiry / post-match decrement, both in trigger_engine.py::
+# evaluate_triggers). Neither field is set by default - a trigger with
+# neither is permanent, the pre-0095 behavior. on_schedule/on_ephemeral_task
+# already self-clean via their own mechanisms and are not part of this.
 DEFAULT_AGENT_TRIGGERS = {
     "on_time_window": {"enabled": False, "start": "09:00", "end": "22:00"},
     "on_specific_chats": {},
@@ -64,12 +72,13 @@ DEFAULT_AGENT_TRIGGERS = {
 # regardless of what active_skill is set to.
 DEFAULT_AGENT_ACTIVE_SKILL = "one_off_executor"
 
-# Sub-state inside the config chat (ADR 0049) - dynamic runtime state written
-# by the agent's own transfer_to_builder/transfer_to_help_building/
-# transfer_to_help_general/finish_building_agent tools, meaningful only when
+# Sub-state inside the config chat (ADR 0049) - dynamic runtime state
+# written exclusively by owner_chat_router.py::route_owner_turn (ADR 0093
+# Phase 3), never by the model itself, meaningful only when
 # chat_id == owner_agent_chat_id. See modules/agents/builder_flow.py for the
-# full state machine (ADR 0064).
-DEFAULT_AGENT_BUILDER_STATE = "supervisor"
+# full state machine (ADR 0064, restructured by ADR 0093: default is
+# "one_off_action").
+DEFAULT_AGENT_BUILDER_STATE = "one_off_action"
 
 
 class Agent(Base):
@@ -168,12 +177,13 @@ class Agent(Base):
         server_default=text("'[]'::jsonb"),
     )
 
-    # Sub-state inside the config chat (ADR 0049) - one of "supervisor" |
-    # "builder_agent" | "help_general" | "help_agent_building" (ADR 0064).
-    # Only meaningful when the triggering chat_id is owner_agent_chat_id;
-    # execution-mode turns never read/write this. Written only by the
-    # agent's own handoff/finish tools, never by PATCH /agents/me (see
-    # AgentOut.builder_state - read-only).
+    # Sub-state inside the config chat (ADR 0049, restructured by ADR 0093
+    # Phase 1) - one of "one_off_action" | "clarify" | "builder_agent" |
+    # "help_general" | "help_agent_building". Only meaningful when the
+    # triggering chat_id is owner_agent_chat_id; execution-mode turns never
+    # read/write this. Written only by the agent's own handoff/finish tools
+    # (Phase 1 stopgap - a jev router takes over in Phase 3), never by PATCH
+    # /agents/me (see AgentOut.builder_state - read-only).
     builder_state = Column(
         String(32),
         nullable=False,
@@ -366,5 +376,79 @@ class AgentAttachmentJudgeLog(Base):
 
     is_approved = Column(Boolean, nullable=False)
     reason = Column(Text, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class AgentOutcomeJudgeLog(Base):
+    """
+    Audit log of every tool-outcome-mismatch judge verdict (ADR 0096) - one
+    row per turn-ending unresolved tool error the judge evaluated. Separate
+    table from AgentJudgeLog/AgentAttachmentJudgeLog for the same reason ADR
+    0086 gave for its own table: a different classification question
+    ("does this failure plausibly mean the goal wasn't met"), a different
+    call site (only at the two points a turn can end on an unresolved tool
+    error, not pre-turn or mid tool-call), and its own rate bucket.
+    """
+
+    __tablename__ = "agent_outcome_judge_log"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+
+    agent_id = Column(
+        BigInteger,
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chat_id = Column(BigInteger, nullable=False, index=True)
+    tool_name = Column(String(64), nullable=False)
+
+    is_match = Column(Boolean, nullable=False)
+    reason = Column(Text, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class AgentRouterLog(Base):
+    """
+    Audit log of every owner-chat jev router decision (ADR 0093 Phase 2) -
+    one row per config-mode turn the router classified. Mirrors AgentJudgeLog:
+    the raw per-destination probabilities plus the resolved destination are
+    what makes tuning AGENT_ROUTER_CLARIFY_MARGIN (Phase 5) possible once real
+    usage exists. Unpartitioned to start, same posture as the other agent
+    audit-log tables.
+    """
+
+    __tablename__ = "agent_router_log"
+
+    id = Column(BigInteger, primary_key=True, index=True)
+
+    agent_id = Column(
+        BigInteger,
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    chat_id = Column(BigInteger, nullable=False, index=True)
+
+    # BuilderState the turn was in when the router ran.
+    previous_state = Column(String(32), nullable=False)
+    # Destination the router resolved to - one of the 4 classification
+    # labels, or "clarify" when the top-two margin was too close to call, or
+    # previous_state again on a fail-frozen (classification error) outcome.
+    resolved_state = Column(String(32), nullable=False)
+
+    # Raw per-destination probabilities from the jev call, e.g.
+    # {"one_off_action": 0.8, "builder": 0.1, "help_building": 0.05,
+    # "help_general": 0.05}. Null on a fail-frozen outcome (no jev response).
+    probabilities = Column(JSONB, nullable=True)
+    margin = Column(Float, nullable=True)
+    failed_open = Column(Boolean, nullable=False, server_default="false")
+    # ADR 0093 Phase 6a: True when this row's resolved_state is the previous
+    # state, kept via the stickiness override rather than the classifier's
+    # own top pick - lets Phase 5 tuning see how often stickiness is actually
+    # saving a state vs. potentially masking a real topic change.
+    sticky = Column(Boolean, nullable=False, server_default="false")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

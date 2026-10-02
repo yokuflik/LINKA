@@ -229,14 +229,16 @@ async def main(drop: bool) -> None:
                 # value to preserve).
                 "ALTER TABLE agents ADD COLUMN IF NOT EXISTS paused_chat_ids JSONB "
                 "NOT NULL DEFAULT '[]'::jsonb",
-                # ADR 0049/0064: sub-state inside the config chat, written by
-                # the agent's own transfer_to_builder/transfer_to_help_building/
-                # transfer_to_help_general/finish_building_agent tools. New
-                # column, existing rows
-                # backfilled to the same default new rows get (no prior
-                # per-agent value to preserve, same as active_skill above).
+                # ADR 0049/0064: sub-state inside the config chat, written
+                # exclusively by owner_chat_router.py::route_owner_turn (ADR
+                # 0093 Phase 3), never by the model/a tool. New column,
+                # existing rows backfilled to the same default new rows get
+                # (no prior per-agent value to preserve, same as active_skill
+                # above). Default value updated to "one_off_action" by ADR
+                # 0093 below (this ADD COLUMN clause only fires on a
+                # brand-new table).
                 "ALTER TABLE agents ADD COLUMN IF NOT EXISTS builder_state VARCHAR(32) "
-                "NOT NULL DEFAULT 'supervisor'",
+                "NOT NULL DEFAULT 'one_off_action'",
                 # ADR 0072: stashed bulk_fetch_messages confirmation request,
                 # nullable (no prior value, absent = no pending confirmation).
                 "ALTER TABLE agents ADD COLUMN IF NOT EXISTS pending_confirmation JSONB",
@@ -263,6 +265,19 @@ async def main(drop: bool) -> None:
                 # ALTERs an existing column). Every prior row keeps its real
                 # s3_key untouched.
                 "ALTER TABLE agent_knowledge_documents ALTER COLUMN s3_key DROP NOT NULL",
+                # ADR 0093 Phase 1: BuilderState.SUPERVISOR renamed to
+                # ONE_OFF_ACTION - repin the column default for new rows, and
+                # backfill existing agents still carrying the old value (a
+                # stored "supervisor" would otherwise fail BuilderState(...)
+                # coercion in dispatch.py/invoke_worker.py the next time that
+                # agent's owner-chat turn runs).
+                "ALTER TABLE agents ALTER COLUMN builder_state SET DEFAULT 'one_off_action'",
+                "UPDATE agents SET builder_state = 'one_off_action' WHERE builder_state = 'supervisor'",
+                # ADR 0093 Phase 6a: session-stickiness flag, existing table -
+                # prior rows default to false (stickiness didn't exist yet
+                # when they were logged).
+                "ALTER TABLE agent_router_log ADD COLUMN IF NOT EXISTS sticky "
+                "BOOLEAN NOT NULL DEFAULT false",
             ):
                 await conn.execute(text(ddl))
             # Semantic vector search (ADR 0042): embedding column safety net

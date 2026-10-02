@@ -209,6 +209,20 @@ function useNewChat(ctx) {
     ctx.openDraftChat(user);
   }
 
+  // Developer contact phone for the global "Report a bug" button - opens (or
+  // reuses) a private chat with this number, same resolve-then-draft flow as
+  // pickSearchedUser above.
+  const DEVELOPER_CONTACT_PHONE = '+972545717511';
+
+  async function reportBug() {
+    try {
+      const user = await ctx.apiFetch(`/users/by-phone?phone_number=${encodeURIComponent(DEVELOPER_CONTACT_PHONE)}`);
+      await pickSearchedUser(user);
+    } catch (err) {
+      ctx.showToast(ctx.friendlyError(err, "We couldn't open the report chat. Please try again."));
+    }
+  }
+
   // Opening a private chat no longer creates it: we resolve the phone number
   // to a user and open a *draft* pane. The chat row is created server-side
   // only when the first message is sent (useMessageSend.sendMessage). If an
@@ -327,7 +341,7 @@ function useNewChat(ctx) {
     userSearchQuery, userSearchBusy, userSearchError, userSearchResult,
     existingChatMatches,
     openNewChatModal, resetUserSearch, runUserSearch, onUserSearchInput,
-    pickSearchedUser, pickExistingChat,
+    pickSearchedUser, pickExistingChat, reportBug,
     privateChatPeers,
     groupSearchQuery, groupSearchBusy, groupSearchError, groupSearchResult,
     onGroupSearchInput, runGroupSearch, openNewGroupModal,

@@ -27,7 +27,7 @@ const ChatSidebar = {
     agentActive: { type: Boolean, default: false },
     agentUnreadCount: { type: Number, default: 0 },
   },
-  emits: ['open-new-chat', 'select-chat', 'chat-contextmenu', 'set-chat-filter', 'open-agent'],
+  emits: ['open-new-chat', 'select-chat', 'chat-contextmenu', 'set-chat-filter', 'open-agent', 'report-bug'],
   template: `
     <aside class="w-full md:w-72 shrink-0 flex flex-col border-r border-slate-200 bg-white">
       <div class="p-3 border-b border-slate-200">
@@ -124,6 +124,13 @@ const ChatSidebar = {
         </div>
         <p v-if="!chats.length" class="p-3 text-sm text-slate-400">No chats yet — tap "New chat" above.</p>
         <p v-else-if="!filteredChats.length" class="p-3 text-sm text-slate-400">No chats in this filter.</p>
+      </div>
+
+      <div class="shrink-0 border-t border-slate-200 p-2">
+        <button type="button" @click="$emit('report-bug')"
+                class="w-full flex items-center justify-center gap-1.5 py-1.5 text-xs text-slate-500 rounded-lg hover:bg-slate-100 hover:text-slate-600">
+          Report a bug
+        </button>
       </div>
     </aside>
   `,

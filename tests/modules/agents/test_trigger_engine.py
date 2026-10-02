@@ -718,3 +718,153 @@ async def test_no_participant_owns_an_agent_short_circuits_cleanly(db_session, r
     message = await _send(db_session, chat, a)
     await evaluate_triggers(message)
     assert await _stream_entries() == []
+
+
+# --- ADR 0095: self-expiring triggers (expires_at / max_fires) --------------
+
+async def test_expired_on_specific_chats_entry_never_matches(db_session, redis_db):
+    owner = await _make_user(db_session)
+    sender = await _make_user(db_session)
+    owner_agent_chat = await _make_private_chat(db_session, owner, sender)
+    target_chat = await _make_private_chat(db_session, owner, sender)
+    await _make_agent(
+        db_session, owner, owner_agent_chat,
+        triggers={
+            **DEFAULT_AGENT_TRIGGERS,
+            "on_specific_chats": {str(target_chat): {"keywords": [], "expires_at": "2000-01-01T00:00:00+00:00"}},
+        },
+    )
+
+    message = await _send(db_session, target_chat, sender)
+    await evaluate_triggers(message)
+    assert await _stream_entries() == []
+
+
+async def test_exhausted_max_fires_on_specific_chats_entry_never_matches(db_session, redis_db):
+    owner = await _make_user(db_session)
+    sender = await _make_user(db_session)
+    owner_agent_chat = await _make_private_chat(db_session, owner, sender)
+    target_chat = await _make_private_chat(db_session, owner, sender)
+    await _make_agent(
+        db_session, owner, owner_agent_chat,
+        triggers={
+            **DEFAULT_AGENT_TRIGGERS,
+            "on_specific_chats": {str(target_chat): {"keywords": [], "max_fires": 0}},
+        },
+    )
+
+    message = await _send(db_session, target_chat, sender)
+    await evaluate_triggers(message)
+    assert await _stream_entries() == []
+
+
+async def test_max_fires_decrements_on_match_and_deletes_the_entry_at_zero(db_session, redis_db):
+    owner = await _make_user(db_session)
+    sender = await _make_user(db_session)
+    owner_agent_chat = await _make_private_chat(db_session, owner, sender)
+    target_chat = await _make_private_chat(db_session, owner, sender)
+    agent = await _make_agent(
+        db_session, owner, owner_agent_chat,
+        triggers={
+            **DEFAULT_AGENT_TRIGGERS,
+            "on_specific_chats": {str(target_chat): {"keywords": [], "max_fires": 1}},
+        },
+    )
+
+    first = await _send(db_session, target_chat, sender)
+    await evaluate_triggers(first)
+    assert len(await _stream_entries()) == 1
+
+    await db_session.refresh(agent)
+    assert str(target_chat) not in agent.triggers.get("on_specific_chats", {})
+
+    # _stream_entries() accumulates across the whole test (xrange over the
+    # full stream, never trimmed) - so a second, non-matching message must
+    # leave the stream unchanged at exactly the one entry from `first`.
+    second = await _send(db_session, target_chat, sender)
+    await evaluate_triggers(second)
+    assert len(await _stream_entries()) == 1
+
+
+async def test_max_fires_above_one_survives_a_match_with_count_still_remaining(db_session, redis_db):
+    owner = await _make_user(db_session)
+    sender = await _make_user(db_session)
+    owner_agent_chat = await _make_private_chat(db_session, owner, sender)
+    target_chat = await _make_private_chat(db_session, owner, sender)
+    agent = await _make_agent(
+        db_session, owner, owner_agent_chat,
+        triggers={
+            **DEFAULT_AGENT_TRIGGERS,
+            "on_specific_chats": {str(target_chat): {"keywords": [], "max_fires": 2}},
+        },
+    )
+
+    message = await _send(db_session, target_chat, sender)
+    await evaluate_triggers(message)
+    assert len(await _stream_entries()) == 1
+
+    await db_session.refresh(agent)
+    assert agent.triggers["on_specific_chats"][str(target_chat)]["max_fires"] == 1
+
+
+async def test_a_permanent_entry_with_no_expiry_fields_is_unaffected(db_session, redis_db):
+    """A match on an entry with neither expires_at nor max_fires must not
+    gain those keys or otherwise change - the pre-0095 permanent-trigger
+    behavior stays a true no-op."""
+    owner = await _make_user(db_session)
+    sender = await _make_user(db_session)
+    owner_agent_chat = await _make_private_chat(db_session, owner, sender)
+    target_chat = await _make_private_chat(db_session, owner, sender)
+    agent = await _make_agent(
+        db_session, owner, owner_agent_chat,
+        triggers={**DEFAULT_AGENT_TRIGGERS, "on_specific_chats": {str(target_chat): {"keywords": []}}},
+    )
+
+    message = await _send(db_session, target_chat, sender)
+    await evaluate_triggers(message)
+    assert len(await _stream_entries()) == 1
+
+    await db_session.refresh(agent)
+    assert agent.triggers["on_specific_chats"][str(target_chat)] == {"keywords": []}
+
+
+async def test_on_any_message_max_fires_decrements_and_disables_at_zero(db_session, redis_db):
+    owner = await _make_user(db_session)
+    sender = await _make_user(db_session)
+    owner_agent_chat = await _make_private_chat(db_session, owner, sender)
+    target_chat = await _make_private_chat(db_session, owner, sender)
+    agent = await _make_agent(
+        db_session, owner, owner_agent_chat,
+        triggers={**DEFAULT_AGENT_TRIGGERS, "on_any_message": {"enabled": True, "max_fires": 1}},
+    )
+
+    first = await _send(db_session, target_chat, sender)
+    await evaluate_triggers(first)
+    assert len(await _stream_entries()) == 1
+
+    await db_session.refresh(agent)
+    assert agent.triggers["on_any_message"]["enabled"] is False
+
+    # Same accumulation note as test_max_fires_decrements_on_match_...: the
+    # stream must stay at exactly the one entry from `first`.
+    second = await _send(db_session, target_chat, sender)
+    await evaluate_triggers(second)
+    assert len(await _stream_entries()) == 1
+
+
+async def test_on_unknown_sender_expired_entry_never_matches(db_session, redis_db):
+    owner = await _make_user(db_session)
+    sender = await _make_user(db_session)
+    owner_agent_chat = await _make_private_chat(db_session, owner, sender)
+    target_chat = await _make_private_chat(db_session, owner, sender)
+    await _make_agent(
+        db_session, owner, owner_agent_chat,
+        triggers={
+            **DEFAULT_AGENT_TRIGGERS,
+            "on_unknown_sender": {"enabled": True, "expires_at": "2000-01-01T00:00:00+00:00"},
+        },
+    )
+
+    message = await _send(db_session, target_chat, sender)
+    await evaluate_triggers(message)
+    assert await _stream_entries() == []

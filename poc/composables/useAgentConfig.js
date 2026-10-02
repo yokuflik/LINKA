@@ -173,7 +173,7 @@ function useAgentConfig(ctx) {
   // variable and clear it explicitly, which this follows).
   const agentUsage = ref(null); // null = not loaded yet. Shape: {window_5h, window_7d}
   let usagePollTimer = null;
-  const AGENT_USAGE_POLL_INTERVAL_MS = 10000;
+  const AGENT_USAGE_POLL_INTERVAL_MS = 30000;
 
   async function loadAgentUsage() {
     try {
@@ -636,6 +636,13 @@ function useAgentConfig(ctx) {
 
     agentResetBusy.value = true;
     agentError.value = '';
+    // Clear the list BEFORE the request, not after: the backend sends the
+    // fresh greeting before it returns, so its new_message WS event can land
+    // before this await resolves - clearing afterwards would wipe it.
+    const previousMessages = agentMessages.value;
+    agentMessages.value = [];
+    agentMessagesLoaded.value = true;
+    agentHasMoreMessages.value = false;
     try {
       myAgent.value = await ctx.apiFetch('/agents/me/reset', { method: 'POST' });
       agentForm.value = cloneForm(myAgent.value);
@@ -649,13 +656,11 @@ function useAgentConfig(ctx) {
       // Just clear the list instead; the fresh greeting the backend just
       // sent arrives on its own via the normal new_message WS event, same as
       // right after agent creation (activateMyAgent never reloads either).
-      agentMessages.value = [];
-      agentMessagesLoaded.value = true;
-      agentHasMoreMessages.value = false;
       if (ctx.knowledgeLoaded) ctx.knowledgeLoaded.value = false;
       if (ctx.knowledgeDocuments) ctx.knowledgeDocuments.value = [];
       ctx.showToast('Agent reset to default');
     } catch (err) {
+      if (!agentMessages.value.length) agentMessages.value = previousMessages;
       agentError.value = ctx.friendlyError(err, "We couldn't reset your agent. Please try again.");
     } finally {
       agentResetBusy.value = false;

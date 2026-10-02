@@ -5,7 +5,7 @@ flush-on-demand (size trigger + on-demand trigger), and the search itself.
 import asyncio
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -96,6 +96,7 @@ async def semantic_search(
     limits: VectorSearchLimits = DEFAULT_VECTOR_SEARCH_LIMITS,
     start_at: Optional[datetime] = None,
     end_at: Optional[datetime] = None,
+    exclude_chat_ids: Optional[Sequence[int]] = None,
 ) -> SemanticSearchResponseOut:
     q = (raw_query or "").strip()
     if len(q) < limits.min_query_len:
@@ -122,6 +123,7 @@ async def semantic_search(
         chat_id=chat_id,
         start_at=start_at,
         end_at=end_at,
+        exclude_chat_ids=exclude_chat_ids,
     )
     return SemanticSearchResponseOut(
         results=[

@@ -46,10 +46,12 @@ from modules.agents.cache import (
 )
 from modules.agents.crud import (
     auto_register_unknown_sender_chat,
+    consume_matched_trigger_fire,
     get_agent_by_id,
     get_agent_by_owner_chat,
     get_enabled_agents_for_owners,
 )
+from modules.agents.goal_tasks import find_goal_task_for_chat
 from modules.agents.ephemeral_tasks import (
     find_task_for_chat,
     fire_summary_and_complete,
@@ -62,6 +64,7 @@ from modules.agents.invoke_debounce import (
     is_turn_running,
     mark_superseded,
 )
+from modules.agents.invoke_notify import _publish_agent_thinking
 from modules.chats.crud.crud_chat import get_chat_by_id
 from modules.chats.crud.crud_participant import get_chat_participants
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE, SYSTEM_MESSAGE_TYPE
@@ -114,6 +117,29 @@ def _within_time_window(window: dict, now: datetime) -> bool:
     return current >= start or current <= end
 
 
+def _trigger_entry_expired(entry: dict) -> bool:
+    """ADR 0095: true if `entry` (an on_specific_chats value, or the
+    on_unknown_sender/on_any_message object) carries an expires_at that has
+    already lapsed, or a max_fires that has already reached zero. Fails open
+    on a malformed expires_at (unparseable string) - same discipline as
+    _within_time_window's existing malformed-config handling; a config error
+    must never silently and permanently gag the agent."""
+    expires_at = entry.get("expires_at")
+    if expires_at:
+        try:
+            parsed = datetime.fromisoformat(expires_at)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            if parsed <= datetime.now(timezone.utc):
+                return True
+        except ValueError:
+            pass
+    max_fires = entry.get("max_fires")
+    if max_fires is not None and max_fires <= 0:
+        return True
+    return False
+
+
 def _matches_trigger_config(triggers: dict, message: Message) -> bool:
     """Matches on_specific_chats/on_time_window only - blocked_read_chat_ids
     lives in Agent.restrictions, which the pre-filter cache does not carry
@@ -121,6 +147,12 @@ def _matches_trigger_config(triggers: dict, message: Message) -> bool:
     separately once the full Agent row is loaded, right before enqueue."""
     chat_rule = triggers.get("on_specific_chats", {}).get(str(message.chat_id))
     if chat_rule is None:
+        return False
+
+    # ADR 0095: an expired/exhausted entry is treated as absent - the actual
+    # deletion happens post-match in _evaluate_triggers, not here (this stays
+    # a pure read-only predicate).
+    if _trigger_entry_expired(chat_rule):
         return False
 
     keywords = chat_rule.get("keywords") or []
@@ -143,7 +175,8 @@ async def _matches_unknown_sender(
     on_time_window. Checked separately from _matches_trigger_config because
     it needs a DB round trip (chat.is_group + prior-message existence),
     unlike the pure cache-only checks above."""
-    if not triggers.get("on_unknown_sender", {}).get("enabled"):
+    cfg = triggers.get("on_unknown_sender", {})
+    if not cfg.get("enabled") or _trigger_entry_expired(cfg):
         return False
     chat = await get_chat_by_id(session, message.chat_id)
     if chat is None or chat.is_group:
@@ -160,7 +193,8 @@ async def _matches_any_message(
     (checked by the caller via _matches_trigger_config's fallback path) -
     here we only decide chat scope. Needs the same DB round trip as
     _matches_unknown_sender for chat.is_group."""
-    if not triggers.get("on_any_message", {}).get("enabled"):
+    cfg = triggers.get("on_any_message", {})
+    if not cfg.get("enabled") or _trigger_entry_expired(cfg):
         return False
     chat = await get_chat_by_id(session, message.chat_id)
     if chat is None or chat.is_group:
@@ -281,6 +315,16 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
             )
             if allowed:
                 await _arm_debounce_eager(owner_agent.id, message.chat_id, message.id)
+                # ADR 0094: fire the drawer's "thinking" indicator the moment
+                # this message is confirmed to queue a turn, not only once a
+                # worker slot actually picks it up (_run_turn's own "started"
+                # publish) - closes a gap where a busy worker pool or the
+                # debounce window itself left the drawer blank for up to
+                # AGENT_TURN_TIMEOUT_SECONDS with no feedback. Owner-chat
+                # branch only (this is the owner's own 1:1 with their agent,
+                # never a third-party chat) - _publish_agent_thinking is
+                # idempotent against the later duplicate "started" event.
+                await _publish_agent_thinking(owner_agent.owner_user_id, "started")
             else:
                 await _notify_activation_quota_exceeded(session, owner_agent.owner_agent_chat_id)
                 await session.commit()
@@ -304,11 +348,16 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
             continue
 
         matched_unknown_sender = await _matches_unknown_sender(session, cfg["triggers"], message)
-        matched = (
-            matched_unknown_sender
-            or _matches_trigger_config(cfg["triggers"], message)
-            or await _matches_any_message(session, cfg["triggers"], message)
-        )
+        matched_specific_chat = _matches_trigger_config(cfg["triggers"], message)
+        matched_any_message = await _matches_any_message(session, cfg["triggers"], message)
+        # ADR 0099: a reply in a chat with an active goal task always wakes
+        # the agent (bypasses on_time_window/keywords), and is exclusive: the
+        # generic trigger flags are zeroed so no unknown-sender quota,
+        # auto-registration or max_fires consumption happens for it.
+        matched_goal_task = find_goal_task_for_chat(cfg["triggers"], message.chat_id) is not None
+        if matched_goal_task:
+            matched_unknown_sender = matched_specific_chat = matched_any_message = False
+        matched = matched_unknown_sender or matched_specific_chat or matched_any_message or matched_goal_task
         if not matched:
             continue
 
@@ -385,5 +434,24 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
             # silently rolled back when session_scope() closes.
             await auto_register_unknown_sender_chat(session, agent, message.chat_id)
             await session.commit()
+
+        # ADR 0095: decrement max_fires / delete-on-lapsed-expires_at for
+        # whichever trigger(s) just matched - on_specific_chats (including
+        # the entry auto-registered above, which never itself carries
+        # expires_at/max_fires so this is a no-op for it),
+        # on_unknown_sender, and on_any_message. Must run after the
+        # auto-register commit above (it re-reads agent.triggers) and before
+        # arming the debounce, so a worker picking this turn up immediately
+        # never reads a stale fire count.
+        agent = await consume_matched_trigger_fire(
+            session,
+            agent,
+            chat_id=message.chat_id,
+            matched_specific_chat=matched_specific_chat,
+            matched_unknown_sender=matched_unknown_sender,
+            matched_any_message=matched_any_message,
+        )
+        await sync_agent_cache(agent)
+        await session.commit()
 
         await _arm_debounce_eager(agent.id, message.chat_id, message.id)

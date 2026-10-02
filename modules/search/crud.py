@@ -88,6 +88,7 @@ def _global_stmt(
     chat_ids: Optional[Sequence[int]],
     start_at: Optional[datetime] = None,
     end_at: Optional[datetime] = None,
+    exclude_chat_ids: Optional[Sequence[int]] = None,
 ):
     stmt = (
         select(Message)
@@ -97,6 +98,8 @@ def _global_stmt(
         )
         .where(*_match_conditions(tsq), *_date_range_conditions(start_at, end_at))
     )
+    if exclude_chat_ids:
+        stmt = stmt.where(Message.chat_id.notin_(exclude_chat_ids))
     if chat_ids is not None:
         # Planner hint only - the JOIN already enforces membership. Passed by the
         # service when the caller is in few enough chats to inline.
@@ -115,11 +118,12 @@ async def search_global_messages(
     chat_ids: Optional[Sequence[int]] = None,
     start_at: Optional[datetime] = None,
     end_at: Optional[datetime] = None,
+    exclude_chat_ids: Optional[Sequence[int]] = None,
 ) -> Sequence[Message]:
     """Global search. The `participants` JOIN enforces *current* membership in
     the query itself - a removed member's chats drop out immediately."""
     tsq = _tsquery(tsq_fn, tsq_value)
-    stmt = _global_stmt(user_id, tsq, chat_ids, start_at, end_at)
+    stmt = _global_stmt(user_id, tsq, chat_ids, start_at, end_at, exclude_chat_ids)
     if before_id is not None:
         stmt = stmt.where(
             Message.id < before_id,

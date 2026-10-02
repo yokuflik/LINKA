@@ -29,9 +29,13 @@ AGENT_INVOKE_STREAM_CLAIM_IDLE_MS = int(
     os.environ.get("AGENT_INVOKE_STREAM_CLAIM_IDLE_MS", "60000")
 )
 # Bounds how many invocations one agent_worker process runs concurrently
-# (asyncio.Semaphore) - independent of the per-agent Gemini/tool rate limits,
-# this just caps this process's own memory/DB-connection footprint.
-AGENT_WORKER_CONCURRENCY = int(os.environ.get("AGENT_WORKER_CONCURRENCY", "10"))
+# (asyncio.Semaphore, actually enforced in AgentInvokeConsumer._drain_shard's
+# per-entry task dispatch - ADR 0094) - independent of the per-agent Gemini/
+# tool rate limits, this just caps this process's own memory/DB-connection
+# footprint. Default 3: conservative starting point for the 1GB single-host
+# demo deploy (ADR 0007) - each concurrent turn holds a DB session/connection
+# plus an in-flight Gemini call.
+AGENT_WORKER_CONCURRENCY = int(os.environ.get("AGENT_WORKER_CONCURRENCY", "3"))
 
 # --- Message-batch debounce + per-chat turn mutex (ADR 0063) ---
 # A matched trigger no longer enqueues onto agent_invoke_stream directly -
@@ -112,8 +116,8 @@ AGENT_GEMINI_BUDGET_MAX_RETRIES = int(os.environ.get("AGENT_GEMINI_BUDGET_MAX_RE
 # Agentic RAG (get_knowledge_index followed by one or more fetch_chunk calls)
 # legitimately needs more than 4 round-trips in one turn; the old cap was
 # sized specifically to fit under the old 5/min limit above, which no longer
-# applies.
-AGENT_TURN_MAX_TOOL_ROUNDTRIPS = int(os.environ.get("AGENT_TURN_MAX_TOOL_ROUNDTRIPS", "12"))
+# applies. Raised 12 -> 16 to give more headroom for longer agentic turns.
+AGENT_TURN_MAX_TOOL_ROUNDTRIPS = int(os.environ.get("AGENT_TURN_MAX_TOOL_ROUNDTRIPS", "16"))
 
 # Whole-turn wall-clock timeout (asyncio.wait_for) - aborts a stuck turn
 # cleanly instead of holding a worker slot indefinitely.
@@ -176,6 +180,12 @@ AGENT_EPHEMERAL_TASK_MAX_MINUTES = int(
 AGENT_EPHEMERAL_TASK_DEFAULT_MINUTES = int(
     os.environ.get("AGENT_EPHEMERAL_TASK_DEFAULT_MINUTES", str(60 * 24))
 )
+
+# ADR 0099: goal-driven conversational tasks (start_goal_task) - hard cap on
+# agent turns per task, and on consecutive turns that neither send a message
+# nor call complete_task/fail_task (both force-close the task as failed).
+AGENT_GOAL_TASK_MAX_TURNS = int(os.environ.get("AGENT_GOAL_TASK_MAX_TURNS", "12"))
+AGENT_GOAL_TASK_MAX_IDLE_TURNS = int(os.environ.get("AGENT_GOAL_TASK_MAX_IDLE_TURNS", "2"))
 
 # ADR 0054: pause_and_escalate freezes a chat for at most this many hours
 # before it auto-resumes on its own (lazy expiry, checked on read in the
@@ -302,6 +312,13 @@ JEV_MALICIOUS_THRESHOLD = float(os.environ.get("JEV_MALICIOUS_THRESHOLD", "0.5")
 # (gemini_client.py::GEMINI_CHAT_MODEL) or vice versa.
 AGENT_JUDGE_REDIRECT_MODEL = os.environ.get("AGENT_JUDGE_REDIRECT_MODEL", "gemini-flash-lite-latest")
 
+# ADR 0093 Phase 1: same minimal-call pattern as AGENT_JUDGE_REDIRECT_MODEL
+# above, for the new BuilderState.CLARIFY state - a cheap, tool-free,
+# history-free call that authors the owner-facing disambiguating question
+# (modules/agents/clarify.py::generate_clarify_question), never the main
+# turn model (gemini_client.py::GEMINI_CHAT_MODEL).
+AGENT_CLARIFY_MODEL = os.environ.get("AGENT_CLARIFY_MODEL", "gemini-flash-lite-latest")
+
 # Own rate bucket (agent_judge_calls:{agent_id}), never shared with
 # agent_gemini_calls (ADR 0047 decision 1) - a judge call consuming from the
 # main budget would let hostile/off-topic traffic starve real turns, defeating
@@ -312,6 +329,43 @@ AGENT_JUDGE_REDIRECT_MODEL = os.environ.get("AGENT_JUDGE_REDIRECT_MODEL", "gemin
 # inherently bounded by how often messages are actually rejected.
 AGENT_JUDGE_CALLS_PER_MINUTE = int(os.environ.get("AGENT_JUDGE_CALLS_PER_MINUTE", "60"))
 AGENT_JUDGE_CALLS_WINDOW_SECONDS = int(os.environ.get("AGENT_JUDGE_CALLS_WINDOW_SECONDS", "60"))
+
+# --- Owner-chat jev router (ADR 0093 Phase 2) ---
+# Own rate bucket (agent_router_calls:{agent_id}), same "never share the
+# Gemini-calls budget" principle as AGENT_JUDGE_CALLS_PER_MINUTE above - a
+# runaway router shouldn't starve the main turn budget, and vice versa. Runs
+# once per config-mode owner-chat turn (not per message like the judge, since
+# config-mode already only ever sees the owner's own messages), so sized
+# lower than the judge bucket.
+AGENT_ROUTER_CALLS_PER_MINUTE = int(os.environ.get("AGENT_ROUTER_CALLS_PER_MINUTE", "30"))
+AGENT_ROUTER_CALLS_WINDOW_SECONDS = int(os.environ.get("AGENT_ROUTER_CALLS_WINDOW_SECONDS", "60"))
+
+# How many prior turns of the owner-agent chat the router sees, alongside the
+# new message - deliberately NOT the full history (builder_state already
+# encodes long-running context, e.g. "mid Builder interview"; a full
+# transcript would burn tokens on every owner message without improving
+# routing accuracy). See ADR 0093's "Router contract" section.
+AGENT_ROUTER_CONTEXT_TURNS = int(os.environ.get("AGENT_ROUTER_CONTEXT_TURNS", "3"))
+
+# If the top two destination probabilities are one_off_action and builder and
+# their margin is under this value, route to BuilderState.CLARIFY instead of
+# guessing (ADR 0093). Starts wide/conservative (favors clarify over a wrong
+# guess) - tightened in Phase 5 once AgentRouterLog has real routing data to
+# tune against.
+AGENT_ROUTER_CLARIFY_MARGIN = float(os.environ.get("AGENT_ROUTER_CLARIFY_MARGIN", "0.25"))
+
+# ADR 0093 Phase 6a (session stickiness/hysteresis): if the owner's current
+# builder_state is NOT the top-scoring destination this turn, but its own
+# probability is within this margin of the top score, stay in the current
+# state instead of switching - stops a low-signal, short message (e.g. mid
+# Builder interview) from yanking the owner out of an in-progress
+# conversation just because it scored marginally higher for a different
+# destination. Only applies when the top destination differs from the
+# current state; irrelevant when they already match. Same conservative-
+# starting-point reasoning as AGENT_ROUTER_CLARIFY_MARGIN - tightened in
+# Phase 5 once AgentRouterLog's new `sticky` column has real data to tune
+# against.
+AGENT_ROUTER_STICKINESS_MARGIN = float(os.environ.get("AGENT_ROUTER_STICKINESS_MARGIN", "0.15"))
 
 # Length cap on the agent.system_prompt prefix folded into the judge's domain
 # description - an oversized owner-authored prompt must not turn the judge
@@ -349,6 +403,23 @@ ATTACHMENT_JUDGE_MATCH_THRESHOLD = float(os.environ.get("ATTACHMENT_JUDGE_MATCH_
 # media-only triggering message (ADR 0088) - independent of
 # JEV_ON_TOPIC_THRESHOLD/JEV_MALICIOUS_THRESHOLD, a different proposition.
 AGENT_MEDIA_ESCALATION_THRESHOLD = float(os.environ.get("AGENT_MEDIA_ESCALATION_THRESHOLD", "0.5"))
+
+# --- Tool-outcome-mismatch judge (ADR 0096) ---
+# A separate, dedicated jev classification call gating the owner-notify path
+# when a turn ends right after an unresolved tool failure - NOT the message
+# judge or the attachment judge above: different question ("does this
+# failure plausibly mean the goal wasn't met"), different call site (only at
+# the two points a turn can end on an unresolved tool error), own rate
+# bucket so it can never starve or be starved by either of those budgets.
+AGENT_OUTCOME_JUDGE_CALLS_PER_MINUTE = int(os.environ.get("AGENT_OUTCOME_JUDGE_CALLS_PER_MINUTE", "60"))
+AGENT_OUTCOME_JUDGE_CALLS_WINDOW_SECONDS = int(os.environ.get("AGENT_OUTCOME_JUDGE_CALLS_WINDOW_SECONDS", "60"))
+
+# Noul cutoff for "this tool failure plausibly means the goal wasn't met" -
+# independent of every other judge threshold above, a different proposition,
+# tunable once AgentOutcomeJudgeLog data comes in.
+AGENT_OUTCOME_JUDGE_MISMATCH_THRESHOLD = float(
+    os.environ.get("AGENT_OUTCOME_JUDGE_MISMATCH_THRESHOLD", "0.5")
+)
 
 # --- Capacity estimation (ADR 0057) ---
 # Rough single-turn wall-clock cost used ONLY to project "roughly how many
@@ -443,8 +514,14 @@ __all__ = [
     "JEV_ON_TOPIC_THRESHOLD",
     "JEV_MALICIOUS_THRESHOLD",
     "AGENT_JUDGE_REDIRECT_MODEL",
+    "AGENT_CLARIFY_MODEL",
     "AGENT_JUDGE_CALLS_PER_MINUTE",
     "AGENT_JUDGE_CALLS_WINDOW_SECONDS",
+    "AGENT_ROUTER_CALLS_PER_MINUTE",
+    "AGENT_ROUTER_CALLS_WINDOW_SECONDS",
+    "AGENT_ROUTER_CONTEXT_TURNS",
+    "AGENT_ROUTER_CLARIFY_MARGIN",
+    "AGENT_ROUTER_STICKINESS_MARGIN",
     "AGENT_JUDGE_SYSTEM_PROMPT_PREVIEW_CHARS",
     "AGENT_JUDGE_FOLLOW_UP_WINDOW_SECONDS",
     "AGENT_JUDGE_FOLLOW_UP_RECENT_MESSAGES",
@@ -452,10 +529,18 @@ __all__ = [
     "ATTACHMENT_JUDGE_CALLS_WINDOW_SECONDS",
     "ATTACHMENT_JUDGE_MATCH_THRESHOLD",
     "AGENT_MEDIA_ESCALATION_THRESHOLD",
+    "AGENT_OUTCOME_JUDGE_CALLS_PER_MINUTE",
+    "AGENT_OUTCOME_JUDGE_CALLS_WINDOW_SECONDS",
+    "AGENT_OUTCOME_JUDGE_MISMATCH_THRESHOLD",
     "AGENT_TOKEN_BUDGET_5H",
     "AGENT_TOKEN_BUDGET_5H_WINDOW_SECONDS",
     "AGENT_TOKEN_BUDGET_7D",
     "AGENT_TOKEN_BUDGET_7D_WINDOW_SECONDS",
     "AGENT_TOKEN_MIN_VIABLE_BUDGET",
     "AGENT_MAX_OUTPUT_TOKENS_CEILING",
+    "AGENT_EPHEMERAL_TASK_DEFAULT_MINUTES",
+    "AGENT_EPHEMERAL_TASK_MAX_MINUTES",
+    "AGENT_MAX_EPHEMERAL_TASKS",
+    "AGENT_GOAL_TASK_MAX_TURNS",
+    "AGENT_GOAL_TASK_MAX_IDLE_TURNS",
 ]

@@ -269,6 +269,7 @@ async def evaluate_message(
     message_id: int,
     message_content: Optional[str],
     message: Optional[Message] = None,
+    goal_task_active: bool = False,
 ) -> JudgeVerdict:
     """Runs the judge gate for one execution-mode, message-fired turn.
     Always returns a JudgeVerdict - never raises; a technical failure is
@@ -309,7 +310,9 @@ async def evaluate_message(
     try:
         answers = await classify(state=message_content, questions=questions)
         await record_tokens(agent.id, _estimate_jev_input_tokens(message_content, questions))
-        on_topic = noul_value(answers, "on_topic") >= settings.JEV_ON_TOPIC_THRESHOLD
+        # ADR 0099: in a goal-task chat the topic IS the goal, so on_topic is
+        # not enforced; the three malicious flags below still are.
+        on_topic = goal_task_active or noul_value(answers, "on_topic") >= settings.JEV_ON_TOPIC_THRESHOLD
         fired = [
             key
             for key in ("prompt_injection", "info_extraction", "code_execution")

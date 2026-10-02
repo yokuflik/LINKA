@@ -49,7 +49,7 @@ def _merge_triggers(current: dict, patch: dict) -> dict:
             if chat_patch is None:
                 merged_chats.pop(chat_id, None)
             else:
-                merged_chats[chat_id] = {**existing_chats.get(chat_id, {}), **chat_patch}
+                merged_chats[chat_id] = {"keywords": [], **existing_chats.get(chat_id, {}), **chat_patch}
         merged["on_specific_chats"] = merged_chats
     return merged
 
@@ -107,6 +107,113 @@ async def update_agent_triggers(session: AsyncSession, agent_id: int, patch: dic
     _check_schedule_quota(patch)
     agent = await session.get(Agent, agent_id)
     agent.triggers = _merge_triggers(agent.triggers, patch)
+    await session.flush()
+    return agent
+
+
+def _consume_entry_fire(entry: dict) -> Optional[dict]:
+    """ADR 0095: returns the entry with max_fires decremented by one, or
+    None if that decrement (or an already-lapsed expires_at) means the entry
+    should be deleted now that its one allowed match just happened. Pure
+    helper, no DB access - callers apply the None/dict result to their own
+    triggers dict and flush."""
+    expires_at = entry.get("expires_at")
+    if expires_at:
+        try:
+            parsed = datetime.fromisoformat(expires_at)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            if parsed <= datetime.now(timezone.utc):
+                return None
+        except ValueError:
+            pass
+    max_fires = entry.get("max_fires")
+    if max_fires is None:
+        return entry
+    remaining = max_fires - 1
+    if remaining <= 0:
+        return None
+    return {**entry, "max_fires": remaining}
+
+
+async def consume_matched_trigger_fire(
+    session: AsyncSession,
+    agent: Agent,
+    *,
+    chat_id: Optional[int],
+    matched_specific_chat: bool,
+    matched_unknown_sender: bool,
+    matched_any_message: bool,
+) -> Agent:
+    """ADR 0095: called once per matched message, after every quota/
+    permission gate in trigger_engine.py::_evaluate_triggers has already
+    passed and right before the turn is actually armed - decrements
+    max_fires (or deletes outright once expires_at has lapsed) on whichever
+    trigger entries actually matched. Only on_specific_chats/on_unknown_sender/
+    on_any_message ever carry these fields (ADR 0095) - on_schedule/
+    on_ephemeral_task are untouched here, they self-clean on their own.
+    No-ops (and does not flush) when nothing matched carries expires_at/
+    max_fires, so a normal permanent-trigger match costs nothing extra."""
+    triggers = dict(agent.triggers)
+    changed = False
+
+    if matched_specific_chat and chat_id is not None:
+        chats = triggers.get("on_specific_chats", {})
+        entry = chats.get(str(chat_id))
+        if entry and (entry.get("expires_at") or entry.get("max_fires") is not None):
+            chats = dict(chats)
+            result = _consume_entry_fire(entry)
+            if result is None:
+                chats.pop(str(chat_id), None)
+            else:
+                chats[str(chat_id)] = result
+            triggers["on_specific_chats"] = chats
+            changed = True
+
+    for flag, matched in (("on_unknown_sender", matched_unknown_sender), ("on_any_message", matched_any_message)):
+        entry = triggers.get(flag, {})
+        if matched and (entry.get("expires_at") or entry.get("max_fires") is not None):
+            result = _consume_entry_fire(entry)
+            triggers[flag] = result if result is not None else {"enabled": False}
+            changed = True
+
+    if not changed:
+        return agent
+    agent.triggers = triggers
+    await session.flush()
+    return agent
+
+
+class TriggerNotFoundError(Exception):
+    """Raised by delete_agent_trigger when the named trigger doesn't exist."""
+
+
+async def delete_agent_trigger(
+    session: AsyncSession, agent_id: int, kind: str, chat_id: Optional[str] = None
+) -> Agent:
+    """ADR 0095: explicit single-trigger deletion for the delete_own_trigger
+    tool - the model-invoked counterpart to expires_at/max_fires lapsing on
+    their own. `kind` is one of "on_specific_chats" (requires `chat_id"),
+    "on_unknown_sender", or "on_any_message" (on_schedule/on_ephemeral_task
+    are out of scope - they already self-clean via their own mechanisms).
+    Raises TriggerNotFoundError rather than silently no-op'ing so the tool
+    can tell the model (and, through it, the owner) the trigger it tried to
+    remove wasn't actually there."""
+    agent = await session.get(Agent, agent_id)
+    triggers = dict(agent.triggers)
+    if kind == "on_specific_chats":
+        chats = dict(triggers.get("on_specific_chats", {}))
+        if chat_id is None or str(chat_id) not in chats:
+            raise TriggerNotFoundError(f"no on_specific_chats trigger for chat_id={chat_id}")
+        chats.pop(str(chat_id))
+        triggers["on_specific_chats"] = chats
+    elif kind in ("on_unknown_sender", "on_any_message"):
+        if not triggers.get(kind, {}).get("enabled"):
+            raise TriggerNotFoundError(f"{kind} is not currently enabled")
+        triggers[kind] = {"enabled": False}
+    else:
+        raise TriggerNotFoundError(f"unknown trigger kind '{kind}'")
+    agent.triggers = triggers
     await session.flush()
     return agent
 

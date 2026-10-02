@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Optional, Sequence
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -178,6 +178,7 @@ async def search_global(
     limits: SearchLimits = DEFAULT_SEARCH_LIMITS,
     start_at: Optional[datetime] = None,
     end_at: Optional[datetime] = None,
+    exclude_chat_ids: Optional[Sequence[int]] = None,
 ) -> SearchResponseOut:
     fn, value, terms = build_tsquery(raw_query, limits)
     validate_date_range(start_at, end_at)
@@ -195,6 +196,7 @@ async def search_global(
         chat_ids=chat_ids,
         start_at=start_at,
         end_at=end_at,
+        exclude_chat_ids=exclude_chat_ids,
     )
     return _paginate(rows, limit, terms, limits.snippet_radius)
 

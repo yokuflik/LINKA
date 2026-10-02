@@ -319,7 +319,9 @@ const AgentChatView = {
       if (!m.content || !(m.type === 2 || m.type === 3)) return null;
       const box = this.mediaBoxStyle(m);
       const w = box ? parseInt(box.width, 10) : (this.imageOrientation(m.media_url) === 'portrait' ? 192 : 256);
-      return { maxWidth: w + 'px' };
+      // Bubble is border-box: add horizontal padding (px-3 = 24px) + the 1px
+      // border on incoming bubbles so the media box itself is the cap.
+      return { maxWidth: (w + (this.isMine(m) ? 24 : 26)) + 'px' };
     },
     blurUrl(m) {
       return this.hasBlur(m) ? this.thumbHashToDataUrl(m.media_blur_hash) : null;
@@ -505,8 +507,13 @@ const AgentChatView = {
           </template>
         </template>
         <div v-if="thinkingStatus" class="mb-2 flex justify-start">
-          <div class="max-w-[80%] rounded-2xl px-3 py-1.5 text-xs italic text-slate-500 bg-white border border-slate-200">
-            {{ thinkingStatus.detail || 'Thinking…' }}
+          <div class="max-w-[80%] px-1 py-2 text-sm italic text-slate-500 flex items-center gap-2">
+            <span class="flex items-center gap-1">
+              <span class="agent-thinking-dot"></span>
+              <span class="agent-thinking-dot"></span>
+              <span class="agent-thinking-dot"></span>
+            </span>
+            <span>{{ thinkingStatus.detail || 'Thinking…' }}</span>
           </div>
         </div>
       </div>

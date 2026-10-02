@@ -55,6 +55,16 @@ def _pending_confirmation_note(agent: Agent) -> str:
 # (AGENT_DRAWER_UI_PLAN.md Wave 2) - purposely coarse (tool name only, no
 # arguments), since this is a UX nicety, not a debug/audit log (that's
 # AgentToolCallLog).
+# Owner-chat router decision -> "thinking" label shown right after routing
+# (keyed by BuilderState value; unknown states fall back to a generic label).
+_ROUTED_STATE_THINKING_LABELS = {
+    "one_off_action": "Routed to One-off action agent…",
+    "clarify": "Routed to Clarification agent…",
+    "builder_agent": "Routed to Agent builder…",
+    "help_general": "Routed to General help agent…",
+    "help_agent_building": "Routed to Agent-building help agent…",
+}
+
 _TOOL_THINKING_LABELS = {
     "send_message": "Sending a message…",
     "reply_message": "Sending a reply…",
@@ -62,6 +72,7 @@ _TOOL_THINKING_LABELS = {
     "leave_group": "Leaving a group…",
     "read_history": "Reading chat history…",
     "update_own_triggers": "Updating its own triggers…",
+    "delete_own_trigger": "Removing a trigger…",
     "get_knowledge_index": "Looking through its knowledge base…",
     "fetch_chunk": "Reading a knowledge document…",
     "search_messages": "Searching messages…",
@@ -73,9 +84,8 @@ _TOOL_THINKING_LABELS = {
     "estimate_api_usage": "Estimating usage…",
     "schedule_one_off_task": "Scheduling a task…",
     "spawn_ephemeral_task": "Starting a one-off task…",
-    "transfer_to_builder": "Bringing in the builder…",
-    "transfer_to_help_building": "Bringing in help…",
-    "transfer_to_help_general": "Bringing in help…",
+    "start_goal_task": "Starting a goal task…",
+    "cancel_goal_task": "Cancelling a goal task…",
     "finish_building_agent": "Finishing up and activating…",
 }
 

@@ -223,8 +223,11 @@ const MessageList = {
     function bubbleMaxWidthStyle(m) {
       if (!m.content || !(m.type === 2 || m.type === 3)) return null;
       const box = mediaBoxStyle(m);
-      const w = box ? parseInt(box.width, 10) : (imageOrientation(m.media_url) === 'portrait' ? 192 : 256);
-      return { maxWidth: w + 'px' };
+      const w = box ? parseInt(box.width, 10) : (props.imageOrientation(m.media_url) === 'portrait' ? 192 : 256);
+      // Bubble is border-box: add horizontal padding (px-3 = 24px) + the 1px
+      // border on incoming bubbles so the media box itself is the cap.
+      const extra = m.sender_id === props.currentUser.id ? 24 : 26;
+      return { maxWidth: (w + extra) + 'px' };
     }
 
     // Small thumbnail for a quoted image/video reply: the real presigned URL

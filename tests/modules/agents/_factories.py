@@ -43,7 +43,7 @@ async def make_agent(
     *,
     is_enabled: bool = True,
     on_schedule: list | None = None,
-    builder_state: str = "supervisor",
+    builder_state: str = "one_off_action",
 ) -> Agent:
     triggers = json.loads(json.dumps(DEFAULT_AGENT_TRIGGERS))
     triggers["on_schedule"] = on_schedule or []

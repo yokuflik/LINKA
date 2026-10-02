@@ -31,14 +31,22 @@ _MESSAGE_RESTRICTIONS_FUNCTION = """
 CREATE OR REPLACE FUNCTION agents_enforce_message_restrictions() RETURNS trigger AS $$
 DECLARE
     r JSONB;
+    owner_chat_id BIGINT;
     chat_is_group BOOLEAN;
 BEGIN
     IF NEW.sender_agent_id IS NULL THEN
         RETURN NEW;
     END IF;
 
-    SELECT restrictions INTO r FROM agents WHERE id = NEW.sender_agent_id;
+    SELECT restrictions, owner_agent_chat_id INTO r, owner_chat_id
+    FROM agents WHERE id = NEW.sender_agent_id;
     IF r IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    -- ADR 0097: the agent's own owner<->agent chat is never a third party;
+    -- config replies/greetings/notices must keep flowing to the owner.
+    IF owner_chat_id IS NOT NULL AND owner_chat_id = NEW.chat_id THEN
         RETURN NEW;
     END IF;
 

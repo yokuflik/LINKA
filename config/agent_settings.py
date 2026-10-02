@@ -119,6 +119,10 @@ AGENT_GEMINI_BUDGET_MAX_RETRIES = int(os.environ.get("AGENT_GEMINI_BUDGET_MAX_RE
 # applies. Raised 12 -> 16 to give more headroom for longer agentic turns.
 AGENT_TURN_MAX_TOOL_ROUNDTRIPS = int(os.environ.get("AGENT_TURN_MAX_TOOL_ROUNDTRIPS", "16"))
 
+# ADR 0102: max `continue_message` calls per turn (a long answer split across
+# up to this many follow-up messages), enforced in code in dispatch_tool_call.
+AGENT_MAX_CONTINUATION_MESSAGES = int(os.environ.get("AGENT_MAX_CONTINUATION_MESSAGES", "3"))
+
 # Whole-turn wall-clock timeout (asyncio.wait_for) - aborts a stuck turn
 # cleanly instead of holding a worker slot indefinitely.
 AGENT_TURN_TIMEOUT_SECONDS = float(os.environ.get("AGENT_TURN_TIMEOUT_SECONDS", "90"))
@@ -184,7 +188,7 @@ AGENT_EPHEMERAL_TASK_DEFAULT_MINUTES = int(
 # ADR 0099: goal-driven conversational tasks (start_goal_task) - hard cap on
 # agent turns per task, and on consecutive turns that neither send a message
 # nor call complete_task/fail_task (both force-close the task as failed).
-AGENT_GOAL_TASK_MAX_TURNS = int(os.environ.get("AGENT_GOAL_TASK_MAX_TURNS", "12"))
+AGENT_GOAL_TASK_MAX_TURNS = int(os.environ.get("AGENT_GOAL_TASK_MAX_TURNS", "20"))
 AGENT_GOAL_TASK_MAX_IDLE_TURNS = int(os.environ.get("AGENT_GOAL_TASK_MAX_IDLE_TURNS", "2"))
 
 # ADR 0054: pause_and_escalate freezes a chat for at most this many hours
@@ -279,13 +283,19 @@ AGENT_KNOWLEDGE_MAX_UPLOAD_BYTES = int(
 )
 
 # --- Turn history transcript (invoke_worker.py) ---
-# Char cap on the formatted "sender: content" transcript seeded into a turn's
-# first Gemini prompt (_build_initial_contents/_build_schedule_contents) -
-# the 20-message window itself has no size bound, so a burst of long messages
-# could otherwise blow up prompt size/cost. Truncated from the start (oldest
-# lines dropped first) so the most recent context is always kept.
+# Total char budget of the formatted "sender: content" transcript seeded into
+# a turn's first Gemini prompt (_build_initial_contents/_build_schedule_contents).
+# Enforced in whole messages (oldest dropped first, never cut mid-message).
 AGENT_HISTORY_TRANSCRIPT_MAX_CHARS = int(
-    os.environ.get("AGENT_HISTORY_TRANSCRIPT_MAX_CHARS", "4000")
+    os.environ.get("AGENT_HISTORY_TRANSCRIPT_MAX_CHARS", "6000")
+)
+# Per-message cap (head+tail kept) so one long message can't crowd out the
+# rest of the window; the newest customer message gets the higher cap.
+AGENT_HISTORY_MESSAGE_MAX_CHARS = int(
+    os.environ.get("AGENT_HISTORY_MESSAGE_MAX_CHARS", "1000")
+)
+AGENT_HISTORY_LATEST_MESSAGE_MAX_CHARS = int(
+    os.environ.get("AGENT_HISTORY_LATEST_MESSAGE_MAX_CHARS", "3000")
 )
 
 # --- LLM Judge / Semantic Router gate (ADR 0053, backend split in ADR 0076) ---
@@ -345,7 +355,7 @@ AGENT_ROUTER_CALLS_WINDOW_SECONDS = int(os.environ.get("AGENT_ROUTER_CALLS_WINDO
 # encodes long-running context, e.g. "mid Builder interview"; a full
 # transcript would burn tokens on every owner message without improving
 # routing accuracy). See ADR 0093's "Router contract" section.
-AGENT_ROUTER_CONTEXT_TURNS = int(os.environ.get("AGENT_ROUTER_CONTEXT_TURNS", "3"))
+AGENT_ROUTER_CONTEXT_TURNS = int(os.environ.get("AGENT_ROUTER_CONTEXT_TURNS", "5"))
 
 # If the top two destination probabilities are one_off_action and builder and
 # their margin is under this value, route to BuilderState.CLARIFY instead of
@@ -481,6 +491,7 @@ __all__ = [
     "AGENT_GEMINI_BUDGET_RETRY_SECONDS",
     "AGENT_GEMINI_BUDGET_MAX_RETRIES",
     "AGENT_TURN_MAX_TOOL_ROUNDTRIPS",
+    "AGENT_MAX_CONTINUATION_MESSAGES",
     "AGENT_TURN_TIMEOUT_SECONDS",
     "AGENT_SEND_RATE_LIMIT_BACKOFF_MS",
     "AGENT_SEND_RATE_LIMIT_BACKOFF_MAX_MS",
@@ -495,6 +506,8 @@ __all__ = [
     "AGENT_PENDING_CONFIRMATION_TTL_MINUTES",
     "AGENT_MAX_SCHEDULE_ENTRIES",
     "AGENT_HISTORY_TRANSCRIPT_MAX_CHARS",
+    "AGENT_HISTORY_MESSAGE_MAX_CHARS",
+    "AGENT_HISTORY_LATEST_MESSAGE_MAX_CHARS",
     "AGENT_SCHEDULE_DUE_ZSET_KEY",
     "AGENT_SCHEDULE_POLL_INTERVAL_SECONDS",
     "AGENT_KNOWLEDGE_CHUNK_MAX_CHARS",

@@ -96,7 +96,7 @@ discipline.
 | Knob | Default | Purpose |
 |---|---|---|
 | `AGENT_ROUTER_CALLS_PER_MINUTE` / `AGENT_ROUTER_CALLS_WINDOW_SECONDS` | mirrors `agent_judge_calls` | Own rate bucket (`ratelimit:agent_router_calls:{agent_id}`) - never shares the Gemini-calls-per-minute budget. |
-| `AGENT_ROUTER_CONTEXT_TURNS` | 3 | How many recent owner-chat turns feed the classification call. |
+| `AGENT_ROUTER_CONTEXT_TURNS` | 5 | How many recent owner-chat turns feed the classification call. |
 | `AGENT_ROUTER_CLARIFY_MARGIN` | 0.25 | Conservative starting point (per the ADR) - tune once real `AgentRouterLog` data exists (Phase 5). |
 | `AGENT_CLARIFY_MODEL` | mirrors `AGENT_JUDGE_REDIRECT_MODEL` | Cheapest-tier model used only to phrase the `clarify` question. |
 
@@ -119,3 +119,18 @@ as the likely hot spot for the one-off/persistent boundary, since its name
 straddles the two), and whether the `clarify` question is actually resolving
 ambiguity rather than annoying the owner on cases the router should have been
 confident about.
+
+## Phase 5 check-in (2026-10-02)
+
+Pulled `agent_router_log` from the local dev DB: 88 rows over ~26h
+(2026-10-01 14:43 to 2026-10-02 17:07), all from local/manual PoC testing -
+not production traffic. Of these, only 18 had `{one_off_action, builder}` as
+the top-2 pair (the only pair the clarify margin ever applies to); 3
+resolved to `clarify` with margins 0.17/0.19/0.23, all comfortably under the
+0.25 threshold, and the next-lowest non-clarify margins in that pair were
+0.26/0.29 - no near-miss cases suggesting 0.25 is miscalibrated either way.
+6 of the 88 rows were `sticky` (Phase 6a), consistent with
+`AGENT_ROUTER_STICKINESS_MARGIN=0.15` intercepting low-signal messages
+before the clarify check ever runs. **Decision: leave both margins
+unchanged** - the sample is real but too thin and non-production to justify
+a tune; re-check this table after real owner usage accumulates post-deploy.

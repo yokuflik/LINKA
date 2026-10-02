@@ -23,6 +23,8 @@ from infra.redis.client import close_redis
 from modules.agents import invoke_worker
 
 logging.basicConfig(level=logging.INFO)
+# httpx logs full request URLs at INFO, which include the Gemini API key.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 

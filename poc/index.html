@@ -91,7 +91,7 @@
 <script src="components/ChatContextMenu.js?v=2026.09.11-2"></script>
 <script src="components/ChatHeader.js?v=2026.09.11-2"></script>
 <script src="components/VoiceMessage.js?v=2026.09.11-2"></script>
-<script src="components/MessageList.js?v=2026.09.11-2"></script>
+<script src="components/MessageList.js?v=2026.10.02-4"></script>
 <script src="components/MessageInput.js?v=2026.09.11-2"></script>
 <script src="components/MessageContextMenu.js?v=2026.09.11-2"></script>
 <script src="components/ForwardModal.js?v=2026.09.11-2"></script>
@@ -117,7 +117,7 @@
 <script src="composables/useAuth.js?v=2026.09.24"></script>
 <script src="composables/useWebsocket.js?v=2026.09.11-2"></script>
 <script src="composables/usePresence.js?v=2026.09.11-2"></script>
-<script src="composables/useTyping.js?v=2026.09.11-2"></script>
+<script src="composables/useTyping.js?v=2026.10.02-6"></script>
 <script src="composables/useChatMeta.js?v=2026.09.11-2"></script>
 <script src="composables/useMessageCache.js?v=2026.09.11-2"></script>
 <script src="composables/useOutbox.js?v=2026.09.11-2"></script>
@@ -196,6 +196,21 @@
   }
   .agent-thinking-dot:nth-child(2) { animation-delay: 0.15s; }
   .agent-thinking-dot:nth-child(3) { animation-delay: 0.3s; }
+  /* Peer-typing bubble in 1:1 chats - same bounce, larger dots. */
+  .peer-typing-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 9999px;
+    background-color: currentColor;
+    opacity: 0.65;
+    animation: peer-typing-bounce 1.2s ease-in-out infinite;
+  }
+  .peer-typing-dot:nth-child(2) { animation-delay: 0.15s; }
+  .peer-typing-dot:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes peer-typing-bounce {
+    0%, 60%, 100% { opacity: 0.65; transform: translateY(0); }
+    30% { opacity: 1; transform: translateY(-4px); }
+  }
   @keyframes agent-thinking-bounce {
     0%, 60%, 100% { opacity: 0.4; transform: translateY(0); }
     30% { opacity: 1; transform: translateY(-3px); }
@@ -495,7 +510,7 @@ const app = createApp({
               :thumbHashToDataUrl="thumbHashToDataUrl" :thumbHashToAspect="thumbHashToAspect"
               :connectionError="messagesConnectionError" :loading="messagesLoading"
               :loadingOlder="loadingOlderMessages" :loadingOlderRetrying="olderMessagesRetrying"
-              :uploadProgress="uploadProgress"
+              :uploadProgress="uploadProgress" :peerTyping="activePeerTyping"
               @message-contextmenu="openMessageContextMenu" @load-older="onMessagesScroll"
               @voice-played="onVoicePlayed" @retry-message="retryFailedMessage" />
 

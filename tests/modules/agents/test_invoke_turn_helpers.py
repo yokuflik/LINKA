@@ -47,3 +47,31 @@ def test_already_handled_marker_still_applies_to_attachment_line():
     lines = transcript.split("\n")
     assert lines[0] == "Customer: [attached file: photo.jpg] [already handled]"
     assert lines[1] == "Agent: here you go"
+
+
+def test_long_message_is_clipped_and_does_not_crowd_out_others():
+    # Newest-first: a short newest message, then a huge older one, then a short one.
+    history = [
+        _msg(content="newest"),
+        _msg(content="X" * 5000),
+        _msg(content="oldest"),
+    ]
+    lines = _format_history_transcript(history).split("\n")
+    assert lines[0] == "Customer: oldest"
+    assert "truncated" in lines[1] and len(lines[1]) < 1200
+    assert lines[2] == "Customer: newest"
+
+
+def test_latest_customer_message_gets_higher_cap():
+    history = [_msg(content="Y" * 2500)]
+    transcript = _format_history_transcript(history)
+    assert transcript == "Customer: " + "Y" * 2500
+
+
+def test_total_budget_drops_whole_oldest_messages_only():
+    history = [_msg(content=f"m{i}-" + "Z" * 900) for i in range(20)]
+    transcript = _format_history_transcript(history)
+    assert transcript.startswith("…(earlier messages truncated)…\n")
+    body = transcript.split("\n")[1:]
+    assert all(l.startswith("Customer: m") for l in body)
+    assert body[-1].startswith("Customer: m0-")

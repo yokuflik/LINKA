@@ -361,6 +361,23 @@ async def test_agent_reply_messages_never_self_trigger(db_session, redis_db):
     assert await _stream_entries() == []
 
 
+async def test_agent_reply_wakes_other_participants_agent(db_session, redis_db):
+    """An agent's reply wakes the *other* participant's agent (agents are
+    first-class senders); only the sender's own agent is excluded."""
+    owner_a = await _make_user(db_session)
+    owner_b = await _make_user(db_session)
+    chat_a = await _make_private_chat(db_session, owner_a, owner_b)
+    chat_b = await _make_private_chat(db_session, owner_b, owner_a)
+    shared = await _make_private_chat(db_session, owner_a, owner_b)
+    await _make_agent(
+        db_session, owner_b, chat_b,
+        triggers={**DEFAULT_AGENT_TRIGGERS, "on_any_message": {"enabled": True}},
+    )
+    reply = await _send(db_session, shared, sender_id=owner_a, type=AGENT_REPLY_MESSAGE_TYPE, content="hi")
+    await evaluate_triggers(reply)
+    assert len(await _stream_entries()) == 1
+
+
 # --- Owner-chat direct wake ---------------------------------------------------
 
 async def test_owner_message_in_own_agent_chat_bypasses_specific_chats_and_time_window(db_session, redis_db):

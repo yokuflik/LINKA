@@ -226,42 +226,94 @@ function useCore(ctx) {
     if (refreshInFlight) return refreshInFlight;
     refreshInFlight = (async () => {
       try {
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          let resp;
-          try {
-            resp = await fetch(`${apiBase.value}/auth/refresh`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ refresh_token: ctx.refreshToken.value }),
-            });
-          } catch (err) {
-            // Network failure / server unreachable - not a rejection. Retry
-            // forever until the server comes back.
-            console.warn('[Linka] refresh: network error, retrying', err);
-            await sleep(REFRESH_RETRY_MS);
-            continue;
-          }
-          if (!resp.ok) {
-            logError('refresh rejected, logging out:', resp.status);
-            ctx.logout();
-            return false;
-          }
-          const body = await resp.json();
-          ctx.accessToken.value = body.access_token;
-          ctx.refreshToken.value = body.refresh_token;
-          localStorage.setItem('linka_access_token', ctx.accessToken.value);
-          localStorage.setItem('linka_refresh_token', ctx.refreshToken.value);
-          log('access token refreshed');
-          scheduleTokenRefresh(); // re-arm the proactive timer off the new exp
-          return true;
+        // Cross-tab mutex: refresh tokens rotate, so two tabs refreshing with
+        // the same (now stale) token would log one of them out.
+        if (navigator.locks && navigator.locks.request) {
+          return await navigator.locks.request('linka_token_refresh', () => doRefresh());
         }
+        return await doRefresh();
       } finally {
         refreshInFlight = null;
       }
     })();
     return refreshInFlight;
   }
+
+  // Another tab may already have rotated the pair; adopt it from localStorage.
+  // Returns true when the adopted access token is still fresh.
+  function adoptStoredTokens() {
+    let at = '', rt = '';
+    try {
+      at = localStorage.getItem('linka_access_token') || '';
+      rt = localStorage.getItem('linka_refresh_token') || '';
+    } catch (_) { return false; }
+    if (!at || !rt) return false;
+    if (rt !== ctx.refreshToken.value) {
+      ctx.accessToken.value = at;
+      ctx.refreshToken.value = rt;
+    }
+    const expMs = decodeJwtExpMs(at);
+    return expMs != null && expMs - Date.now() > REFRESH_SKEW_MS;
+  }
+
+  async function doRefresh() {
+    // Inside the lock: if a sibling tab just refreshed, skip the network call.
+    if (adoptStoredTokens()) {
+      scheduleTokenRefresh();
+      return true;
+    }
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      let resp;
+      try {
+        resp = await fetch(`${apiBase.value}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: ctx.refreshToken.value }),
+        });
+      } catch (err) {
+        // Network failure / server unreachable - not a rejection. Retry
+        // forever until the server comes back.
+        console.warn('[Linka] refresh: network error, retrying', err);
+        await sleep(REFRESH_RETRY_MS);
+        continue;
+      }
+      // 429 (rate limited) and 5xx (server hiccup / deploy) are transient:
+      // the session is still valid, so back off and retry instead of logging out.
+      if (resp.status === 429 || resp.status >= 500) {
+        const ra = parseInt(resp.headers.get('Retry-After') || '', 10);
+        const waitMs = Math.min(Math.max(Number.isFinite(ra) ? ra * 1000 : REFRESH_RETRY_MS, REFRESH_RETRY_MS), 60000);
+        console.warn('[Linka] refresh: transient', resp.status, 'retrying in', waitMs, 'ms');
+        await sleep(waitMs);
+        continue;
+      }
+      if (!resp.ok) {
+        // A sibling tab may have rotated the token while this request was in
+        // flight; if localStorage holds a newer pair, use it instead of logging out.
+        if (resp.status === 401 && adoptStoredTokens()) {
+          scheduleTokenRefresh();
+          return true;
+        }
+        logError('refresh rejected, logging out:', resp.status);
+        ctx.logout();
+        return false;
+      }
+      const body = await resp.json();
+      ctx.accessToken.value = body.access_token;
+      ctx.refreshToken.value = body.refresh_token;
+      localStorage.setItem('linka_access_token', ctx.accessToken.value);
+      localStorage.setItem('linka_refresh_token', ctx.refreshToken.value);
+      log('access token refreshed');
+      scheduleTokenRefresh(); // re-arm the proactive timer off the new exp
+      return true;
+    }
+  }
+
+  // Another tab refreshed: pick up its new pair and re-arm our own timer.
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'linka_refresh_token' || !e.newValue || !ctx.accessToken.value) return;
+    if (adoptStoredTokens()) scheduleTokenRefresh();
+  });
 
   // --- Proactive token refresh -----------------------------------------
   // The access token lives ~15 min. Rather than wait for a 401 (which

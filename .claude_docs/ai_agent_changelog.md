@@ -320,3 +320,18 @@ one). Full design writeup: `docs/adr/
 0089-config-mode-language-fix-and-silent-turn-failures.md`. Full agents
 suite (260/260) green after landing; no new tests (same gap as most
 prior agents-module prompt/notice-path fixes).
+
+## History transcript: per-message caps + whole-message budget (2026-10-02, no ADR)
+
+`_format_history_transcript` used to truncate the joined string with
+`transcript[-4000:]`, so one long message could crowd out the rest of the 20-message
+window and the cut could land mid-line (losing the `Customer:`/`Agent:` label and
+`[already handled]`). Now: each message is clipped to
+`AGENT_HISTORY_MESSAGE_MAX_CHARS` (1000, head+tail kept, marker points to
+`read_history`); the newest customer message gets
+`AGENT_HISTORY_LATEST_MESSAGE_MAX_CHARS` (3000); the total
+`AGENT_HISTORY_TRANSCRIPT_MAX_CHARS` is 6000 (was 4000) and is enforced by dropping
+whole oldest lines only. Tests: `tests/modules/agents/test_invoke_turn_helpers.py`.
+
+## Message formatting knowledge for agents (2026-10-02, no ADR)
+New `modules/agents/message_formatting.py::MESSAGE_FORMATTING_RULES` — the formatting the PoC renders (`poc/composables/messageFormat.js`: `*bold*`, `_italic_`, `~strike~`, ```` ```mono``` ````, `- ` bullets, `1. ` numbered; anything else shows literally) plus a "plain text by default, format only when a person would" rule. Injected into `personas.CHAT_STYLE_RULES` (all execution personas) and `builder_flow.STYLE_RULES` (all config/help states). Keep in sync with `messageFormat.js`.

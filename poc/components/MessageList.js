@@ -44,6 +44,8 @@ const MessageList = {
     // (useMediaUpload.uploadProgress): number 0..1, null = indeterminate
     // (spin, don't fill), absent = not uploading.
     uploadProgress: { type: Object, default: () => ({}) },
+    // 1:1 peer is typing -> bouncing dots as the last item in the scroll area
+    peerTyping: { type: Boolean, default: false },
   },
   emits: ['message-contextmenu', 'load-older', 'voice-played', 'retry-message'],
   // Exposes the scrollable element so the root's scrollMessagesToBottom()
@@ -599,6 +601,11 @@ const MessageList = {
         <span>Loading messages…</span>
       </div>
       <p v-else-if="!messages.length" class="h-full flex items-center justify-center text-sm text-slate-400">No messages here</p>
+      <div v-if="peerTyping" class="pt-1 pb-1 flex items-center gap-1 text-slate-600">
+        <span class="peer-typing-dot"></span>
+        <span class="peer-typing-dot"></span>
+        <span class="peer-typing-dot"></span>
+      </div>
     </div>
   `,
 };

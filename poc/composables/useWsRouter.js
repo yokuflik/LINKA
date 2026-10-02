@@ -84,7 +84,8 @@ function useWsRouter(ctx) {
       ctx.onAgentChatMessage(msg);
       // Badge: only for the agent's own replies, and only while the drawer's
       // chat isn't the one currently open (mirrors the normal unread rule).
-      if (msg.sender_id !== currentUser.value.id && !ctx.showAgentDrawer.value) {
+      // Agent replies (type 7) are sent with sender_id = the owner's own id.
+      if ((msg.sender_id !== currentUser.value.id || msg.type === 7) && !ctx.showAgentDrawer.value) {
         store.bumpUnreadCount(msg.chat_id);
       }
       return;

@@ -40,7 +40,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import main as main_module
@@ -354,7 +354,10 @@ def _auth(token: str) -> dict:
 
 
 async def test_reset_endpoint_404s_for_a_user_with_no_agent(client, db_session, redis_db):
-    _, token = await _login(client, redis_db, "+972500300001")
+    user, token = await _login(client, redis_db, "+972500300001")
+    # Signup now provisions an agent (ADR 0104); drop it to model the legacy no-agent user.
+    await db_session.execute(delete(Agent).where(Agent.owner_user_id == int(user["id"])))
+    await db_session.commit()
 
     resp = await client.post("/agents/me/reset", headers=_auth(token))
 

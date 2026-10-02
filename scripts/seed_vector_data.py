@@ -55,7 +55,8 @@ from modules.vector_search.ddl import ensure_ivfflat_index
 # 100) leaves margin, and consecutive batches need to wait out the *minute*
 # window, not a few seconds (12 batches for the default 1,000-message seed).
 GEMINI_BATCH_SIZE = 90
-GEMINI_REQUEST_SLEEP_SECONDS = 65
+# Paid tier: no per-minute quota wait needed between batches.
+GEMINI_REQUEST_SLEEP_SECONDS = 0
 
 
 async def _fetch_unembedded_messages(session, limit: int) -> list[tuple[int, str]]:
@@ -92,7 +93,7 @@ async def _embed_and_write_back(session, rows: list[tuple[int, str]]) -> None:
         # Only a batch that actually hit Gemini needs to respect the
         # per-minute quota window - an all-cache-hit batch made no live call.
         made_live_call = not dev_cache.CACHE_ENABLED or dev_cache.misses > misses_before
-        if request_no < total_requests and made_live_call:
+        if request_no < total_requests and made_live_call and GEMINI_REQUEST_SLEEP_SECONDS:
             time.sleep(GEMINI_REQUEST_SLEEP_SECONDS)
 
 

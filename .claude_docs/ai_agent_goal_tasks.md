@@ -14,8 +14,8 @@
 1. Prompt contract every turn (goal, done_when, "turn N of max").
 2. `complete_task(outcome: achieved|ready_for_owner_confirmation|declined_by_counterpart)`; 3. `fail_task(reason)`.
 4. `may_commit=false` (default): prompt forbids binding commitments -> ends `ready_for_owner_confirmation`.
-5. Server caps: `AGENT_GOAL_TASK_MAX_TURNS` (12; last-turn prompt demands a terminal call, no terminal call on last turn = force-closed), `AGENT_GOAL_TASK_MAX_IDLE_TURNS` (2 consecutive turns with no send).
+5. Server caps: `AGENT_GOAL_TASK_MAX_TURNS` (20; last-turn prompt demands a terminal call, no terminal call on last turn = force-closed), `AGENT_GOAL_TASK_MAX_IDLE_TURNS` (2 consecutive turns with no send).
 6. Timeout: `_sweep_expired_ephemeral_tasks` (converse branch, status `timed_out`); owner cancel via `cancel_goal_task`.
 
 ## Known limits
-Forced closes (cap/timeout) report only a canned reason - the closing turn has no target-chat history. Terminal-tool success ends the turn immediately.
+Forced closes (cap/timeout) report only a canned reason - the closing turn has no target-chat history. Terminal-tool success ends the turn immediately. A successful `send_message`/`reply_message` no longer ends the turn (2026-10-02): the model may still call `complete_task`/`fail_task` in the same turn (a closing "deal!" message otherwise left the task open and the owner never notified); a 2nd send in the turn is refused in `dispatch_tool_call`, and a turn ending without a terminal call records the idle/turn-cap outcome via `finish_without_call`.

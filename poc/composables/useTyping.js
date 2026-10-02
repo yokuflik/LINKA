@@ -4,7 +4,7 @@
 //
 // Needs from ctx: sendRaw, activeChatId, currentUser, userLabelById.
 function useTyping(ctx) {
-  const { ref, computed } = Vue;
+  const { ref, computed, watch, nextTick } = Vue;
 
   const TYPING_EXPIRY_MS = 5000;
   // How often we send our own event while the user keeps going without a
@@ -97,6 +97,31 @@ function useTyping(ctx) {
     return typingLabelForChat(ctx.activeChatId.value);
   });
 
+  // True only in a 1:1 chat while the peer is typing (drives the bouncing-dots
+  // bubble above the composer; groups and recording keep the text label).
+  const activePeerTyping = computed(() => {
+    // Read the reactive map FIRST: the watch below evaluates this computed
+    // during setup, before sibling composables have merged onto ctx (plain,
+    // non-reactive object). Bailing out early with zero reactive deps would
+    // freeze it at false forever.
+    const typingMap = typingUsersByChatId.value;
+    const chatId = ctx.activeChatId && ctx.activeChatId.value;
+    if (!chatId || (ctx.activeChatIsGroup && ctx.activeChatIsGroup.value)) return false;
+    if (ctx.wsStatus && ctx.wsStatus.value !== 'connected') return false;
+    const entries = typingMap[chatId] || {};
+    return Object.keys(entries).some(
+      (id) => id !== (ctx.currentUser.value && ctx.currentUser.value.id) && ((entries[id] && entries[id].kind) || 'typing') === 'typing'
+    );
+  });
+
+  // Dots appearing shrink the list; if the user was at the bottom, keep the
+  // newest message in view (it rides up above the dots).
+  watch(activePeerTyping, (on, _old, onCleanup) => {
+    if (!on) return;
+    const pinned = ctx.isPinnedToBottom ? ctx.isPinnedToBottom() : false;
+    if (pinned) nextTick(() => ctx.scrollMessagesToBottom());
+  }, { flush: 'pre' });
+
   function resetTyping() {
     typingUsersByChatId.value = {};
   }
@@ -104,6 +129,6 @@ function useTyping(ctx) {
   return {
     typingUsersByChatId,
     noteUserTyping, clearUserTyping, notifyTyping, notifyRecording,
-    typingLabelForChat, activeChatTypingLabel, resetTyping,
+    typingLabelForChat, activeChatTypingLabel, activePeerTyping, resetTyping,
   };
 }

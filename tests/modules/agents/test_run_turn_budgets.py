@@ -32,7 +32,7 @@ _APPROVED_VERDICT = JudgeVerdict(True, "on-topic", is_follow_up=False)
 
 def _mock_judge():
     return patch(
-        "modules.agents.invoke_worker.evaluate_message",
+        "modules.agents.invoke_turn_pre.evaluate_message",
         new=AsyncMock(return_value=_APPROVED_VERDICT),
     )
 

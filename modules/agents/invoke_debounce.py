@@ -56,7 +56,9 @@ def _message_key(agent_id: int, chat_id: int) -> str:
     return f"agent_invoke_debounce_msg:{agent_id}:{chat_id}"
 
 
-async def arm_debounce(agent_id: int, chat_id: int, message_id: Optional[int] = None) -> None:
+async def arm_debounce(
+    agent_id: int, chat_id: int, message_id: Optional[int] = None, *, keep_newer: bool = False
+) -> None:
     """(Re)schedules the fire time for this (agent_id, chat_id) pair
     AGENT_INVOKE_DEBOUNCE_SECONDS out from now, and remembers `message_id` as
     the one to enqueue when it fires - called from both a fresh trigger
@@ -70,6 +72,9 @@ async def arm_debounce(agent_id: int, chat_id: int, message_id: Optional[int] = 
                 _message_key(agent_id, chat_id),
                 str(message_id),
                 ex=int(settings.AGENT_INVOKE_DEBOUNCE_SECONDS) + 60,
+                # keep_newer: re-arming a popped entry must never clobber a
+                # newer message stashed since (ADR 0103).
+                nx=keep_newer,
             )
         await redis_client.zadd(
             settings.AGENT_INVOKE_DEBOUNCE_ZSET_KEY,

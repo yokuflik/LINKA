@@ -286,7 +286,11 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
     # user message produced two full Gemini turns, the second answering
     # nothing since it had no new input, which is what broke the chain rather
     # than a fix).
-    if message.type in (SYSTEM_MESSAGE_TYPE, AGENT_REPLY_MESSAGE_TYPE) or message.sender_id is None:
+    # Agent replies are only skipped for the owner-chat branch below (loop
+    # guard). In any other chat they wake the *other* participants' agents
+    # like any message - agents are first-class senders; the hourly
+    # activation quota + token budgets bound any agent-to-agent ping-pong.
+    if message.type == SYSTEM_MESSAGE_TYPE or message.sender_id is None:
         return
 
     # Owner -> their own agent's dedicated 1:1 chat (AGENT_DRAWER_UI_PLAN.md
@@ -298,6 +302,8 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
     # checks as any other trigger match.
     owner_agent = await get_agent_by_owner_chat(session, message.chat_id)
     if owner_agent is not None and owner_agent.owner_user_id == message.sender_id:
+        if message.type == AGENT_REPLY_MESSAGE_TYPE:
+            return
         # ADR 0054 (revised): no implicit auto-resume here anymore - any
         # message in the owner's own agent chat used to resume the most-
         # recently-escalated pause regardless of content, which silently

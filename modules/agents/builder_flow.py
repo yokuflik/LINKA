@@ -15,6 +15,7 @@ into dispatch.
 from enum import Enum
 
 from .help_docs import AGENT_BUILDING_HELP_DOC, GENERAL_HELP_DOC
+from .message_formatting import MESSAGE_FORMATTING_RULES
 
 
 class BuilderState(str, Enum):
@@ -31,6 +32,7 @@ Write like a real person texting on WhatsApp, not like a bot filling out a form:
 - Short sentences. Natural line breaks for air, not walls of text.
 - No markdown headers, no "Step 1:"-style labels, no dense bullet lists. If you must \
 list a couple of things, just say them in a short line or two, plainly.
+- {formatting_rules}
 - One emoji here and there is fine to soften a message - never more than one per \
 message, and never forced.
 - Never echo back at length what the user just said (no "Saved: I have set the \
@@ -95,6 +97,8 @@ you this before / already talked about this - don't guess, don't say you don't r
 and don't ask them to repeat it from scratch. Call `search_messages` for this chat first to \
 look it up, then answer from what you find. Only ask the owner to repeat themselves if the \
 search genuinely turns up nothing relevant."""
+STYLE_RULES = STYLE_RULES.replace("{formatting_rules}", MESSAGE_FORMATTING_RULES.strip())
+
 
 
 ONE_OFF_ACTION_PROMPT = """You are this user's agent, talking to your own owner in their \

@@ -211,7 +211,7 @@ async def test_poll_loop_fires_every_currently_due_member_in_one_tick(db_session
         stop_event.set()
         return result
 
-    with patch("modules.agents.invoke_worker.due_members", side_effect=_due_members_then_stop):
+    with patch("modules.agents.invoke_poll_loops.due_members", side_effect=_due_members_then_stop):
         await _schedule_poll_loop(stop_event)
 
     stream = await _stream_entries()
@@ -233,7 +233,7 @@ async def test_poll_loop_survives_one_entrys_firing_exception(db_session, redis_
         stop_event.set()
         raise RuntimeError("boom")
 
-    with patch("modules.agents.invoke_worker._fire_schedule_entry", side_effect=_stop_after_first_tick):
+    with patch("modules.agents.invoke_poll_loops._fire_schedule_entry", side_effect=_stop_after_first_tick):
         await _schedule_poll_loop(stop_event)  # must not raise
 
 

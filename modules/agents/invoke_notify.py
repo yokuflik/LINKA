@@ -42,7 +42,7 @@ _PEER_TYPING_REFRESH_SECONDS = 3.0
 # Tools whose execution posts a message into the triggering chat - once one of
 # these lands, the peer-visible typing loop must stop immediately (see its
 # cancellation right after execute_tool_call in invoke_worker.py).
-_MESSAGE_SENDING_TOOL_NAMES = frozenset({"send_message", "reply_message"})
+_MESSAGE_SENDING_TOOL_NAMES = frozenset({"send_message", "reply_message", "continue_message"})
 
 
 async def _publish_peer_typing_loop(chat_id: int, sender_id: int, *, owns_indicator: bool) -> None:

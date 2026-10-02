@@ -11,7 +11,7 @@ actually work end to end. Step 2 (below) extends it with execution-mode
 text-reply and tool-call turns - a real 1:1 chat where the agent is
 triggered by an incoming message from a non-owner user (message_id set,
 config_mode_turn=False). The judge (a real, separate Gemini-shaped call via
-modules.agents.invoke_worker.evaluate_message) is mocked to an approved
+modules.agents.invoke_turn_pre.evaluate_message) is mocked to an approved
 verdict throughout Step 2 - real judge behavior is already covered by
 test_judge.py and is out of scope here.
 """
@@ -57,7 +57,7 @@ _APPROVED_VERDICT = JudgeVerdict(True, "on-topic", is_follow_up=False)
 
 def _mock_judge():
     return patch(
-        "modules.agents.invoke_worker.evaluate_message",
+        "modules.agents.invoke_turn_pre.evaluate_message",
         new=AsyncMock(return_value=_APPROVED_VERDICT),
     )
 

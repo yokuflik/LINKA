@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from modules.auth.limits import AuthPolicy, DEFAULT_AUTH_POLICY
+from modules.agents.provisioning import provision_agent
 from modules.users.crud import create_user
 from modules.users.crud import get_user_by_phone
 from modules.users.models import User
@@ -201,6 +202,14 @@ async def _find_or_create_and_issue(
             # instead of crashing on user.id below.
             user = await get_user_by_phone(session, phone_number)
             is_new_user = False
+
+    if is_new_user:
+        # ADR 0104: best-effort - a provisioning failure must never fail signup
+        # (POST /agents/me self-heals later).
+        try:
+            await provision_agent(session, user.id)
+        except Exception:
+            logger.exception("agent provisioning failed on signup for user_id=%s", user.id)
 
     access_token = _create_access_token(user.id, policy=policy)
     refresh_token = await _issue_refresh_token(user.id)

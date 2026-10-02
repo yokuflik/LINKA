@@ -182,7 +182,8 @@ async def test_process_entry_skips_and_rearms_when_a_turn_is_already_running(db_
     # Re-armed rather than dropped - the message gets a real chance to fire
     # once the in-flight turn's lock is released.
     assert await due_pairs(now=time.time() + 3600) == [(agent.id, target_chat)]
-    assert await pop_latest_message_id(agent.id, target_chat) is None  # no message_id carried by re-arm
+    # ADR 0103: the entry's own message_id is carried so the re-fire isn't skipped
+    assert await pop_latest_message_id(agent.id, target_chat) == message_id
     # ADR 00732: the in-flight turn is also flagged superseded, so it can stop
     # itself before delivering a now-stale reply.
     assert await is_superseded(agent.id, target_chat) is True

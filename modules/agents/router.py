@@ -18,7 +18,8 @@ from modules.agents import knowledge_service
 from modules.agents.cache import sync_agent_cache
 from modules.agents.crud import KnowledgeQuotaExceededError, ScheduleQuotaExceededError, resume_agent_chat
 from modules.agents.knowledge_service import KnowledgeValidationError
-from modules.agents.models import Agent
+from modules.agents.models import DEFAULT_AGENT_TRIGGERS, Agent
+from modules.agents.provisioning import provision_agent
 from modules.agents.reset import reset_agent_to_default
 from modules.media.errors import MediaValidationError
 from modules.agents.schedule import sync_schedule_zset
@@ -60,6 +61,8 @@ def _agent_out(agent: Agent) -> AgentOut:
     from modules.agents.crud import _active_pauses
 
     fields = {name: getattr(agent, name) for name in AgentOut.model_fields if hasattr(agent, name)}
+    # Rows created before a trigger kind existed (no migrations) lack its key.
+    fields["triggers"] = {**DEFAULT_AGENT_TRIGGERS, **(fields.get("triggers") or {})}
     fields["paused_chat_ids"] = [entry["chat_id"] for entry in _active_pauses(agent)]
     return AgentOut.model_validate(fields)
 
@@ -80,44 +83,7 @@ async def create_my_agent(
     """Idempotent: returns the existing agent if the caller already has one
     (mirrors get_or_create_private_chat's shape) rather than 409ing, since
     the config UI just wants "make sure I have one" semantics."""
-    existing = await agent_crud.get_agent_by_owner(session, user_id)
-    if existing is not None:
-        return _agent_out(existing)
-
-    # Owner-agent chat: a permanent 1:1-shaped chat with the owner as its
-    # only participant (the agent has no user_id of its own - it always acts
-    # as the owner, ADR 0045). Created eagerly, not lazily, since the daily
-    # time-budget notification depends on it existing.
-    chat = await create_chat(session, chat_id=await next_id(), is_group=False)
-    await add_participant_to_chat(session, chat_id=chat.id, user_id=user_id, role=ROLE_MEMBER)
-
-    agent = Agent(id=await next_id(), owner_user_id=user_id, owner_agent_chat_id=chat.id)
-    session.add(agent)
-    await session.commit()
-    await sync_agent_cache(agent)
-
-    # Opening greeting: a real, persisted message (not a client-side-only
-    # placeholder) so it survives reload / shows up on any device. Sent the
-    # same way any agent reply is (process_outgoing, AGENT_REPLY_MESSAGE_TYPE)
-    # so it's indistinguishable from a normal turn. process_outgoing
-    # self-commits, so this runs after the chat/agent transaction above, not
-    # inside it. Best-effort, same reasoning as the reset path below: the
-    # agent itself already exists at this point, so a transient send-path
-    # failure here must not turn into a 500 that hides a successful creation.
-    try:
-        await message_service.process_outgoing(
-            session,
-            sender_id=user_id,
-            chat_id=chat.id,
-            client_message_id=f"agent-greeting-{agent.id}",
-            content=_GREETING_TEXT,
-            type=AGENT_REPLY_MESSAGE_TYPE,
-            sender_agent_id=agent.id,
-        )
-    except Exception:
-        logger.exception("Failed to send greeting after agent creation for user_id=%s", user_id)
-
-    return _agent_out(agent)
+    return _agent_out(await provision_agent(session, user_id))
 
 
 @router.patch("/me", response_model=AgentOut)

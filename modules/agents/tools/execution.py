@@ -110,6 +110,13 @@ async def _tool_send_message(session: AsyncSession, agent: Agent, arguments: dic
     return {"message_id": str(message.id)}
 
 
+async def _tool_continue_message(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    """ADR 0102: same send path/restrictions/quota as send_message; the
+    per-turn cap lives in invoke_turn_loop.dispatch_tool_call (it needs the
+    turn state, which tool handlers don't receive)."""
+    return await _tool_send_message(session, agent, arguments)
+
+
 async def _tool_reply_message(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
     chat_id = int(arguments["chat_id"])
     reply_to_message_id = int(arguments["reply_to_message_id"])
@@ -774,6 +781,7 @@ async def _tool_pause_and_escalate(session: AsyncSession, agent: Agent, argument
 EXECUTION_TOOL_HANDLERS = {
     "send_message": _tool_send_message,
     "reply_message": _tool_reply_message,
+    "continue_message": _tool_continue_message,
     "create_chat": _tool_create_chat,
     "leave_group": _tool_leave_group,
     "read_history": _tool_read_history,

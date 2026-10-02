@@ -44,6 +44,7 @@ from modules.messaging.models import Message
 from modules.receipts.models import MessageReceiptLog
 from modules.chats.models.participant import Participant
 from modules.users.models import User
+from modules.agents.provisioning import provision_agent
 from config import (
     RECEIPT_KIND_DELIVERED,
     RECEIPT_KIND_PLAYED,
@@ -415,6 +416,12 @@ async def main(messages_per_chat: int, days: int) -> None:
     async with session_scope() as session:
         print("Users:")
         users = await _ensure_users(session)
+
+        # Same as the real signup path (ADR 0104); idempotent for existing users.
+        print("Agents:")
+        for user in users:
+            agent = await provision_agent(session, user.id)
+            print(f"  agent for {user.username} ({agent.id})")
 
         print("Avatars:")
         await _ensure_avatars(session, users)

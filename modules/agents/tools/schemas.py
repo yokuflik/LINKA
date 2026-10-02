@@ -35,6 +35,18 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "continue_message",
+        "description": "Send one part of a long answer when the whole thing won't fit in a single response, and get another turn to write the next part. Use it INSTEAD of send_message for every part except the last one (send the last part with a normal send_message). Split at a natural boundary; never repeat what you already sent. The number of consecutive parts per turn is capped - the tool result tells you how many remain, and once none remain you must finish with send_message.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chat_id": {"type": "string", "description": "Target chat id"},
+                "content": {"type": "string", "description": "This part of the message"},
+            },
+            "required": ["chat_id", "content"],
+        },
+    },
+    {
         "name": "create_chat",
         "description": "Open a brand-new 1:1 chat with a user the owner has not messaged before (or fetch the existing one).",
         "parameters": {

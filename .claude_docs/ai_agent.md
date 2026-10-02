@@ -21,6 +21,8 @@ owner-notification/typing-indicator helpers (`_publish_agent_thinking`,
 No behaviour change - references to these helper names elsewhere in this
 file/the changelog files as "in `invoke_worker.py`" predate the split.
 
+**ADR 0100 (2026-10-02)** then moved `_run_turn` out too: `invoke_turn.py` (setup/teardown) -> `invoke_turn_pre.py` (judge gate, owner router, CLARIFY, seeding, goal start) -> `invoke_turn_loop.py` (round-trips, tool dispatch) with `invoke_turn_steps.py` (supersede/budget/prompt/turn endings, `_check_outcome_mismatch`) and state in `invoke_turn_ctx.TurnCtx`; poll loops + `_fire_schedule_entry` -> `invoke_poll_loops.py`. `invoke_worker.py` keeps `AgentInvokeConsumer`/`run_forever` and re-exports `_run_turn`. Any older "`invoke_worker.py::_run_turn`" reference in these docs means the `invoke_turn*` modules now. Tests patch the *calling* module (e.g. `invoke_turn_pre.evaluate_message`).
+
 Full design rationale: `docs/adr/0045-ai-agent-service-account-tool-calling.md`
 (base design), `docs/adr/0046-agent-schedules-knowledge-base-and-byok.md`
 (schedules, knowledge base, BYOK, pre-filter cache - extends 0045, does not
@@ -91,7 +93,7 @@ interface-only (never mention backend/infra/model/mechanism terms - see ADR
 ## Current tool registry
 
 **Execution mode** (any chat except `owner_agent_chat_id`, or a
-schedule-fired turn): `send_message`, `reply_message`, `create_chat`,
+schedule-fired turn): `send_message`, `reply_message`, `continue_message` (ADR 0102: send one part of a long answer + get another turn; cap `AGENT_MAX_CONTINUATION_MESSAGES`=3/turn enforced in `invoke_turn_loop.dispatch_tool_call`; config-mode `MAX_TOKENS` partials auto-continue under the same cap via `finish_max_tokens` + `CONTINUATION_PROMPT`), `create_chat`,
 `leave_group`, `read_history`, `count_messages_in_range`,
 `bulk_fetch_messages` (ADR 0072), `search_messages`,
 `search_semantic` (ADR 0069), `search_knowledge_semantic` (ADR 0078),
@@ -316,3 +318,6 @@ re-crossing the ~300-line threshold).
 **Owner-chat jev router calls** (ADR 0093, own bucket, never shares the
 Gemini-calls-per-minute budget) - rate/config detail, `AgentRouterLog` shape,
 and margin-tuning notes: `.claude_docs/ai_agent_owner_chat_router.md`.
+
+## Provisioning (ADR 0104, reverses ADR 0047 lazy half)
+`modules/agents/provisioning.py::provision_agent` (idempotent: owner-agent chat + `Agent` + cache sync + greeting) is called best-effort from `modules/auth/service.py::_find_or_create_and_issue` for brand-new users, and by `POST /agents/me` (self-heal for older accounts). `is_enabled` still defaults `False`.

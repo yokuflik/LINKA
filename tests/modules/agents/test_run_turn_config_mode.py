@@ -148,7 +148,7 @@ async def test_clarify_state_posts_the_generated_question_bypassing_the_normal_t
     await db_session.commit()
 
     with patch(
-        "modules.agents.invoke_worker.generate_clarify_question",
+        "modules.agents.invoke_turn_pre.generate_clarify_question",
         new=AsyncMock(return_value="Just this once, or every day going forward?"),
     ) as mock_generate:
         await _run_turn(agent.id, owner_chat, triggering_message.id)
@@ -181,7 +181,7 @@ async def test_clarify_state_does_not_change_builder_state(db_session, redis_db)
     await db_session.commit()
 
     with patch(
-        "modules.agents.invoke_worker.generate_clarify_question",
+        "modules.agents.invoke_turn_pre.generate_clarify_question",
         new=AsyncMock(return_value="Once, or ongoing?"),
     ):
         await _run_turn(agent.id, owner_chat, triggering_message.id)
@@ -212,7 +212,7 @@ async def test_router_decision_is_persisted_before_the_tool_calling_loop_runs(db
 
     with (
         patch(
-            "modules.agents.invoke_worker.route_owner_turn",
+            "modules.agents.invoke_turn_pre.route_owner_turn",
             new=AsyncMock(return_value=RouterDecision(BuilderState.BUILDER, {"builder": 0.9}, 0.8)),
         ) as mock_route,
         mock_gemini_turn(text_result("let's set it up")),
@@ -252,11 +252,11 @@ async def test_router_decision_of_clarify_bypasses_the_tool_calling_loop_in_the_
 
     with (
         patch(
-            "modules.agents.invoke_worker.route_owner_turn",
+            "modules.agents.invoke_turn_pre.route_owner_turn",
             new=AsyncMock(return_value=RouterDecision(BuilderState.CLARIFY, {"one_off_action": 0.55, "builder": 0.5}, 0.05)),
         ),
         patch(
-            "modules.agents.invoke_worker.generate_clarify_question",
+            "modules.agents.invoke_turn_pre.generate_clarify_question",
             new=AsyncMock(return_value="Just this once, or every day going forward?"),
         ) as mock_generate,
     ):
@@ -284,7 +284,7 @@ async def test_router_is_not_called_for_a_schedule_fired_turn(db_session, redis_
     agent = await make_agent(db_session, owner, owner_chat, builder_state=BuilderState.ONE_OFF_ACTION.value)
 
     with (
-        patch("modules.agents.invoke_worker.route_owner_turn", new=AsyncMock()) as mock_route,
+        patch("modules.agents.invoke_turn_pre.route_owner_turn", new=AsyncMock()) as mock_route,
         mock_gemini_turn(text_result("done")),
     ):
         await _run_turn(agent.id, owner_chat, schedule_instruction="say hi")
@@ -293,3 +293,38 @@ async def test_router_is_not_called_for_a_schedule_fired_turn(db_session, redis_
 
     await db_session.refresh(agent)
     assert agent.builder_state == BuilderState.ONE_OFF_ACTION.value
+
+
+async def test_max_tokens_partial_is_continued_up_to_cap(db_session, redis_db):
+    # ADR 0102: a truncated config-mode reply is posted, then the model is
+    # asked to continue; the final (STOP) part is posted as its own message.
+    owner = await make_user(db_session)
+    owner_chat = await make_chat(db_session, owner)
+    agent = await make_agent(db_session, owner, owner_chat)
+
+    with mock_gemini_turn(
+        text_result("part one", finish_reason="MAX_TOKENS"),
+        text_result("part two"),
+    ):
+        await _run_turn(agent.id, owner_chat)
+
+    messages = await get_chat_messages(db_session, chat_id=owner_chat)
+    assert sorted(m.content for m in messages) == ["part one", "part two"]
+
+
+async def test_max_tokens_continuation_stops_at_cap(db_session, redis_db):
+    from config import settings
+
+    owner = await make_user(db_session)
+    owner_chat = await make_chat(db_session, owner)
+    agent = await make_agent(db_session, owner, owner_chat)
+
+    cap = settings.AGENT_MAX_CONTINUATION_MESSAGES
+    # cap continuations + the original = cap + 1 truncated results; the turn
+    # must end after the last one instead of asking for another.
+    results = [text_result(f"p{i}", finish_reason="MAX_TOKENS") for i in range(cap + 1)]
+    with mock_gemini_turn(*results):
+        await _run_turn(agent.id, owner_chat)
+
+    messages = await get_chat_messages(db_session, chat_id=owner_chat)
+    assert len(messages) == cap + 1

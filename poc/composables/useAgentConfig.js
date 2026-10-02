@@ -533,8 +533,9 @@ function useAgentConfig(ctx) {
     // No forceKind = auto-detect by MIME (image/video/file), same as the main
     // chat composer's Photos & Videos picker; forceKind='file' only when the
     // owner explicitly picked the Document entry.
-    const kind = ctx.mediaKindForMime(file.type, forceKind);
-    if (!kind) { ctx.showToast("That file type isn't supported."); return; }
+    // Anything that isn't an image/video is sent as a generic file, so every
+    // file type can be attached (matches useMediaUpload.js's stageAttachment).
+    const kind = ctx.mediaKindForMime(file.type, forceKind) || 'file';
     if (file.size <= 0) { ctx.showToast('That file looks empty.'); return; }
     if (ctx.MEDIA_MAX_BYTES && file.size > ctx.MEDIA_MAX_BYTES[kind]) {
       const limitMb = ctx.MEDIA_MAX_BYTES[kind] / 1024 / 1024;

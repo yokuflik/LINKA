@@ -100,7 +100,8 @@ async def _log_call(
             tool_name=tool_name,
             arguments=arguments,
             allowed=allowed,
-            denial_reason=denial_reason,
+            # Column is VARCHAR(128); clip so a long denial text can't fail the commit.
+            denial_reason=denial_reason[:128] if denial_reason else denial_reason,
         )
     )
 

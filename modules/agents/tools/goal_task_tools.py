@@ -52,8 +52,11 @@ def _chat_gated(tool_name: str):
     handler = EXECUTION_TOOL_HANDLERS[tool_name]
 
     async def gated(session: AsyncSession, agent: Agent, arguments: dict, *, chat_id: int, task_id: str) -> dict:
-        if str(arguments.get("chat_id")) != str(chat_id):
-            raise ToolDeniedError("this task may only act in its own chat")
+        # An omitted chat_id defaults to the task's own chat (the only legal one).
+        if arguments.get("chat_id") in (None, ""):
+            arguments = {**arguments, "chat_id": str(chat_id)}
+        if str(arguments["chat_id"]) != str(chat_id):
+            raise ToolDeniedError(f"this task may only act in its own chat; use chat_id={chat_id}")
         return await handler(session, agent, arguments)
 
     return gated

@@ -138,7 +138,7 @@ async def test_goal_turn_denies_other_tools_and_other_chats(db_session, redis_db
     off_target = await execute_tool_call(
         db_session, agent, "send_message", {"chat_id": str(other_chat), "content": "hi"}, chat_id=target
     )
-    assert off_target["error"] == "this task may only act in its own chat"
+    assert off_target["error"].startswith("this task may only act in its own chat")
 
 
 async def test_goal_turn_can_send_in_its_own_chat(db_session, redis_db):
@@ -321,7 +321,7 @@ async def _reply_setup(db_session):
 
 def _judge():
     return patch(
-        "modules.agents.invoke_worker.evaluate_message",
+        "modules.agents.invoke_turn_pre.evaluate_message",
         new=AsyncMock(return_value=JudgeVerdict(True, "on-topic", is_follow_up=False)),
     )
 

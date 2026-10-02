@@ -178,8 +178,9 @@ def _format_history_transcript(history) -> str | None:
     'Customer: ...' transcript block (oldest first) - the explicit role
     label (rather than a raw sender_id) reads far better to Gemini than a
     numeric id, and matches how a human would paste a chat log. Truncated to
-    AGENT_HISTORY_TRANSCRIPT_MAX_CHARS from the start (oldest lines dropped
-    first) so the most recent context always survives a long/verbose chat.
+    AGENT_HISTORY_TRANSCRIPT_MAX_CHARS in whole messages (oldest dropped first,
+    never cut mid-message); each message is also capped individually
+    (head+tail kept) so one long message can't crowd out the rest.
 
     Customer/Owner lines followed later in the transcript by an Agent line
     are marked '[already handled]' (ADR 0071) - the agent would not have
@@ -197,24 +198,55 @@ def _format_history_transcript(history) -> str | None:
     is_agent = [m.type == AGENT_REPLY_MESSAGE_TYPE for m in ordered]
     handled = [any(is_agent[i + 1:]) for i in range(len(ordered))]
 
-    def _line(m) -> str:
+    last = len(ordered) - 1
+
+    def _clip(text: str, cap: int) -> str:
+        if len(text) <= cap:
+            return text
+        keep_head = cap // 2
+        keep_tail = cap - keep_head
+        omitted = len(text) - cap
+        return (
+            f"{text[:keep_head]} …[truncated, {omitted} chars omitted; "
+            f"full text via read_history]… {text[-keep_tail:]}"
+        )
+
+    def _line(i: int, m) -> str:
         parts = []
         if m.content:
-            parts.append(m.content)
+            # The newest message, when it is the customer's, is the one the
+            # agent must answer - it gets a higher per-message cap.
+            cap = (
+                settings.AGENT_HISTORY_LATEST_MESSAGE_MAX_CHARS
+                if i == last and not is_agent[i]
+                else settings.AGENT_HISTORY_MESSAGE_MAX_CHARS
+            )
+            parts.append(_clip(m.content, cap))
         if m.type in settings.MEDIA_MESSAGE_TYPES and m.media_name:
             parts.append(f"[attached file: {m.media_name}]")
         return " ".join(parts)
 
     lines = [
-        f'{"Agent" if is_agent[i] else "Customer"}: {_line(m)}'
+        f'{"Agent" if is_agent[i] else "Customer"}: {_line(i, m)}'
         + ("" if is_agent[i] or not handled[i] else " [already handled]")
         for i, m in enumerate(ordered)
     ]
     if not lines:
         return None
-    transcript = "\n".join(lines)
-    if len(transcript) > settings.AGENT_HISTORY_TRANSCRIPT_MAX_CHARS:
-        transcript = "…(earlier messages truncated)…\n" + transcript[-settings.AGENT_HISTORY_TRANSCRIPT_MAX_CHARS:]
+    # Whole-message budget: walk newest -> oldest and stop at a message
+    # boundary, so a line is never cut mid-way (its role label and
+    # [already handled] marker always survive). The newest line is always kept.
+    budget = settings.AGENT_HISTORY_TRANSCRIPT_MAX_CHARS
+    kept_from = len(lines) - 1
+    used = len(lines[kept_from])
+    for i in range(len(lines) - 2, -1, -1):
+        used += len(lines[i]) + 1
+        if used > budget:
+            break
+        kept_from = i
+    transcript = "\n".join(lines[kept_from:])
+    if kept_from > 0:
+        transcript = "…(earlier messages truncated)…\n" + transcript
     return transcript
 
 

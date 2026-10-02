@@ -3,8 +3,8 @@
 round-trip cap) that call modules.agents.outcome_judge.evaluate_tool_outcome
 when the turn ends right on top of an unresolved tool failure.
 
-Only `modules.agents.invoke_worker.evaluate_tool_outcome` and
-`modules.agents.invoke_worker.notify_outcome_mismatch` are mocked here (real
+Only `modules.agents.invoke_turn_steps.evaluate_tool_outcome` and
+`modules.agents.invoke_turn_steps.notify_outcome_mismatch` are mocked here (real
 jev/Gemini behavior for the judge itself is covered by
 test_outcome_judge.py) - everything else (DB session, tool dispatch, message
 persistence) runs for real against the ephemeral test DB (ADR 0032), same
@@ -29,20 +29,20 @@ _APPROVED_VERDICT = JudgeVerdict(True, "on-topic", is_follow_up=False)
 
 def _mock_judge():
     return patch(
-        "modules.agents.invoke_worker.evaluate_message",
+        "modules.agents.invoke_turn_pre.evaluate_message",
         new=AsyncMock(return_value=_APPROVED_VERDICT),
     )
 
 
 def _mock_outcome_judge(is_mismatch: bool):
     return patch(
-        "modules.agents.invoke_worker.evaluate_tool_outcome",
+        "modules.agents.invoke_turn_steps.evaluate_tool_outcome",
         new=AsyncMock(return_value=OutcomeVerdict(is_mismatch, "stubbed verdict")),
     )
 
 
 def _mock_notify():
-    return patch("modules.agents.invoke_worker.notify_outcome_mismatch", new=AsyncMock())
+    return patch("modules.agents.invoke_turn_steps.notify_outcome_mismatch", new=AsyncMock())
 
 
 async def _make_execution_setup(db_session):

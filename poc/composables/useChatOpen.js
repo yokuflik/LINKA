@@ -382,6 +382,9 @@ function useChatOpen(ctx) {
   // even when the page is clearly in front), so visibility alone is the signal.
   const IS_TOUCH = (('ontouchstart' in window) || navigator.maxTouchPoints > 0);
   function windowIsActive() {
+    // The agent drawer covers whatever chat is open behind it, so nothing in
+    // that chat is actually being looked at while the drawer is up.
+    if (ctx.showAgentDrawer && ctx.showAgentDrawer.value) return false;
     if (document.visibilityState !== 'visible') return false;
     if (IS_TOUCH) return true;
     // Desktop: also require focus so a background window (another app on top,
@@ -475,7 +478,7 @@ function useChatOpen(ctx) {
     openDraftChat, discardDraftChat, closeActiveChat,
     selectChat, reloadActiveChatIfUnloaded, revalidateActiveChatOnReconnect,
     refreshActiveChatUsers, jumpToMessage,
-    markActiveChatReadIfVisible, windowIsActive,
+    markActiveChatReadIfVisible, windowIsActive, flushReadOnActivate,
     revalidateFromCache,
   };
 }

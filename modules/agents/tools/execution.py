@@ -36,6 +36,7 @@ from modules.agents.tools.common import (
 )
 from modules.chats import service as chat_service
 from modules.chats.crud.crud_participant import is_participant
+from modules.chats.crud.crud_private_chat_pair import get_pair_chat_id
 from modules.messaging import service as message_service
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
 from modules.messaging.crud import (
@@ -66,8 +67,25 @@ def _new_client_message_id() -> str:
 
 
 async def _tool_send_message(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
-    chat_id = int(arguments["chat_id"])
     content = str(arguments["content"])
+    target_user_id = arguments.get("target_user_id")
+    if arguments.get("chat_id") in (None, ""):
+        if target_user_id in (None, ""):
+            raise ToolDeniedError("provide chat_id or target_user_id")
+        # No chat yet: open (or fetch) the 1:1 chat as part of the send itself,
+        # saving the model a separate open-chat round-trip.
+        target_user_id = int(target_user_id)
+        if await get_pair_chat_id(session, agent.owner_user_id, target_user_id) is None:
+            if not agent.restrictions.get("can_message_new_private_contacts", True):
+                raise ToolDeniedError("can_message_new_private_contacts is disabled")
+            if not agent.restrictions.get("can_message_private", True):
+                raise ToolDeniedError("can_message_private is disabled")
+        chat = await chat_service.get_or_create_private_chat(
+            session, agent.owner_user_id, target_user_id, sender_agent_id=agent.id
+        )
+        chat_id = chat.id
+    else:
+        chat_id = int(arguments["chat_id"])
 
     if chat_id == agent.owner_agent_chat_id:
         # This tool is unioned into the Supervisor/Builder toolset (ADR 0062)
@@ -152,20 +170,6 @@ async def _tool_reply_message(session: AsyncSession, agent: Agent, arguments: di
         sender_agent_id=agent.id,
     )
     return {"message_id": str(message.id)}
-
-
-async def _tool_create_chat(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
-    target_user_id = int(arguments["target_user_id"])
-
-    if not agent.restrictions.get("can_message_new_private_contacts", True):
-        raise ToolDeniedError("can_message_new_private_contacts is disabled")
-    if not agent.restrictions.get("can_message_private", True):
-        raise ToolDeniedError("can_message_private is disabled")
-
-    chat = await chat_service.get_or_create_private_chat(
-        session, agent.owner_user_id, target_user_id, sender_agent_id=agent.id
-    )
-    return {"chat_id": str(chat.id)}
 
 
 async def _tool_leave_group(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
@@ -352,25 +356,54 @@ async def _tool_bulk_fetch_messages(session: AsyncSession, agent: Agent, argumen
             "- narrow the range and confirm again"
         )
 
+    after_id = None
+    if arguments.get("after_message_id") is not None:
+        try:
+            after_id = int(arguments["after_message_id"])
+        except (TypeError, ValueError):
+            raise ToolDeniedError("after_message_id must be the next_after_message_id from a previous page")
+
     messages = await get_messages_in_range(
-        session, chat_id, agent.owner_user_id, start_at=start_at, end_at=end_at, limit=fetch_limit
+        session, chat_id, agent.owner_user_id, start_at=start_at, end_at=end_at,
+        limit=fetch_limit, after_id=after_id,
     )
-    agent.pending_confirmation = None
+
+    # ADR 0105: bound the result's size - per-message cap, then a total
+    # character budget (always at least one message so paging progresses).
+    msg_cap = settings.AGENT_BULK_FETCH_MESSAGE_MAX_CHARS
+    budget = settings.AGENT_BULK_FETCH_MAX_CHARS
+    page: list[tuple] = []
+    used = 0
+    for m in messages:
+        text = m.content or ""
+        if len(text) > msg_cap:
+            text = f"{text[:msg_cap]} …[truncated {len(text) - msg_cap} chars]"
+        if page and used + len(text) > budget:
+            break
+        page.append((m, text))
+        used += len(text)
+    has_more = len(page) < len(messages)
+    if not has_more:
+        agent.pending_confirmation = None
     await session.flush()
 
-    labels = await _resolve_sender_labels(session, [m.sender_id for m in messages])
-    return {
+    labels = await _resolve_sender_labels(session, [m.sender_id for m, _ in page])
+    result = {
         "messages": [
             {
                 "sender_name": labels.get(str(m.sender_id), {}).get("name") if m.sender_id is not None else None,
                 "sender_phone_number": labels.get(str(m.sender_id), {}).get("phone_number") if m.sender_id is not None else None,
                 "timestamp": m.created_at.isoformat(),
-                "content": m.content,
+                "content": text,
             }
-            for m in messages
+            for m, text in page
         ],
-        "count": len(messages),
+        "count": len(page),
+        "has_more": has_more,
     }
+    if has_more:
+        result["next_after_message_id"] = str(page[-1][0].id)
+    return result
 
 
 def _check_require_expiry(patch: dict) -> None:
@@ -782,7 +815,6 @@ EXECUTION_TOOL_HANDLERS = {
     "send_message": _tool_send_message,
     "reply_message": _tool_reply_message,
     "continue_message": _tool_continue_message,
-    "create_chat": _tool_create_chat,
     "leave_group": _tool_leave_group,
     "read_history": _tool_read_history,
     "count_messages_in_range": _tool_count_messages_in_range,

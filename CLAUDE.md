@@ -170,6 +170,7 @@ Rows are one-liners; the ADR file holds the full rationale (this index is loaded
 | `0100-invoke-worker-turn-phase-split.md` | Splits `_run_turn` out of `invoke_worker.py` into `invoke_turn{,_ctx,_pre,_loop,_steps}.py` (state in a `TurnCtx` dataclass) + `invoke_poll_loops.py`; no behaviour change, test patch targets retargeted to the calling module | Accepted |
 | `0102-continue-message-tool.md` | Execution-mode tool `continue_message`: sends one part of a long answer via the `send_message` path and grants another turn step; hard cap 3/turn (`AGENT_MAX_CONTINUATION_MESSAGES`) enforced in `dispatch_tool_call`. Works around the per-response `MAX_TOKENS` cap | Accepted |
 | `0104-eager-agent-provisioning-on-signup.md` | `provision_agent` extracted from `POST /agents/me`; called best-effort on new-user signup (reverses ADR 0047's lazy-provisioning half; `is_enabled` still `False`) | Accepted |
+| `0105-bulk-fetch-char-budget-and-pagination.md` | `bulk_fetch_messages` result bounded: per-message cap (1000 chars) + total budget (60000 chars) with `has_more`/`after_message_id` paging; confirmation (ADR 0072) kept until the last page. No new Gemini call | Accepted |
 
 ---
 

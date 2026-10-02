@@ -341,6 +341,7 @@ async def get_messages_in_range(
     start_at: Optional[datetime] = None,
     end_at: Optional[datetime] = None,
     limit: int = 1000,
+    after_id: Optional[int] = None,
 ) -> Sequence[Message]:
     """ADR 0072: bulk_fetch_messages's own query - a single-shot fetch (not a
     cursor page like get_chat_messages), oldest first, capped at `limit`
@@ -359,6 +360,9 @@ async def get_messages_in_range(
         stmt = stmt.where(Message.created_at >= start_at)
     if end_at is not None:
         stmt = stmt.where(Message.created_at <= end_at)
+    if after_id is not None:
+        # ADR 0105: cursor continuation within the same confirmed range.
+        stmt = stmt.where(Message.id > after_id)
 
     stmt = stmt.order_by(Message.id.asc()).limit(limit)
 

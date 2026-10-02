@@ -35,6 +35,7 @@ import asyncio
 import contextlib
 import logging
 import time
+import uuid
 
 from redis.exceptions import ResponseError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -248,7 +249,8 @@ class AgentInvokeConsumer(BaseStreamConsumer):
         # dropping the message, so it retries right after the current
         # turn finishes. chat_id=None (schedule-fired, no chat target)
         # never contends with anything.
-        if not await acquire_turn_lock(agent_id, chat_id):
+        lock_token = uuid.uuid4().hex
+        if not await acquire_turn_lock(agent_id, chat_id, lock_token):
             if kind != "message":
                 # The debounce path below only replays a plain chat message;
                 # a schedule/knowledge instruction would be lost. Leave the
@@ -316,7 +318,7 @@ class AgentInvokeConsumer(BaseStreamConsumer):
             raise
         finally:
             await record_active_seconds(agent_id, time.monotonic() - started)
-            await release_turn_lock(agent_id, chat_id)
+            await release_turn_lock(agent_id, chat_id, lock_token)
 
 
 

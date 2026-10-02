@@ -40,3 +40,8 @@ class TurnCtx:
     peer_typing_task: asyncio.Task | None = None
     # ADR 0102: successful `continue_message` calls so far this turn.
     continuations_used: int = 0
+    # A message-sending tool or pause_and_escalate succeeded this turn - an
+    # empty final response after that is a normal end, not a dropped reply.
+    turn_acted: bool = False
+    # Empty-response retries used this turn (execution mode only).
+    empty_retries_used: int = 0

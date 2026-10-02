@@ -174,6 +174,7 @@ async def spawn_goal_task(
     may_commit: bool = False,
     max_turns: Optional[int] = None,
     timeout_minutes: Optional[int] = None,
+    schedule_opener: bool = True,
 ) -> dict:
     chat_key = str(chat_id)
     goal, done_when, constraints = goal.strip(), done_when.strip(), (constraints or "").strip()
@@ -212,6 +213,10 @@ async def spawn_goal_task(
         "expires_at": (now + timedelta(minutes=minutes)).isoformat(),
     }
     tasks[task_id] = entry
+    if not schedule_opener:
+        # The caller sends the opening message itself (no extra Gemini turn).
+        await _persist_triggers(session, agent, {"on_ephemeral_task": tasks})
+        return {"task_id": task_id, **entry}
     schedule_entries = [
         *agent.triggers.get("on_schedule", []),
         {

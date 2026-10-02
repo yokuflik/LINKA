@@ -129,19 +129,21 @@ def _lock_key(agent_id: int, chat_id: Optional[int]) -> str:
     return f"{settings.AGENT_TURN_LOCK_KEY_PREFIX}:{agent_id}:{chat_id}"
 
 
-async def acquire_turn_lock(agent_id: int, chat_id: Optional[int]) -> bool:
+async def acquire_turn_lock(agent_id: int, chat_id: Optional[int], token: str = "1") -> bool:
     """Per-(agent_id, chat_id) mutex (ADR 0063) held for the duration of one
     _run_turn call - `chat_id=None` (schedule-fired turns with no chat
     target) never contends with anything else, same reasoning as the
-    config-mode gate treating a None chat_id as its own case. TTL equals
-    AGENT_TURN_TIMEOUT_SECONDS so a crashed worker holding the lock
-    self-heals on the same bound the turn itself is already capped at."""
+    config-mode gate treating a None chat_id as its own case. TTL is
+    AGENT_TURN_TIMEOUT_SECONDS plus AGENT_TURN_LOCK_TTL_MARGIN_SECONDS so a
+    crashed worker holding the lock self-heals, while a turn that is merely
+    being cancelled at the timeout can't have its lock expire mid-cleanup.
+    `token` identifies the holder: release only deletes a lock it still owns."""
     return bool(
         await redis_client.set(
             _lock_key(agent_id, chat_id),
-            "1",
+            token,
             nx=True,
-            ex=int(settings.AGENT_TURN_TIMEOUT_SECONDS),
+            ex=int(settings.AGENT_TURN_TIMEOUT_SECONDS + settings.AGENT_TURN_LOCK_TTL_MARGIN_SECONDS),
         )
     )
 
@@ -160,9 +162,16 @@ async def is_turn_running(agent_id: int, chat_id: Optional[int]) -> bool:
         return False
 
 
-async def release_turn_lock(agent_id: int, chat_id: Optional[int]) -> None:
+# Compare-and-delete: an expired holder finishing late must not delete the
+# lock a newer turn has since acquired.
+_RELEASE_LOCK_LUA = (
+    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+)
+
+
+async def release_turn_lock(agent_id: int, chat_id: Optional[int], token: str = "1") -> None:
     try:
-        await redis_client.delete(_lock_key(agent_id, chat_id))
+        await redis_client.eval(_RELEASE_LOCK_LUA, 1, _lock_key(agent_id, chat_id), token)
     except Exception:
         logger.exception("agent turn lock release failed for agent %s chat %s", agent_id, chat_id)
 

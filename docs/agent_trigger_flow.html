@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>עץ החלטות – הודעה בצ'אט עם צד שלישי</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+:root{
+  --bg:#f4f6fb;--panel:#fff;--border:#dbe1ee;--text:#131a2b;--dim:#56628a;
+  --accent:#0a9c87;--agent:#d9603a;--warn:#c2410c;--ok:#15803d;--code:#eef1f8;--line:#c7cfe2;
+  --decision:#6d4bd8;--end:#64748b;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#090d16;--panel:#0f1524;--border:#1c2438;--text:#eef2fb;--dim:#8fa3c7;
+  --accent:#00e5c7;--agent:#ff7a59;--warn:#fb923c;--ok:#4ade80;--code:#0a1120;--line:#263151;
+  --decision:#a78bfa;--end:#94a3b8;}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:'Rubik',system-ui,sans-serif;padding:36px 20px 90px}
+.wrap{max-width:980px;margin:0 auto}
+header{text-align:center;margin-bottom:28px}
+.eyebrow{font:12px 'JetBrains Mono',monospace;letter-spacing:.12em;color:var(--accent);direction:ltr;display:inline-block;margin-bottom:10px}
+h1{font-size:clamp(26px,4vw,40px);margin:0 0 10px;font-weight:800}
+h1 span{color:var(--accent)}
+.sub{color:var(--dim);max-width:700px;margin:0 auto;line-height:1.7}
+.bar{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin:18px 0 6px}
+button{font:inherit;cursor:pointer}
+.btn-reset{background:var(--panel);border:1.5px solid var(--border);color:var(--text);border-radius:10px;padding:7px 16px;font-size:13px}
+.btn-reset:hover{border-color:var(--accent)}
+.crumbs{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;font-size:12px;color:var(--dim);margin-bottom:22px}
+.crumbs b{color:var(--text);font-weight:500;cursor:pointer;border-bottom:1px dashed var(--dim)}
+/* path */
+.path{position:relative;padding-right:34px}
+.path::before{content:"";position:absolute;right:13px;top:8px;bottom:8px;width:2px;background:var(--line)}
+.card{position:relative;background:var(--panel);border:1.5px solid var(--border);border-radius:16px;padding:16px 20px;margin-bottom:14px;animation:in .3s ease-out}
+@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.card::before{content:"";position:absolute;right:-27px;top:22px;width:14px;height:14px;border-radius:50%;background:var(--accent);border:3px solid var(--bg)}
+.card[data-t=decision]{border-color:var(--decision)}.card[data-t=decision]::before{background:var(--decision)}
+.card[data-t=state]{border-color:var(--agent)}.card[data-t=state]::before{background:var(--agent)}
+.card[data-t=end]{border-style:dashed}.card[data-t=end]::before{background:var(--end)}
+.card.past{opacity:.78}
+.head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.ic{font-size:22px}
+.head h3{margin:0;font-size:17px;font-weight:700}
+.tag{font:11px 'JetBrains Mono',monospace;border:1px solid currentColor;border-radius:6px;padding:1px 7px;direction:ltr;color:var(--accent)}
+.card[data-t=decision] .tag{color:var(--decision)}.card[data-t=state] .tag{color:var(--agent)}.card[data-t=end] .tag{color:var(--end)}
+.desc{color:var(--dim);font-size:14.5px;line-height:1.8;margin:10px 0 0}
+.desc b{color:var(--text)}
+.files{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
+.chip{font:12px 'JetBrains Mono',monospace;background:var(--code);border:1px solid var(--border);border-radius:7px;padding:4px 9px;direction:ltr}
+.choices{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+.choice{flex:1 1 220px;text-align:right;background:var(--code);border:1.5px solid var(--border);border-radius:12px;padding:11px 14px;color:var(--text);transition:.15s}
+.choice:hover{border-color:var(--decision);transform:translateY(-2px)}
+.choice.picked{border-color:var(--accent);background:transparent}
+.choice .l{font-weight:600;font-size:14px}
+.choice .h{display:block;color:var(--dim);font-size:12.5px;margin-top:3px;line-height:1.5}
+.choice.bad .l{color:var(--warn)}
+/* tools */
+.toolsbtn{margin-top:14px;background:transparent;border:1.5px solid var(--agent);color:var(--agent);border-radius:10px;padding:6px 14px;font-size:13px;font-weight:600}
+.toolsbtn:hover{background:var(--agent);color:#fff}
+.tools{display:none;margin-top:12px;border-top:1px dashed var(--border);padding-top:12px}
+.tools.open{display:block}
+.tgroup{font-size:12px;color:var(--dim);margin:10px 0 6px;font-weight:600}
+.tlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:8px}
+.tool{background:var(--code);border:1px solid var(--border);border-radius:10px;padding:8px 11px}
+.tool code{font:12.5px 'JetBrains Mono',monospace;color:var(--agent);direction:ltr;display:block}
+.tool span{font-size:12.5px;color:var(--dim);line-height:1.5;display:block;margin-top:2px}
+footer{text-align:center;margin-top:40px;font-size:12.5px;color:var(--dim)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <span class="eyebrow">LINKA · AI AGENT · THIRD-PARTY CHAT TRIGGER</span>
+  <h1>עץ <span>ההחלטות</span> — הודעה שמעירה את הסוכן</h1>
+  <p class="sub">מה קורה מרגע שמישהו כותב בצ'אט שהסוכן של אחד המשתתפים שלו מאזין לו, ועד שהלקוח מקבל תשובה (או שלא). בכל צומת בחרו ענף כדי להמשיך — אפשר לחזור לכל נקודה ולבחור מסלול אחר. בכרטיסי מצב הסוכן (אדום) לחצו על <b>"הכלים"</b> כדי לראות מה הוא יכול לעשות. הודעה של הבעלים בצ'אט הסוכן שלו מטופלת בעץ נפרד: <b>agent_owner_chat_flow.html</b>.</p>
+  <div class="bar"><button class="btn-reset" id="reset">↺ התחל מחדש</button></div>
+  <div class="crumbs" id="crumbs"></div>
+</header>
+<div class="path" id="path"></div>
+<footer>מבוסס על ADR 0045/0046/0051/0052/0053/0054/0061/0063/0074/0077/0079/0080/0088/0095/0096/0099/0100/0102 · הקוד: modules/agents/</footer>
+</div>
+
+<script>
+/* ---------- Tool catalog ---------- */
+const T = {
+  send_message:"שליחת הודעה לצ'אט (או למשתמש חדש לפי target_user_id)",
+  reply_message:"תגובה (reply) להודעה ספציפית",
+  continue_message:"שליחת חלק נוסף של תשובה ארוכה (עד 3 לתור)",
+  leave_group:"עזיבת קבוצה בשם הבעלים",
+  read_history:"קריאת היסטוריית צ'אט, עם דפדוף (has_more)",
+  count_messages_in_range:"ספירת הודעות בטווח (שלב אישור לפני אחזור המוני)",
+  bulk_fetch_messages:"שליפת עד 1000 הודעות בקריאה אחת, לאחר אישור הבעלים",
+  search_messages:"חיפוש מילות מפתח (FTS) עם טווח תאריכים",
+  search_semantic:"חיפוש סמנטי (embeddings) עם טווח תאריכים",
+  search_knowledge_semantic:"חיפוש סמנטי בבסיס הידע של הסוכן",
+  get_knowledge_index:"רשימת מסמכי בסיס הידע",
+  fetch_chunk:"שליפת קטע ממסמך ידע",
+  list_attached_files:"רשימת קבצים שהבעלים צירף בצ'אט הסוכן",
+  send_attached_file:"שליחת קובץ מצורף לצ'אט (עם שופט התאמה לבקשה)",
+  pause_and_escalate:"הקפאת הצ'אט והתראה לבעלים — העברה לאדם",
+  complete_task:"סגירת משימת המטרה (achieved / ready_for_owner_confirmation / declined_by_counterpart)",
+  fail_task:"כישלון המשימה (cannot_achieve / counterpart_unresponsive / out_of_scope)",
+};
+const tl = (...ns)=>ns.map(n=>({n,d:T[n]}));
+const EXEC = tl('send_message','reply_message','continue_message','leave_group','read_history','count_messages_in_range','bulk_fetch_messages','search_messages','search_semantic','search_knowledge_semantic','get_knowledge_index','fetch_chunk','list_attached_files','send_attached_file','pause_and_escalate');
+const TOOLS_EXEC = [{g:"קבוצת כלי הביצוע — זהה לכל ארבע הפרסונות (ההבדל ביניהן הוא בפרומפט בלבד, לא בכלים)", list:EXEC}];
+const TOOLS_GOAL = [{g:"קבוצה מצומצמת — נקבעת בקוד לפי הטריגרים והצ'אט בלבד. send/reply/read_history נעולים לצ'אט של המשימה", list:tl('send_message','reply_message','read_history','complete_task','fail_task')}];
+
+/* ---------- Tree ---------- */
+const N = {
+start:{t:'step',ic:'💬',title:'הודעה נכנסת בצ\'אט עם צד שלישי',tag:'ENTRY',
+  desc:'מישהו (לקוח, איש קשר, חבר בקבוצה) שולח הודעה בצ\'אט שבו משתתף גם בעלים של סוכן. ההודעה עוברת כרגיל: gateway ב-Rust ← Redis Stream ← DB ← fan-out. אחרי השמירה <b>מנוע הטריגרים</b> בודק, לכל משתתף אחר בצ\'אט, אם הסוכן שלו צריך להתעורר.',
+  files:['crates/ws_gateway','modules/messaging/send.py','modules/agents/trigger_engine.py::_evaluate_triggers'],
+  choices:[{l:'המשך למנוע הטריגרים',n:'kindcheck'}]},
+kindcheck:{t:'decision',ic:'🧹',title:'סינון ראשוני של ההודעה',tag:'trigger_engine',
+  desc:'לפני הכול: הודעות מערכת והודעות בלי שולח לא מעירות אף סוכן. הודעה של <b>הבעלים בצ\'אט הסוכן שלו</b> שייכת לעץ אחר. אחרת — מחפשים את המשתתפים האחרים בצ\'אט.',
+  files:['modules/agents/trigger_engine.py'],
+  choices:[
+   {l:'הודעת מערכת / אין שולח',h:'לא מעירה כלום',n:'e_ignored',bad:1},
+   {l:'הבעלים כותב בצ\'אט הסוכן שלו',h:'owner-chat direct-wake — עץ ההחלטות של צ\'אט הבעלים',n:'e_owner',bad:1},
+   {l:'הודעה רגילה בצ\'אט אחר',h:'בודקים כל משתתף אחר',n:'cfg'}]},
+e_ignored:{t:'end',ic:'⛔',title:'אין תגובה',tag:'END',desc:'ההודעה נשמרת ומופצת כרגיל. לא נוצר תור סוכן.',files:[],choices:[]},
+e_owner:{t:'end',ic:'➡️',title:'עץ אחר',tag:'END · owner chat',desc:'הודעה של הבעלים בצ\'אט הפרטי עם הסוכן שלו עוברת דרך הראוטר ומצבי ההגדרות. ראו <b>docs/agent_owner_chat_flow.html</b>. (הודעת <b>agent_reply</b> של הסוכן עצמו שם לא מעירה אותו שוב — מניעת לולאה עצמית.)',files:['docs/agent_owner_chat_flow.html'],choices:[]},
+cfg:{t:'decision',ic:'👤',title:'למשתתף יש סוכן פעיל?',tag:'agent:trigger_cfg · Redis',
+  desc:'לכל משתתף אחר בצ\'אט נטענת תצורת הטריגרים מה-<b>cache ב-Redis</b> (בלי Postgres). רוב ההודעות נעצרות כאן בזול. סוכן שהקפיא את הצ\'אט הזה (<b>pause_and_escalate</b>) מדולג עוד לפני בדיקת הטריגרים.',
+  files:['modules/agents/cache.py','modules/agents/trigger_engine.py::_load_trigger_cfg'],
+  choices:[
+   {l:'אין סוכן / הסוכן כבוי',h:'cache ריק',n:'e_ignored',bad:1},
+   {l:'הצ\'אט מוקפא (paused)',h:'ADR 0054 — פג תוקף אוטומטית אחרי 24 שעות',n:'e_paused',bad:1},
+   {l:'סוכן פעיל, הצ\'אט לא מוקפא',h:'בודקים איזה טריגר תואם',n:'match'}]},
+e_paused:{t:'end',ic:'⏸️',title:'צ\'אט מוקפא — הסוכן שותק',tag:'END · ADR 0047/0054',desc:'הבעלים לקח את השיחה לידיים. הסוכן לא יענה עד שהבעלים יבקש <b>resume_paused_chat</b> בצ\'אט הסוכן שלו, או עד פקיעת ההקפאה (ברירת מחדל 24 שעות, חישוב lazy בזמן קריאה).',files:['modules/agents/tools/common.py::escalate_chat'],choices:[]},
+match:{t:'decision',ic:'🎯',title:'איזה טריגר תואם?',tag:'triggers JSONB',
+  desc:'הבדיקה מקבילה על ארבעה סוגי טריגרים. משימת מטרה פעילה (ADR 0099) היא <b>בלעדית</b>: מאפסת את שאר הדגלים, כך שלא נצרכים מכסה, רישום אוטומטי או max_fires.',
+  files:['modules/agents/trigger_engine.py','modules/agents/goal_tasks.py::find_goal_task_for_chat'],
+  choices:[
+   {l:'on_specific_chats',h:'צ\'אט שהבעלים רשם, עם מילות מפתח (ריק = הכול) ובכפוף ל-on_time_window',n:'recheck'},
+   {l:'on_unknown_sender',h:'ADR 0046 — מישהו שלא באנשי הקשר פונה בצ\'אט פרטי',n:'recheck'},
+   {l:'on_any_message',h:'ADR 0052 — כל הודעה בכל צ\'אט פרטי (לא קבוצות)',n:'recheck'},
+   {l:'משימת מטרה פעילה בצ\'אט',h:'ADR 0099 — תשובה של הצד השני למשימה שהסוכן פתח',n:'recheck'},
+   {l:'שום טריגר לא תואם',h:'מחוץ לחלון זמן / צ\'אט לא רשום / מילת מפתח חסרה',n:'e_ignored',bad:1}]},
+recheck:{t:'decision',ic:'🛡️',title:'בדיקה חוזרת מול Postgres',tag:'defense in depth',
+  desc:'רק עכשיו נוגעים ב-DB, פעם אחת, ממש לפני הכנסה לתור: טוענים את שורת הסוכן ובודקים שוב <b>is_enabled</b>, <b>restrictions.blocked_read_chat_ids</b> ו-<b>paused_chat_ids</b> — כי ה-cache עלול להיות מעט ישן.',
+  files:['modules/agents/trigger_engine.py','modules/agents/crud.py'],
+  choices:[
+   {l:'הסוכן כבוי / הצ\'אט חסום / מוקפא',n:'e_ignored',bad:1},
+   {l:'הכול תקין',n:'ephemeral'}]},
+ephemeral:{t:'decision',ic:'📋',title:'האם הצ\'אט הוא יעד של משימה זמנית?',tag:'ADR 0061 · on_ephemeral_task',
+  desc:'אם הסוכן שלח הודעה ל-N צ\'אטים דרך <b>spawn_ephemeral_task</b> וממתין לתשובות — התשובה נרשמת <b>דטרמיניסטית</b> (בלי קריאת Gemini) ולא פותחת תור רגיל.',
+  files:['modules/agents/ephemeral_tasks.py'],
+  choices:[
+   {l:'כן — הצ\'אט ממתין לתשובה',h:'record_reply; כשכולם ענו ← תור סיכום לבעלים והמשימה נמחקת',n:'e_ephemeral'},
+   {l:'לא',h:'ממשיכים למכסת ההפעלות',n:'quota'}]},
+e_ephemeral:{t:'end',ic:'📥',title:'תשובה נרשמה במשימה',tag:'END · ADR 0061',desc:'אין תור מול הלקוח. אם כל ה-expected_chat_ids ענו, מוזן תור סיכום לצ\'אט הסוכן של הבעלים (<b>fire_summary_and_complete</b>) והמשימה מוחקת את עצמה. אם מישהו לא יענה, לולאת התזמון סוגרת אותה בפקיעת expires_at.',files:['modules/agents/ephemeral_tasks.py'],choices:[]},
+quota:{t:'decision',ic:'🚦',title:'מכסת הפעלות שעתית',tag:'agent_activation',
+  desc:'לכל סוכן מכסת הפעלות לשעה (<b>AGENT_ACTIVATION_QUOTA_PER_HOUR</b>) — מגן גם מפני פינג-פונג בין שני סוכנים (סוכן הוא שולח לגיטימי כמו כל אחד).',
+  files:['modules/agents/trigger_engine.py','infra/ratelimit/service.py'],
+  choices:[
+   {l:'המכסה אזלה',h:'ההודעה נמסרת כרגיל; הבעלים מקבל התראה בצ\'אט הסוכן',n:'e_quota',bad:1},
+   {l:'יש מכסה',h:'ממשיכים',n:'unknown'}]},
+e_quota:{t:'end',ic:'🕐',title:'הטריגר נזרק',tag:'END · ADR 0045',desc:'אין backlog ואין תור המתנה למה שהוחמץ. הלקוח לא מקבל תשובה אוטומטית; הבעלים מקבל הודעה בצ\'אט הסוכן שלו.',files:[],choices:[]},
+unknown:{t:'decision',ic:'🆕',title:'פונה לא מוכר — מכסה יומית ורישום אוטומטי',tag:'ADR 0046 · 0051',
+  desc:'רלוונטי רק כשהתאים <b>on_unknown_sender</b>. כל פונה מוגבל למכסה יומית משלו (כדי שאחד לא יצרוך את כל המכסה השעתית). אם עבר — הצ\'אט <b>נרשם אוטומטית</b> ב-on_specific_chats כדי שהסוכן ימשיך לענות לו (FIFO, עד 200 רשומות אוטומטיות).',
+  files:['modules/agents/trigger_engine.py','modules/agents/crud.py::auto_register_unknown_sender_chat'],
+  choices:[
+   {l:'הפונה חרג מהמכסה היומית שלו',n:'e_sender',bad:1},
+   {l:'פונה מוכר / טריגר אחר / עבר את המכסה',h:'ממשיכים (רישום אוטומטי אם היה לא-מוכר)',n:'fires'}]},
+e_sender:{t:'end',ic:'🚷',title:'הפונה נחסם להיום',tag:'END · agent_unknown_sender',desc:'עוד הודעות מאותו פונה באותו יום לא יעירו את הסוכן. ההודעה עצמה נמסרת כרגיל.',files:[],choices:[]},
+fires:{t:'step',ic:'⏳',title:'צריכת max_fires / פקיעת expires_at',tag:'ADR 0095',
+  desc:'לטריגרים זמניים (<b>expires_at</b> / <b>max_fires</b>) מורידים ספירה, או מוחקים טריגר שפג — לפני כניסה לדיבאונס, כדי שתור שמתחיל מיד לא יקרא ספירה ישנה. אחר כך ה-cache מסונכרן.',
+  files:['modules/agents/trigger_engine.py::consume_matched_trigger_fire','modules/agents/cache.py'],
+  choices:[{l:'לדיבאונס',n:'debounce'}]},
+debounce:{t:'decision',ic:'⏱️',title:'דיבאונס ובדיקת תור רץ',tag:'ADR 0063 · 0077',
+  desc:'ההודעה נכנסת ל-ZSET עם השהיה (<b>2 שניות</b>), כך שרצף הודעות מהיר של לקוח מתמזג לתור אחד שנזרע מההודעה האחרונה. אם כבר רץ תור לאותו (סוכן, צ\'אט) — מסמנים אותו <b>superseded</b> ומיד יורים תור חדש.',
+  files:['modules/agents/invoke_debounce.py','modules/agents/invoke_poll_loops.py'],
+  choices:[
+   {l:'אין תור פעיל',h:'נורה ל-agent_invoke_stream אחרי 2 שניות',n:'budget'},
+   {l:'תור קודם עדיין רץ',h:'mark_superseded + arm_debounce_now',n:'e_superseded'}]},
+e_superseded:{t:'step',ic:'🔁',title:'התור הישן מבוטל, חדש נכנס',tag:'ADR 00732 · 0077 · 0103',
+  desc:'התור הישן בודק את הדגל בראש כל סיבוב ושוב <b>ממש לפני send_message/reply_message</b> — ומדלג על המסירה, כדי שהלקוח לא יקבל תשובה מיושנת. אם הוא באמצע קריאת Gemini, הקריאה מבוטלת ומחויבים 500 טוקנים בלבד כקנס. התור החדש עונה עם ההיסטוריה העדכנית.',
+  files:['modules/agents/invoke_worker.py','modules/agents/invoke_turn_loop.py'],choices:[{l:'המשך לתור החדש',n:'budget'}]},
+budget:{t:'decision',ic:'💰',title:'תקציב זמן יומי + נעילת תור',tag:'ADR 0079 · process_entry',
+  desc:'ה-worker מושך את הרשומה, בודק שוב ש-is_enabled, ובודק שנשאר תקציב זמן עיבוד יומי (שעה ביום). אחר כך רוכש נעילה לזוג <b>(agent, chat)</b>.',
+  files:['modules/agents/invoke_worker.py','modules/agents/time_budget.py'],
+  choices:[
+   {l:'התקציב היומי אזל',h:'הודעה חד-פעמית לבעלים, התור לא רץ',n:'e_budget',bad:1},
+   {l:'הנעילה תפוסה',h:'מסמנים superseded ומרשימים את הדיבאונס מחדש',n:'e_superseded'},
+   {l:'הנעילה תפוסה כי ה-worker קרס',h:'נעילה יתומה — מתנקה לבד לפי TTL',n:'orphan',bad:1},
+   {l:'הכול פנוי',h:'התור מתחיל',n:'turnstart'}]},
+orphan:{t:'step',ic:'💥',title:'נעילה יתומה (worker קרס באמצע תור)',tag:'acquire_turn_lock · TTL',
+  desc:'הנעילה היא <b>SET NX EX</b> עם TTL של <b>90s (timeout התור) + 20s מרווח</b> (AGENT_TURN_LOCK_TTL_MARGIN_SECONDS). אין heartbeat — ה-TTL תקף כי התור עצמו נחתך ב-<b>asyncio.wait_for(90s)</b>. קריסה רגילה (חריגה / timeout) משחררת ב-<b>finally</b>; הריגה קשה (SIGKILL/OOM) משאירה נעילה שפגה לבד אחרי עד ~110s. בינתיים הודעות חדשות <b>לא הולכות לאיבוד</b>: הדיבאונס נרשם מחדש שוב ושוב (תור מסוג schedule/knowledge נשאר ללא ack ונתפס ע"י XAUTOCLAIM אחרי 60s). הנעילה נושאת <b>token</b> ומשוחררת ב-compare-and-delete (Lua): תור ישן שמסיים באיחור לא יכול למחוק נעילה של תור חדש.',
+  files:['modules/agents/invoke_debounce.py::acquire_turn_lock','modules/agents/invoke_debounce.py::release_turn_lock','modules/agents/invoke_worker.py::process_entry'],
+  choices:[{l:'ממתינים לפקיעה — דיבאונס חוזר',n:'e_superseded'}]},
+e_budget:{t:'end',ic:'🕐',title:'"התקציב נגמר" — לבעלים בלבד',tag:'END · ADR 0079',desc:'הלקוח לא מקבל כלום. הבעלים מקבל הודעה אחת (עם cooldown) מתי התקציב מתאפס — לפי TTL של המונה ב-Redis.',files:['modules/agents/time_budget.py'],choices:[]},
+turnstart:{t:'step',ic:'👀',title:'פתיחת תור: "מקליד…" + סימון כנקרא',tag:'_run_turn · ADR 0075 · 0080',
+  desc:'לצד השני נשלח <b>typing indicator</b> אמיתי (סמן משותף ב-SET NX שרק התור הראשון מנהל). ההודעה המעוררת מסומנת <b>כנקראה</b> בשם הבעלים, כמו שאדם קורא לפני שעונה (בכפוף ל-privacy.read_receipts של הבעלים; 1:1 בלבד). אין כאן "thinking" — האות הזה שמור לצ\'אט הבעלים.',
+  files:['modules/agents/invoke_turn.py','modules/agents/invoke_notify.py','modules/agents/invoke_turn_pre.py::run_judge_gate'],
+  choices:[{l:'לשופט ההודעות',n:'judge'}]},
+judge:{t:'decision',ic:'⚖️',title:'שופט ההודעות (Judge gate)',tag:'ADR 0053 · 0074 · 0076 · jev',
+  desc:'הצד השני <b>אינו מהימן</b>, לכן לפני Gemini רצה קריאת <b>jev</b> אחת עם 4 שאלות Noul עצמאיות: <b>on_topic</b>, <b>prompt_injection</b>, <b>info_extraction</b>, <b>code_execution</b>. ההקשר מבודד: ההודעה האחרונה והגדרת התחום בלבד, בלי היסטוריה ובלי כלים. בשיחה פעילה (תשובת סוכן לאחרונה) השופט סלחני להודעות קצרות ("כן", "כמה?"). בהודעת מדיה בלי טקסט — בודקים סוג/שם קובץ, לא בייטים.',
+  files:['modules/agents/judge.py','modules/agents/typesafe_client.py','AgentJudgeLog (טבלה)'],
+  choices:[
+   {l:'בנושא ולא זדונית',h:'approved — ממשיכים לתור הראשי',n:'goalcheck'},
+   {l:'מחוץ לנושא',h:'is_approved=false בלי דגל זדוני',n:'e_offtopic'},
+   {l:'ניסיון זדוני',h:'הזרקת פרומפט / חילוץ מידע פנימי / הרצת קוד',n:'e_malicious',bad:1},
+   {l:'מדיה בלבד (תמונה/קול/קובץ)',h:'ADR 0088 — האם צריך מבט אנושי?',n:'media'},
+   {l:'כשל בשופט או חריגת קצב',h:'fail-open: מאשרים ולא חוסמים לקוח אמיתי',n:'goalcheck'}]},
+e_offtopic:{t:'end',ic:'↩️',title:'הפניה מנומסת, בלי Gemini ראשי',tag:'END · ADR 0053',
+  desc:'המודל הראשי לא רץ. הלקוח מקבל הודעת הפניה קצרה בשפתו (<b>AGENT_JUDGE_REDIRECT_MODEL</b>, קריאה זולה בנתיב הדחייה בלבד), ואם נכשלה — טקסט קבוע באנגלית. הצ\'אט <b>לא</b> מוקפא.',
+  files:['modules/agents/judge.py::_generate_redirect_message','modules/agents/judge.py::local_redirect_text'],choices:[]},
+e_malicious:{t:'end',ic:'⚠️',title:'הפניה ללקוח + הקפאה והתראה לבעלים',tag:'END · ADR 0074',
+  desc:'ללקוח רק ההפניה המנומסת הרגילה — בלי לחשוף שזוהה ניסיון תקיפה. במקביל <b>escalate_chat</b> מקפיא את הצ\'אט, שולח push לבעלים ומפרסם בצ\'אט הסוכן הודעת מערכת עם סימון ⚠️ והסיבה הדטרמיניסטית ("ניסיון לעקוף הוראות" וכו\'). הסוכן שותק בצ\'אט הזה עד שהבעלים יחדש.',
+  files:['modules/agents/tools/common.py::escalate_chat','modules/agents/judge.py'],choices:[]},
+media:{t:'decision',ic:'📎',title:'מדיה שהסוכן לא יכול לראות',tag:'ADR 0088 · needs_human_review',
+  desc:'שאלה נוספת באותה קריאת jev (<b>needs_human_review</b>) שופטת לפי סוג ה-MIME ושם הקובץ בלבד. אם עלתה <b>וגם</b> ההודעה עדיין האחרונה בצ\'אט (בדיקת Python רגילה, לא חלק מהשאלה) — מסלול הסלמה.',
+  files:['modules/agents/judge.py::_evaluate_unseeable_media'],
+  choices:[
+   {l:'צריך מבט אנושי',h:'ולא ענו עליה כבר',n:'e_media',bad:1},
+   {l:'לא נדרש',h:'ממשיכים כרגיל',n:'goalcheck'}]},
+e_media:{t:'end',ic:'📎',title:'הסלמה בגלל מדיה',tag:'END · ADR 0088',desc:'הצ\'אט מוקפא, הבעלים מקבל push והודעת מערכת עם סימון 📎 ("הלקוח שלח קובץ שהסוכן לא יכול לראות"). ללקוח נשלחת הפניה מנומסת.',files:['modules/agents/tools/common.py::escalate_chat'],choices:[]},
+goalcheck:{t:'decision',ic:'🎬',title:'זריעת ההקשר ובדיקת משימת מטרה',tag:'seed_contents · begin_goal',
+  desc:'נבנה תמלול של היסטוריית הצ\'אט עבור Gemini. שורות של לקוח/בעלים שאחריהן כבר הגיבה הסוכן מסומנות <b>[already handled]</b> כדי שהוראה ישנה לא תבוצע שוב (ADR 0071). אם יש משימת מטרה פעילה בצ\'אט — סופרים תור, ואם מכסת התורות כבר נוצלה המשימה נסגרת בכוח.',
+  files:['modules/agents/invoke_turn_pre.py','modules/agents/invoke_turn_helpers.py','modules/agents/goal_tasks.py'],
+  choices:[
+   {l:'אין משימת מטרה',h:'פרסונה רגילה לפי active_skill',n:'persona'},
+   {l:'יש משימת מטרה פעילה',h:'ADR 0099 — פרומפט ממוקד מטרה',n:'goal'},
+   {l:'מכסת התורות של המשימה נוצלה',h:'נסגרת בכוח; הבעלים מקבל סיכום אחד',n:'e_goalclosed',bad:1}]},
+e_goalclosed:{t:'end',ic:'🏁',title:'משימת מטרה נסגרה',tag:'END · ADR 0099',desc:'<b>close_goal_task</b> מוחק את הרשומה ומתזמן בדיוק תור סיכום אחד לצ\'אט הבעלים. הלקוח לא מקבל הודעה נוספת בתור הזה.',files:['modules/agents/goal_tasks.py'],choices:[]},
+persona:{t:'decision',ic:'🎭',title:'פרסונה — Agent.active_skill',tag:'personas.py',
+  desc:'הפרסונה משפיעה על <b>הפרומפט בלבד</b>. בחירת הכלים נקבעת בקוד לפי הצ\'אט (לא בצ\'אט הבעלים ← מצב ביצוע), ולכן זהה בכל הארבע. הפרומפט כולל גם את כללי הסגנון והזהות (<b>agent_name</b>, <b>disclose_as_agent</b>).',
+  files:['modules/agents/personas.py','modules/agents/tools/dispatch.py::get_tool_schemas_for_chat'],
+  choices:[
+   {l:'sales_agent',h:'שכנוע הוגן, מענה להתנגדויות, קריאה לפעולה',n:'sales'},
+   {l:'support_agent',h:'פתרון בעיות בסבלנות, שאלות הבהרה',n:'support'},
+   {l:'summarizer',h:'סיכום שיחה בשפת השיחה, בלי כללי זהות',n:'summ'},
+   {l:'one_off_executor',h:'משימה בודדת; שיחה רגילה בקול "Linka Agent"',n:'oneoff'}]},
+sales:{t:'state',ic:'💼',title:'sales_agent',tag:'state · execution',
+  desc:'סוכן מכירות בשם הבעלים: מדגיש חלופות רלוונטיות, עונה להתנגדויות, לא מתחייב בשם הבעלים. אם הוא אומר ללקוח שמחבר לנציג — חובה לקרוא ל-<b>pause_and_escalate</b> באותו תור.',
+  files:['modules/agents/personas.py'],tools:TOOLS_EXEC,choices:[{l:'ללולאת הכלים',n:'loop'}]},
+support:{t:'state',ic:'🎧',title:'support_agent',tag:'state · execution',
+  desc:'תמיכה: שואל שאלות מכוונות, מאשר הבנה לפני הצעת פתרון, נשאר רגוע מול לקוח מתוסכל.',
+  files:['modules/agents/personas.py'],tools:TOOLS_EXEC,choices:[{l:'ללולאת הכלים',n:'loop'}]},
+summ:{t:'state',ic:'📝',title:'summarizer',tag:'state · execution',
+  desc:'צופה בצ\'אט ובהפעלה מפיק סיכום קצר בשפת השיחה, כמו הודעת recap אנושית ולא דוח. לא משתתף בשיחה מעבר לזה.',
+  files:['modules/agents/personas.py'],tools:TOOLS_EXEC,choices:[{l:'ללולאת הכלים',n:'loop'}]},
+oneoff:{t:'state',ic:'⚡',title:'one_off_executor',tag:'state · execution',
+  desc:'מבצע משימה אחת עצמאית ועוצר. הודעה סתמית/שאלת ידע כללי נענית באופן טבעי, בלי להסביר שהוא סוכן, אלא אם נשאל ישירות.',
+  files:['modules/agents/personas.py'],tools:TOOLS_EXEC,choices:[{l:'ללולאת הכלים',n:'loop'}]},
+goal:{t:'state',ic:'🎯',title:'משימת מטרה (converse)',tag:'state · goal task',
+  desc:'פרומפט ממוקד goal / done_when / constraints, וסכמת כלים מצומצמת שנקבעת <b>בקוד</b>. שופט on_topic לא נאכף (הנושא הוא המטרה), אבל שלושת הדגלים הזדוניים כן. הודעה אחת לתור: שליחה שנייה נדחית בלי ביצוע. סגירה רק דרך complete_task / fail_task, תקרת תורות, idle או פקיעה.',
+  files:['modules/agents/goal_tasks.py','modules/agents/tools/goal_task_tools.py'],tools:TOOLS_GOAL,choices:[{l:'ללולאת הכלים',n:'loop'}]},
+loop:{t:'decision',ic:'🔄',title:'לולאת התור (עד 8 סיבובים)',tag:'invoke_turn_loop',
+  desc:'כל סיבוב: בדיקת superseded ← המתנה לתקציב קריאות Gemini (עד 6×5s) ← קריאת Gemini עם סכמת הכלים של המצב. <b>חשוב:</b> בצ\'אט עם צד שלישי טקסט חופשי של המודל <b>לא נשלח ללקוח</b> — רק שליחה דרך send_message/reply_message/continue_message מגיעה אליו.',
+  files:['modules/agents/invoke_turn_loop.py','modules/agents/invoke_turn_steps.py','modules/agents/gemini_client.py'],
+  choices:[
+   {l:'המודל קרא לכלי',h:'dispatch ← תוצאה חוזרת ← סיבוב נוסף',n:'dispatch'},
+   {l:'המודל החזיר טקסט בלבד',h:'סיום התור — בלי שליחה ללקוח',n:'nocall'},
+   {l:'תשובה ריקה, לא נשלח כלום',h:'nudge עד AGENT_EMPTY_RESPONSE_MAX_RETRIES, אחר כך התראה לבעלים',n:'empty'},
+   {l:'תקציב קריאות / טוקנים אזל',h:'הודעת התראה לבעלים',n:'e_tokens',bad:1},
+   {l:'נקטע ע"י הודעה חדשה',h:'superseded — אין מסירה',n:'e_super2',bad:1},
+   {l:'הגענו ל-8 סיבובים',h:'מגבלת סיבובים',n:'cap'}]},
+dispatch:{t:'decision',ic:'🔧',title:'הפעלת כלי',tag:'execute_tool_call',
+  desc:'כל קריאה עוברת <b>שער קשיח בקוד</b>, לא בפרומפט: האם הכלי ברשימת המצב (בדיקה כפולה גם אם סכמה שגויה דלפה), ואז <b>restrictions</b> של הסוכן — <b>can_send_messages</b>, <b>can_message_private/groups</b>, <b>can_message_new_private_contacts</b>, <b>blocked_read_chat_ids</b>, <b>can_leave_groups</b> — ומכסות השליחה של הבעלים (הסוכן שולח בשמו ומשתמש באותו תקציב). כל ניסיון נרשם ב-AgentToolCallLog.',
+  files:['modules/agents/tools/dispatch.py','modules/agents/tools/execution.py','modules/agents/tools/common.py'],
+  choices:[
+   {l:'send/reply/continue הצליח',h:'ההודעה נשלחת ללקוח, "מקליד…" נעצר',n:'sent'},
+   {l:'כלי קריאה הצליח (היסטוריה/חיפוש/ידע)',h:'התוצאה חוזרת למודל',n:'bigresult'},
+   {l:'pause_and_escalate',h:'העברה לאדם',n:'e_escalate'},
+   {l:'send_attached_file',h:'ADR 0086 — שופט התאמה בין הקובץ לבקשת הלקוח',n:'attach'},
+   {l:'הכלי נדחה (ToolDeniedError)',h:'הדחייה חוזרת למודל כתוצאת כלי',n:'denied'},
+   {l:'bulk_fetch דורש אישור',h:'ADR 0072 — ממתין לאישור הבעלים',n:'e_confirm'},
+   {l:'continue_message חרג מ-3',h:'ADR 0102 — נדחה בלי ביצוע',n:'denied'}]},
+sent:{t:'step',ic:'📨',title:'ההודעה נשלחה ללקוח',tag:'process_outgoing',
+  desc:'לפני השליחה נבדק דגל superseded שוב (אם עלה — מדלגים ומקפיצים תור חדש). ההודעה נשלחת כ-<b>agent_reply</b> בשם הבעלים, נספרת בתקציב השליחה שלו, ומסומנת ככזו כדי שהטריגרים לא יעירו את הסוכן מחדש על הודעת עצמו. ב-goal task: <b>ctx.goal_acted</b> נקבע. התור ממשיך — המודל יכול לקרוא עוד כלי, או לסיים.',
+  files:['modules/agents/invoke_turn_loop.py','modules/messaging/send.py'],
+  choices:[{l:'סיבוב נוסף',n:'loop'}]},
+attach:{t:'decision',ic:'📁',title:'שופט התאמת קובץ מצורף',tag:'ADR 0086 · attachment_judge',
+  desc:'jev (<b>matches_request</b>, מכסה משלו, <b>AgentAttachmentJudgeLog</b>) משווה כיתוב ושם קובץ להודעה האחרונה של הלקוח. כשל השופט עצמו — fail-open.',
+  files:['modules/agents/attachment_judge.py'],
+  choices:[
+   {l:'הקובץ מתאים לבקשה (או כשל שופט)',n:'sent'},
+   {l:'אין התאמה',h:'ToolDeniedError — המודל מקבל דחייה',n:'denied'}]},
+bigresult:{t:'decision',ic:'📏',title:'גודל תוצאת הכלי בחלון ההקשר',tag:'function_response_part',
+  desc:'<b>אין שלב קיטוע או סיכום בלולאה.</b> תוצאת הכלי נכנסת ל-<b>contents</b> כמו שהיא, וכל סיבוב הבא שולח שוב את כל ההקשר. ההגנה היחידה היא <b>תקרות לפי כלי</b>: <b>read_history</b> — 20 הודעות (מקסימום 50) עם has_more ודפדוף; <b>search_knowledge_semantic</b> — 5 קטעים (מקסימום 20), כל קטע עד 1500 תווים — הקיטוע נעשה ב-<b>ingestion</b> (chunking.py, חפיפה 200), לא בזמן השליפה; <b>bulk_fetch_messages</b> (ADR 0105) — עד 1000 הודעות, אבל התוצאה חסומה: 1000 תווים להודעה (עם סימון truncated) ו-60,000 תווים לקריאה; השאר בדפדוף דרך <b>has_more</b> + <b>after_message_id</b>, בלי אישור בעלים חוזר. תמלול ההיסטוריה ההתחלתי כן מקוצץ: 6000 תווים סה"כ, 1000 להודעה, 3000 להודעה האחרונה (הישנות נזרקות קודם). שימוש הטוקנים נרשם <b>אחרי</b> הקריאה (ADR 0059) ולא חוסם מראש.',
+  files:['modules/agents/tools/execution.py','modules/agents/invoke_turn_helpers.py::_format_history_transcript','modules/agents/chunking.py','config/agent_settings.py','docs/adr/0105-bulk-fetch-char-budget-and-pagination.md'],
+  choices:[
+   {l:'תוצאה קטנה וחסומה (היסטוריה / ידע)',h:'חוזרים למודל',n:'loop'},
+   {l:'bulk_fetch — עמוד של עד 60K תווים',h:'has_more ← המודל ממשיך עם after_message_id; סיבוב נוסף משלם שוב על העמודים הקודמים',n:'loop'}]},
+denied:{t:'step',ic:'🚫',title:'כשל כלי נרשם',tag:'AgentToolCallLog',
+  desc:'הדחייה נרשמת בלוג ומוחזרת למודל כ-<b>{"error": …}</b>, והוא יכול להתאושש בסיבוב הבא (למשל לשלוח טקסט במקום קובץ). אם הכשל נשאר בלתי-פתור בסוף התור — שופט ה-Outcome יבדוק.',
+  files:['modules/agents/tools/common.py'],choices:[{l:'סיבוב נוסף',n:'loop'}]},
+e_escalate:{t:'end',ic:'🤝',title:'העברה לאדם — הצ\'אט מוקפא',tag:'END · pause_and_escalate',
+  desc:'<b>escalate_chat</b>: הצ\'אט נכנס ל-<b>paused_chat_ids</b> (תפוגה 24 שעות), הבעלים מקבל push ("Your agent needs you") והודעת מערכת עם סימון 🤝 וסיבה. מעכשיו כל הודעה חדשה בצ\'אט תיעצר כבר בשלב ה-cache (ראו ענף "צ\'אט מוקפא").',
+  files:['modules/agents/tools/common.py::escalate_chat','modules/agents/tools/execution.py'],choices:[]},
+e_confirm:{t:'end',ic:'🧾',title:'ממתין לאישור בעלים',tag:'END · ADR 0072',desc:'<b>Agent.pending_confirmation</b> נשמר (תפוגה 60 דק\'). השליפה האמיתית תתבצע רק אחרי שהבעלים יאשר בצ\'אט הסוכן שלו, עם בדיקה חוזרת של ההתאמה והספירה בשרת (עד 1000 הודעות, מעבר לזה — סירוב).',files:['modules/agents/tools/execution.py'],choices:[]},
+empty:{t:'step',ic:'🫥',title:'תשובה ריקה בלי שליחה',tag:'ADR 0089 · dropped reply',
+  desc:'כדי שהלקוח לא יישאר בשתיקה, המודל מקבל <b>nudge</b> ("הגב עכשיו עם send_message או pause_and_escalate"). אם הניסיונות נגמרו, הבעלים מקבל הודעה: "לא הצלחתי להפיק תשובה… בדוק את הצ\'אט".',
+  files:['modules/agents/invoke_turn_loop.py::_is_dropped_execution_reply'],
+  choices:[{l:'נסיון נוסף',n:'loop'},{l:'הניסיונות נגמרו — סוף',n:'e_done'}]},
+nocall:{t:'decision',ic:'🧪',title:'שופט התוצאה (Outcome judge)',tag:'ADR 0096',
+  desc:'המודל סיים בלי קריאה נוספת. אם הוא כבר שלח משהו — הכול תקין. לפני סיום בודקים (jev, <b>matches_goal</b>) אם כשל כלי לא-פתור השאיר את בקשת הלקוח ללא מענה. כשל השופט ← שתיקה. <b>ההסבר הולך לבעלים בלבד</b>, לעולם לא ללקוח.',
+  files:['modules/agents/outcome_judge.py','modules/agents/invoke_turn_steps.py::finish_without_call'],
+  choices:[
+   {l:'אין כשל פתוח',n:'e_done'},
+   {l:'כשל לא-פתור שהחמיץ את המטרה',h:'Gemini כותב הסבר קצר ← ❗ לבעלים',n:'e_outcome',bad:1}]},
+cap:{t:'step',ic:'🛑',title:'תקרת סיבובים',tag:'round-trip cap',
+  desc:'הבעלים מקבל התראה בצ\'אט הסוכן (לא בצ\'אט של הלקוח), ואז רצה אותה בדיקת Outcome judge — כי תור שנעצר באמצע כשל הוא הסיכון העיקרי.',
+  files:['modules/agents/invoke_turn_steps.py::finish_at_round_trip_cap'],choices:[{l:'לשופט התוצאה',n:'nocall'}]},
+e_done:{t:'end',ic:'✅',title:'התור הסתיים',tag:'END · status=done',desc:'נעילת התור משוחררת, סמן "מקליד…" מוסר, והשעות שנצרכו נרשמות בתקציב היומי. אם התקבלה הודעה חדשה בינתיים, הדיבאונס יירה אותה כתור הבא.',files:['modules/agents/invoke_turn.py','modules/agents/invoke_worker.py'],choices:[]},
+e_outcome:{t:'end',ic:'❗',title:'הסבר כשל נשלח לבעלים',tag:'END · ADR 0096',desc:'הודעה קצרה בצ\'אט הסוכן של הבעלים עם סימון ❗: מה לא הצליח ולמה. נרשם ב-<b>AgentOutcomeJudgeLog</b>. הלקוח לא מקבל כלום.',files:['modules/agents/outcome_judge.py'],choices:[]},
+e_tokens:{t:'end',ic:'📉',title:'הודעת מגבלה לבעלים',tag:'END · ADR 0059/0079',desc:'הודעה קבועה באנגלית לבעלים (פעם אחת לכל מיצוי). חלון 5 שעות / 1M טוקנים או 7 ימים / 5M. הלקוח לא מקבל תשובה.',files:['modules/agents/token_budget.py'],choices:[]},
+e_super2:{t:'end',ic:'⏭️',title:'התור בוטל — תור חדש עונה',tag:'END · ADR 00732/0077',desc:'לא נשלחת תשובה מיושנת. מחויבים 500 טוקנים על הקריאה שבוטלה. התור הבא נורה מיד ועונה על ההודעה האחרונה.',files:['modules/agents/invoke_turn_loop.py'],choices:[]},
+};
+
+/* ---------- Render ---------- */
+const pathEl=document.getElementById('path'), crumbsEl=document.getElementById('crumbs');
+let path=[];
+
+function go(from,choiceIdx,nextId){
+  path=path.slice(0,from+1); path[from].pick=choiceIdx;
+  path.push({id:nextId,pick:null});
+  render(true);
+}
+function reset(){path=[{id:'start',pick:null}];render(false)}
+
+function render(scroll){
+  pathEl.innerHTML='';
+  path.forEach((p,i)=>{
+    const n=N[p.id], last=i===path.length-1;
+    const c=document.createElement('div');
+    c.className='card'+(last?'':' past'); c.dataset.t=n.t;
+    const label={step:'STEP',decision:'DECISION',state:'AGENT STATE',end:'END'}[n.t];
+    let h=`<div class="head"><span class="ic">${n.ic}</span><h3>${n.title}</h3><span class="tag">${label} · ${n.tag}</span></div>
+      <p class="desc">${n.desc}</p>`;
+    if(n.files.length) h+=`<div class="files">${n.files.map(f=>`<span class="chip">${f}</span>`).join('')}</div>`;
+    if(n.tools){
+      const cnt=n.tools.reduce((a,g)=>a+g.list.length,0);
+      h+=`<button class="toolsbtn" data-tools="${i}">🧰 הכלים (${cnt})</button><div class="tools" id="tools${i}">`+
+        n.tools.map(g=>`<div class="tgroup">${g.g}</div><div class="tlist">${g.list.map(t=>`<div class="tool"><code>${t.n}</code><span>${t.d}</span></div>`).join('')}</div>`).join('')+`</div>`;
+    }
+    if(n.choices.length){
+      h+=`<div class="choices">`+n.choices.map((ch,j)=>
+        `<button class="choice${ch.bad?' bad':''}${p.pick===j?' picked':''}" data-i="${i}" data-j="${j}" data-n="${ch.n}"><span class="l">${p.pick===j?'✓ ':''}${ch.l}</span>${ch.h?`<span class="h">${ch.h}</span>`:''}</button>`).join('')+`</div>`;
+    }
+    c.innerHTML=h; pathEl.appendChild(c);
+  });
+  crumbsEl.innerHTML=path.map((p,i)=>`<b data-c="${i}">${N[p.id].title}</b>`).join(' ← ');
+  if(scroll) pathEl.lastElementChild.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+pathEl.addEventListener('click',e=>{
+  const ch=e.target.closest('.choice'); if(ch){go(+ch.dataset.i,+ch.dataset.j,ch.dataset.n);return}
+  const tb=e.target.closest('.toolsbtn'); if(tb){document.getElementById('tools'+tb.dataset.tools).classList.toggle('open')}
+});
+crumbsEl.addEventListener('click',e=>{
+  const b=e.target.closest('b'); if(!b)return;
+  const i=+b.dataset.c; path=path.slice(0,i+1); path[i].pick=null; render(false);
+  pathEl.children[i].scrollIntoView({behavior:'smooth',block:'center'});
+});
+document.getElementById('reset').onclick=reset;
+reset();
+</script>
+</body>
+</html>

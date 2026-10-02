@@ -19,3 +19,7 @@
 
 ## Known limits
 Forced closes (cap/timeout) report only a canned reason - the closing turn has no target-chat history. Terminal-tool success ends the turn immediately. A successful `send_message`/`reply_message` no longer ends the turn (2026-10-02): the model may still call `complete_task`/`fail_task` in the same turn (a closing "deal!" message otherwise left the task open and the owner never notified); a 2nd send in the turn is refused in `dispatch_tool_call`, and a turn ending without a terminal call records the idle/turn-cap outcome via `finish_without_call`.
+
+## opening_message (2026-10-03)
+
+`start_goal_task` takes `opening_message` (the model writes the first message in the same call). `_tool_start_goal_task` sends it immediately via `EXECUTION_TOOL_HANDLERS["send_message"]` (same restrictions + send budget) and calls `spawn_goal_task(schedule_opener=False)`, so no `_OPENER_INSTRUCTION` schedule entry / extra Gemini turn / up-to-30s poll wait. If that send fails the task is closed (`cancelled`) and the error re-raised. Without `opening_message` the old scheduled-opener path is the fallback.

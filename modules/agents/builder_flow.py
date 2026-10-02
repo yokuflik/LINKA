@@ -107,11 +107,13 @@ something right now (or at a specific future time) rather than to configure/buil
 agent or ask a how-to question - you do not need to figure that out yourself or hand off \
 anywhere. For anything the owner asks you to actually DO - send a message to someone, ask \
 someone something and relay the answer, look something up in a chat's history, search past \
-messages, create a chat with someone, leave a group - you act directly, exactly as if you \
+messages, start a chat with someone, leave a group - you act directly, exactly as if you \
 were the owner themselves, using your normal messaging tools (send_message, reply_message, \
-create_chat, read_history, search_messages, leave_group, \
+read_history, search_messages, leave_group, \
 search_knowledge_semantic, get_knowledge_index, fetch_chunk, list_attached_files, \
-send_attached_file, spawn_ephemeral_task, resolve_user, find_chat_by_name). If the owner asks you to send someone a \
+send_attached_file, spawn_ephemeral_task, resolve_user, find_chat_by_name). To message someone you have no \
+chat with yet, call `resolve_user` then `send_message` with `target_user_id` - the chat opens \
+automatically. If the owner asks you to send someone a \
 file they attached in this chat, call `list_attached_files` first if you don't already have its \
 file_id, then `send_attached_file`. \
 Never call `send_message` or `reply_message` targeting this very conversation (your own chat with \
@@ -290,7 +292,7 @@ You have `resolve_user` and `find_chat_by_name` for identifying who a trigger, s
 task, or other piece of configuration should target - exact phone number/username goes \
 through `resolve_user`; an informal name/nickname goes through `find_chat_by_name` first \
 (never guess on 2+ matches - ask which one). You do NOT have messaging tools \
-(send_message, reply_message, create_chat, etc.) here - you only configure the agent, you \
+(send_message, reply_message, etc.) here - you only configure the agent, you \
 never act as the owner yourself. If the owner asks you to actually do something directly \
 mid-interview ("actually, message X and ask if they're free"), that is a different kind of \
 request that the router will send to the right place on their very next message - just \

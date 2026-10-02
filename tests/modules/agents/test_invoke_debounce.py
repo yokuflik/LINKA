@@ -145,6 +145,19 @@ async def test_second_acquire_for_the_same_pair_fails_while_held(redis_db):
     assert await acquire_turn_lock(1, 2) is True
 
 
+async def test_stale_holder_cannot_release_a_newer_turns_lock(redis_db):
+    assert await acquire_turn_lock(1, 2, "turn-a") is True
+    # Simulate turn A's TTL expiring and turn B acquiring the lock.
+    await redis_client.delete(f"{settings.AGENT_TURN_LOCK_KEY_PREFIX}:1:2")
+    assert await acquire_turn_lock(1, 2, "turn-b") is True
+
+    await release_turn_lock(1, 2, "turn-a")  # late cleanup of the expired turn
+    assert await acquire_turn_lock(1, 2, "turn-c") is False  # B still holds it
+
+    await release_turn_lock(1, 2, "turn-b")
+    assert await acquire_turn_lock(1, 2, "turn-c") is True
+
+
 async def test_lock_is_scoped_per_chat_not_just_per_agent(redis_db):
     assert await acquire_turn_lock(1, 100) is True
     # A different chat for the same agent must not contend with it.

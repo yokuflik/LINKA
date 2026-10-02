@@ -25,6 +25,7 @@ from modules.agents.invoke_debounce import due_pairs, pop_latest_message_id
 from modules.agents.invoke_queue import enqueue_invocation
 from modules.agents.tools import execute_tool_call, get_tool_schemas_for_chat
 from modules.agents.tools.common import ToolDeniedError
+from modules.agents.tools.execution import EXECUTION_TOOL_HANDLERS
 from modules.agents.tools.goal_task_tools import _tool_cancel_goal_task, _tool_start_goal_task
 from modules.agents.trigger_engine import evaluate_triggers
 from modules.messaging.crud import create_message
@@ -132,7 +133,7 @@ async def test_goal_turn_denies_other_tools_and_other_chats(db_session, redis_db
     other_chat = await make_chat(db_session, agent.owner_user_id)
     await _spawn(db_session, agent, target)
 
-    denied = await execute_tool_call(db_session, agent, "create_chat", {"target_user_id": 1}, chat_id=target)
+    denied = await execute_tool_call(db_session, agent, "leave_group", {"chat_id": "1"}, chat_id=target)
     assert "not available" in denied["error"]
 
     off_target = await execute_tool_call(
@@ -153,7 +154,7 @@ async def test_goal_turn_can_send_in_its_own_chat(db_session, redis_db):
 async def test_no_goal_task_leaves_normal_execution_toolset(db_session, redis_db):
     agent, _, _, _, target = await _setup(db_session)
     names = {s["name"] for s in get_tool_schemas_for_chat(agent, target)}
-    assert "create_chat" in names and "complete_task" not in names
+    assert "leave_group" in names and "complete_task" not in names
     denied = await execute_tool_call(db_session, agent, "complete_task", {"outcome": "achieved", "summary": "x"}, chat_id=target)
     assert "not available" in denied["error"]
 
@@ -364,3 +365,38 @@ async def test_run_turn_text_only_turns_force_close_after_idle_cap(db_session, r
 
     assert _entry(agent, task_id) is None
     assert len(_summary_entries(agent)) == 1
+
+
+# --- opening_message: immediate send, no scheduled opener turn -----------------
+
+async def test_start_goal_task_with_opening_message_sends_now_and_skips_opener(db_session, redis_db, monkeypatch):
+    agent, _, _, _, target = await _setup(db_session)
+    sent = []
+
+    async def fake_send(session, agent, arguments):
+        sent.append(arguments)
+        return {"message_id": "1"}
+
+    monkeypatch.setitem(EXECUTION_TOOL_HANDLERS, "send_message", fake_send)
+    await _tool_start_goal_task(
+        db_session, agent,
+        {"chat_id": str(target), "goal": "buy a car", "done_when": "price agreed", "opening_message": " hi, selling? "},
+    )
+    assert sent == [{"chat_id": str(target), "content": "hi, selling?"}]
+    assert agent.triggers["on_ephemeral_task"]
+    assert not [e for e in agent.triggers.get("on_schedule", []) if e.get("instruction") == "Begin the task now: send your first message to the person in this chat."]
+
+
+async def test_start_goal_task_cancels_task_if_opening_send_fails(db_session, redis_db, monkeypatch):
+    agent, _, _, _, target = await _setup(db_session)
+
+    async def failing_send(session, agent, arguments):
+        raise ToolDeniedError("can_message_private is disabled")
+
+    monkeypatch.setitem(EXECUTION_TOOL_HANDLERS, "send_message", failing_send)
+    with pytest.raises(ToolDeniedError):
+        await _tool_start_goal_task(
+            db_session, agent,
+            {"chat_id": str(target), "goal": "buy a car", "done_when": "price agreed", "opening_message": "hi"},
+        )
+    assert not agent.triggers["on_ephemeral_task"]

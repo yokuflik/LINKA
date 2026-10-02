@@ -15,11 +15,24 @@ from infra.ratelimit.service import check_and_increment
 from modules.agents.gemini_client import TurnResult, generate_turn
 from modules.agents.invoke_debounce import is_superseded
 from modules.agents.models import Agent
+from modules.chats.models.chat import Chat
 from modules.messaging import service as message_service
 from modules.messaging.common import AGENT_REPLY_MESSAGE_TYPE
 from modules.messaging.read_api import get_message_history
 
 logger = logging.getLogger(__name__)
+
+
+async def drop_read_history_if_chat_empty(session: AsyncSession, tool_schemas: list, chat_id) -> list:
+    """Hides read_history from Gemini while the chat has no messages at all
+    (e.g. a brand-new chat the agent just opened), so the model cannot burn a
+    round-trip reading nothing. Re-evaluated every round-trip."""
+    if chat_id is None or not any(s["name"] == "read_history" for s in tool_schemas):
+        return tool_schemas
+    chat = await session.get(Chat, chat_id)
+    if chat is None or chat.last_message_id is not None:
+        return tool_schemas
+    return [s for s in tool_schemas if s["name"] != "read_history"]
 
 
 def _pending_confirmation_note(agent: Agent) -> str:
@@ -68,7 +81,6 @@ _ROUTED_STATE_THINKING_LABELS = {
 _TOOL_THINKING_LABELS = {
     "send_message": "Sending a message…",
     "reply_message": "Sending a reply…",
-    "create_chat": "Starting a new chat…",
     "leave_group": "Leaving a group…",
     "read_history": "Reading chat history…",
     "update_own_triggers": "Updating its own triggers…",

@@ -22,8 +22,9 @@ from modules.agents.tools.execution import EXECUTION_TOOL_HANDLERS
 
 
 async def _tool_start_goal_task(session: AsyncSession, agent: Agent, arguments: dict) -> dict:
+    opening_message = str(arguments.get("opening_message") or "").strip()
     try:
-        return await spawn_goal_task(
+        entry = await spawn_goal_task(
             session,
             agent,
             chat_id=str(arguments["chat_id"]),
@@ -33,9 +34,22 @@ async def _tool_start_goal_task(session: AsyncSession, agent: Agent, arguments: 
             may_commit=bool(arguments.get("may_commit", False)),
             max_turns=arguments.get("max_turns"),
             timeout_minutes=arguments.get("timeout_minutes"),
+            schedule_opener=not opening_message,
         )
     except GoalTaskError as exc:
         raise ToolDeniedError(str(exc))
+    if opening_message:
+        # Sent immediately through the normal send path (same restrictions and
+        # send budget) instead of a scheduled opener turn + extra Gemini call.
+        try:
+            await EXECUTION_TOOL_HANDLERS["send_message"](
+                session, agent, {"chat_id": str(arguments["chat_id"]), "content": opening_message}
+            )
+        except Exception:
+            # Never leave a task running whose opener was not delivered.
+            await close_goal_task(session, agent, entry["task_id"], status="cancelled", summary="Opening message could not be sent.")
+            raise
+    return entry
 
 
 async def _tool_cancel_goal_task(session: AsyncSession, agent: Agent, arguments: dict) -> dict:

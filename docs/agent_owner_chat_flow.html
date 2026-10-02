@@ -212,7 +212,7 @@ help_g:{t:'state',ic:'📚',title:'help_general',tag:'state · docs-only',
   files:['modules/agents/help_docs.py','docs/agent_knowledge/'],tools:TOOLS_NONE,
   choices:[{l:'לולאת הכלים',n:'loop'}]},
 loop:{t:'decision',ic:'🔄',title:'לולאת התור (עד 8 סיבובים)',tag:'invoke_turn_loop',
-  desc:'כל סיבוב: בדיקת superseded ← המתנה לתקציב קריאות Gemini (עד 6 ניסיונות × 5s) ← בדיקת תקציב טוקנים (5h/500k, 7d/3M) ← קריאת Gemini עם סכמת הכלים של המצב. תוצאת הקריאה קובעת את המשך הדרך:',
+  desc:'כל סיבוב: בדיקת superseded ← המתנה לתקציב קריאות Gemini (עד 6 ניסיונות × 5s) ← בדיקת תקציב טוקנים (5h/1M, 7d/5M) ← קריאת Gemini עם סכמת הכלים של המצב. תוצאת הקריאה קובעת את המשך הדרך:',
   files:['modules/agents/invoke_turn_loop.py','modules/agents/invoke_turn_steps.py','modules/agents/gemini_client.py'],
   choices:[
    {l:'המודל קרא לכלי',h:'dispatch ← תוצאה חוזרת ← סיבוב נוסף',n:'dispatch'},
@@ -249,7 +249,7 @@ post:{t:'step',ic:'📨',title:'פרסום התשובה לבעלים',tag:'_post
   files:['modules/agents/invoke_turn_helpers.py','modules/messaging/send.py'],choices:[{l:'סיום',n:'e_done'}]},
 e_done:{t:'end',ic:'✅',title:'התור הסתיים',tag:'END · status=done',desc:'נעילת התור משוחררת, <b>agent_thinking</b> נסגר, והסטטוס נרשם. אם יש הודעה חדשה שמחכה — הדיבאונס יירה אותה כתור הבא.',files:['modules/agents/invoke_turn.py'],choices:[]},
 e_outcome:{t:'end',ic:'❗',title:'הסבר כשל נשלח לבעלים',tag:'END · ADR 0096',desc:'הודעה קצרה בצ\'אט הבעלים שמסבירה מה לא הצליח ולמה, עם סימון ❗. נכתבת ב-<b>AgentOutcomeJudgeLog</b>.',files:['modules/agents/outcome_judge.py'],choices:[]},
-e_tokens:{t:'end',ic:'📉',title:'הודעת מגבלה לבעלים',tag:'END · ADR 0059/0079',desc:'הודעה קבועה באנגלית (פעם אחת לכל מיצוי). חלון 5 שעות / 500k טוקנים או 7 ימים / 3M. תיבת ההודעה בדרוור מנוטרלת עד לאיפוס.',files:['modules/agents/token_budget.py'],choices:[]},
+e_tokens:{t:'end',ic:'📉',title:'הודעת מגבלה לבעלים',tag:'END · ADR 0059/0079',desc:'הודעה קבועה באנגלית (פעם אחת לכל מיצוי). חלון 5 שעות / 1M טוקנים או 7 ימים / 5M. תיבת ההודעה בדרוור מנוטרלת עד לאיפוס.',files:['modules/agents/token_budget.py'],choices:[]},
 e_super2:{t:'end',ic:'⏭️',title:'התור בוטל — תור חדש עונה',tag:'END · ADR 00732/0077',desc:'לא נשלחת תשובה מיושנת. מחויבים 500 טוקנים על הקריאה שבוטלה (אין usageMetadata). התור הבא יענה עם ההיסטוריה העדכנית.',files:['modules/agents/invoke_turn_steps.py'],choices:[]},
 };
 

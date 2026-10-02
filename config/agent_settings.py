@@ -58,6 +58,9 @@ AGENT_INVOKE_DEBOUNCE_POLL_INTERVAL_SECONDS = float(
 # equals the turn timeout, so a crashed worker holding the lock self-heals on
 # the same bound the turn itself is already capped at.
 AGENT_TURN_LOCK_KEY_PREFIX = os.environ.get("AGENT_TURN_LOCK_KEY_PREFIX", "agent_turn_lock")
+# Added on top of the turn timeout for the lock's TTL, so a turn being
+# cancelled at the timeout still holds its lock through cleanup.
+AGENT_TURN_LOCK_TTL_MARGIN_SECONDS = float(os.environ.get("AGENT_TURN_LOCK_TTL_MARGIN_SECONDS", "20"))
 
 # ADR 00732: set alongside the re-arm above when a new message lands while a
 # previous turn for the same pair is already running - the in-flight turn
@@ -122,6 +125,10 @@ AGENT_TURN_MAX_TOOL_ROUNDTRIPS = int(os.environ.get("AGENT_TURN_MAX_TOOL_ROUNDTR
 # ADR 0102: max `continue_message` calls per turn (a long answer split across
 # up to this many follow-up messages), enforced in code in dispatch_tool_call.
 AGENT_MAX_CONTINUATION_MESSAGES = int(os.environ.get("AGENT_MAX_CONTINUATION_MESSAGES", "3"))
+
+# Retries when an execution-mode turn ends with an empty Gemini response and
+# nothing was sent (otherwise the customer gets silence).
+AGENT_EMPTY_RESPONSE_MAX_RETRIES = int(os.environ.get("AGENT_EMPTY_RESPONSE_MAX_RETRIES", "1"))
 
 # Whole-turn wall-clock timeout (asyncio.wait_for) - aborts a stuck turn
 # cleanly instead of holding a worker slot indefinitely.
@@ -204,6 +211,10 @@ AGENT_ESCALATION_PAUSE_HOURS = int(os.environ.get("AGENT_ESCALATION_PAUSE_HOURS"
 # all (the owner must narrow by date range or count), never silently
 # truncated. Enforced server-side in the tool handler, not just the prompt.
 AGENT_BULK_FETCH_MAX_MESSAGES = int(os.environ.get("AGENT_BULK_FETCH_MAX_MESSAGES", "1000"))
+# ADR 0105: size bounds on one bulk_fetch_messages result - per-message content
+# cap and a total-characters budget per call (remainder paged via has_more).
+AGENT_BULK_FETCH_MESSAGE_MAX_CHARS = int(os.environ.get("AGENT_BULK_FETCH_MESSAGE_MAX_CHARS", "1000"))
+AGENT_BULK_FETCH_MAX_CHARS = int(os.environ.get("AGENT_BULK_FETCH_MAX_CHARS", "60000"))
 
 # Shared upper bound on the optional per-call `limit` argument the model can
 # pass to read_history/search_messages/search_semantic - lets the model ask
@@ -482,6 +493,7 @@ __all__ = [
     "AGENT_INVOKE_DEBOUNCE_SECONDS",
     "AGENT_INVOKE_DEBOUNCE_POLL_INTERVAL_SECONDS",
     "AGENT_TURN_LOCK_KEY_PREFIX",
+    "AGENT_TURN_LOCK_TTL_MARGIN_SECONDS",
     "AGENT_TURN_SUPERSEDED_KEY_PREFIX",
     "AGENT_TYPING_ACTIVE_KEY_PREFIX",
     "AGENT_SUPERSEDED_CALL_TOKEN_PENALTY",
@@ -492,6 +504,7 @@ __all__ = [
     "AGENT_GEMINI_BUDGET_MAX_RETRIES",
     "AGENT_TURN_MAX_TOOL_ROUNDTRIPS",
     "AGENT_MAX_CONTINUATION_MESSAGES",
+    "AGENT_EMPTY_RESPONSE_MAX_RETRIES",
     "AGENT_TURN_TIMEOUT_SECONDS",
     "AGENT_SEND_RATE_LIMIT_BACKOFF_MS",
     "AGENT_SEND_RATE_LIMIT_BACKOFF_MAX_MS",
@@ -502,6 +515,8 @@ __all__ = [
     "AGENT_MAX_AUTO_CHATS",
     "AGENT_ESCALATION_PAUSE_HOURS",
     "AGENT_BULK_FETCH_MAX_MESSAGES",
+    "AGENT_BULK_FETCH_MESSAGE_MAX_CHARS",
+    "AGENT_BULK_FETCH_MAX_CHARS",
     "AGENT_TOOL_RESULT_MAX_LIMIT",
     "AGENT_PENDING_CONFIRMATION_TTL_MINUTES",
     "AGENT_MAX_SCHEDULE_ENTRIES",

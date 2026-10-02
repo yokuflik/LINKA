@@ -82,7 +82,11 @@ function useTyping(ctx) {
       (byKind[kind] || byKind.typing).push(id);
     }
     const parts = [];
+    // 1:1 chats: just the bare verb, naming the only possible typist is redundant.
+    const item = ctx.chats && ctx.chats.value.find((c) => c.chat.id === chatId);
+    const isPrivate = !!(item && !item.chat.is_group);
     const phrase = (ids, verbOne, verbMany) => {
+      if (isPrivate) return verbOne.charAt(0).toUpperCase() + verbOne.slice(1);
       if (ids.length === 1) return `${ctx.userLabelById(ids[0])} is ${verbOne}`;
       return `${ids.length} people are ${verbMany}`;
     };

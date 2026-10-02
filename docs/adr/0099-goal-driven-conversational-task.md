@@ -111,3 +111,7 @@ simple-action accuracy).
    engine / dispatch cases): each of the six termination paths, chat-gate
    denial, one-task-per-chat conflict, Judge skip.
 4. Update `.claude_docs/ai_agent.md` (tool table, trigger shapes) in the same task.
+
+## Amendment 2026-10-03 - `opening_message`
+
+The scheduled opener turn made the first message arrive ~10-15s after the chat appeared (schedule poll + a second Gemini call). `start_goal_task` now accepts `opening_message`, sent immediately through the normal `send_message` handler; `spawn_goal_task(schedule_opener=False)` skips the opener schedule entry. A failed opening send cancels the task. The scheduled opener remains the fallback when the field is omitted.

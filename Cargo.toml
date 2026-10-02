@@ -16,6 +16,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 anyhow = "1"
 thiserror = "1"
 
+# Smaller debug builds: keep line numbers for backtraces, drop full debug info.
+[profile.dev]
+debug = "line-tables-only"
+
 # Size-first release build. LTO=fat + codegen-units=1 needs >1GB RAM to link,
 # so the production image is built off-host (see RUST_WS_GATEWAY_PLAN.md step 7).
 [profile.release]

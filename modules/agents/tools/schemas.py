@@ -11,14 +11,15 @@ from modules.agents.tools.goal_task_schemas import CANCEL_GOAL_TASK_SCHEMA, STAR
 TOOL_SCHEMAS = [
     {
         "name": "send_message",
-        "description": "Send a new text message into an existing chat the owner already participates in. When the owner asked you to message someone, call this directly with the chat_id you already have - do not read that chat's history first just to deliver the message.",
+        "description": "Send a new text message. Pass chat_id if you already have one; otherwise pass target_user_id (from resolve_user) and the 1:1 chat is opened automatically as part of sending. When the owner asked you to message someone, call this directly - do not read that chat's history first just to deliver the message.",
         "parameters": {
             "type": "object",
             "properties": {
-                "chat_id": {"type": "string", "description": "Target chat id"},
+                "chat_id": {"type": "string", "description": "Target chat id, if one already exists"},
+                "target_user_id": {"type": "string", "description": "User to message when there is no chat_id yet; exactly one of chat_id / target_user_id"},
                 "content": {"type": "string", "description": "Message text"},
             },
-            "required": ["chat_id", "content"],
+            "required": ["content"],
         },
     },
     {
@@ -44,15 +45,6 @@ TOOL_SCHEMAS = [
                 "content": {"type": "string", "description": "This part of the message"},
             },
             "required": ["chat_id", "content"],
-        },
-    },
-    {
-        "name": "create_chat",
-        "description": "Open a brand-new 1:1 chat with a user the owner has not messaged before (or fetch the existing one).",
-        "parameters": {
-            "type": "object",
-            "properties": {"target_user_id": {"type": "string"}},
-            "required": ["target_user_id"],
         },
     },
     {
@@ -137,8 +129,11 @@ TOOL_SCHEMAS = [
         "description": (
             "Fetch up to 1000 messages of a chat in one call (oldest first, or fewer if you pass "
             "a lower limit), for summarizing a whole chat or a whole date range at once - unlike "
-            "read_history, this is NOT paginated and returns everything in range in a single "
-            "result. You MUST have already called count_messages_in_range for this exact "
+            "read_history, it returns a large batch per call. Each result is size-capped (long "
+            "messages are cut with a '[truncated]' marker) and carries has_more: if true, this is "
+            "only part of the range - call again with after_message_id set to "
+            "next_after_message_id (same chat_id/dates, no new confirmation needed) to continue, "
+            "and say clearly if you summarize only part of it. You MUST have already called count_messages_in_range for this exact "
             "chat_id/date range in an earlier turn AND gotten the owner's explicit "
             "confirmation first - calling this without that will be denied. Never call this on "
             "your own initiative right after count_messages_in_range in the same turn."
@@ -164,6 +159,10 @@ TOOL_SCHEMAS = [
                 "limit": {
                     "type": "integer",
                     "description": "Optional: cap the number of messages fetched (default/max 1000)",
+                },
+                "after_message_id": {
+                    "type": "string",
+                    "description": "Optional: next_after_message_id from the previous page, to continue",
                 },
             },
             "required": ["chat_id"],

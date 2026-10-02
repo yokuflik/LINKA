@@ -346,7 +346,6 @@ def test_no_execution_only_tool_leaks_into_either_help_handler_set():
     execution_only_tools = {
         "send_message",
         "reply_message",
-        "create_chat",
         "leave_group",
         "read_history",
         "search_messages",

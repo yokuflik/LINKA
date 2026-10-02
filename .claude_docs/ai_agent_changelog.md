@@ -335,3 +335,14 @@ whole oldest lines only. Tests: `tests/modules/agents/test_invoke_turn_helpers.p
 
 ## Message formatting knowledge for agents (2026-10-02, no ADR)
 New `modules/agents/message_formatting.py::MESSAGE_FORMATTING_RULES` — the formatting the PoC renders (`poc/composables/messageFormat.js`: `*bold*`, `_italic_`, `~strike~`, ```` ```mono``` ````, `- ` bullets, `1. ` numbered; anything else shows literally) plus a "plain text by default, format only when a person would" rule. Injected into `personas.CHAT_STYLE_RULES` (all execution personas) and `builder_flow.STYLE_RULES` (all config/help states). Keep in sync with `messageFormat.js`.
+
+## Empty-Gemini-response retry, execution mode (2026-10-03)
+Bug: after a tool call (e.g. `fetch_chunk`) Gemini returned no functionCall and no text; `finish_without_call` is a no-op in execution mode, so the customer got silence. Fix in `invoke_turn_loop.py`: `_is_dropped_execution_reply` (real chat, not config/goal/scoped, `ctx.turn_acted` false, empty text) -> append `EMPTY_RESPONSE_NUDGE` and take another round-trip, up to `AGENT_EMPTY_RESPONSE_MAX_RETRIES` (1); still empty -> `EMPTY_RESPONSE_OWNER_NOTICE` into the owner chat. `ctx.turn_acted` is set by a successful send tool / `pause_and_escalate`. `gemini_client.generate_turn` now logs the raw candidate (finishReason + parts) when it has no parts and tolerates a missing `content` key.
+
+## `bulk_fetch_messages` size bounds + paging (ADR 0105, 2026-10-03)
+
+Result was unbounded (1000 raw messages, re-sent on every later round-trip).
+Now: per-message cap `AGENT_BULK_FETCH_MESSAGE_MAX_CHARS` (1000, `…[truncated N chars]`),
+total `AGENT_BULK_FETCH_MAX_CHARS` (60000, at least 1 message/page), `has_more` +
+`next_after_message_id`; new optional `after_message_id` arg (`get_messages_in_range(after_id=)`).
+`pending_confirmation` is cleared only on the last page. Tests: `tests/modules/agents/tools/test_bulk_fetch.py`.

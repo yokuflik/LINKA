@@ -73,8 +73,10 @@ class AgentKnowledgeChunk(Base):
 - `can_message_groups` defaults `false` for *newly created* agents only
   (AGENT_DRAWER_UI_PLAN.md Wave 2 / ADR 0047 era, 2026-09-23) - existing
   agents keep whatever value they already have (no backfill).
-- `can_message_new_private_contacts=false` blocks only `create_chat`, not
-  replying in an existing 1:1.
+- `can_message_new_private_contacts=false` blocks only opening a brand-new 1:1: `send_message` with
+  `target_user_id` (the standalone `create_chat` tool was removed 2026-10-03) when no pair chat exists yet (2026-10-03: `send_message` takes
+  `chat_id` OR `target_user_id`, auto-opens the chat, returns `chat_id`; not
+  replying in an existing 1:1).
 - `blocked_read_chat_ids` is enforced by the Trigger Rule Engine skipping
   the chat entirely (agent never invoked for it), not by a tool-level
   refusal. All keys enforced server-side in `execute_tool_call`, never

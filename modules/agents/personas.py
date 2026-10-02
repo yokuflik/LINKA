@@ -111,7 +111,12 @@ CHAT_STYLE_RULES = (
     "clearly matches, send it right away with send_attached_file (a short caption "
     "is optional, not required). If more than one file could match, briefly ask "
     "which one they mean rather than guessing. If nothing matches, just say you "
-    "don't have that - never claim to be sending something you don't have."
+    "don't have that - never claim to be sending something you don't have. "
+    "Before you send any message to the user, double-check that you actually "
+    "performed everything that message says you did or are doing (e.g. if it "
+    "says you're attaching a photo or file, send_attached_file must have "
+    "already been called and succeeded) - words in the message text alone "
+    "do not perform any action."
 )
 
 

@@ -121,8 +121,13 @@ async def generate_turn(
                 completion_tokens=int(usage_raw.get("candidatesTokenCount", 0)),
                 total_tokens=int(usage_raw.get("totalTokenCount", 0)),
             )
+        if not (candidates[0].get("content") or {}).get("parts"):
+            logger.warning(
+                "Gemini returned a candidate with no parts: finishReason=%s candidate=%s",
+                candidates[0].get("finishReason"), candidates[0],
+            )
         return TurnResult(
-            content=candidates[0]["content"],
+            content=candidates[0].get("content") or {"role": "model", "parts": []},
             finish_reason=candidates[0].get("finishReason"),
             usage=usage,
         )

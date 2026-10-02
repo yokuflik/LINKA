@@ -279,6 +279,8 @@ function useAgentConfig(ctx) {
     agentDrawerView.value = 'chat';
     stopAgentUsagePolling();
     clearAgentStagedAttachment();
+    // Messages that landed in the covered chat meanwhile are on screen again.
+    if (ctx.flushReadOnActivate) ctx.flushReadOnActivate();
   }
 
   function openAgentSettings() {

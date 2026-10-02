@@ -93,7 +93,7 @@ interface-only (never mention backend/infra/model/mechanism terms - see ADR
 ## Current tool registry
 
 **Execution mode** (any chat except `owner_agent_chat_id`, or a
-schedule-fired turn): `send_message`, `reply_message`, `continue_message` (ADR 0102: send one part of a long answer + get another turn; cap `AGENT_MAX_CONTINUATION_MESSAGES`=3/turn enforced in `invoke_turn_loop.dispatch_tool_call`; config-mode `MAX_TOKENS` partials auto-continue under the same cap via `finish_max_tokens` + `CONTINUATION_PROMPT`), `create_chat`,
+schedule-fired turn): `send_message` (`chat_id` or `target_user_id` - auto-opens the 1:1, 2026-10-03), `reply_message`, `continue_message` (ADR 0102: send one part of a long answer + get another turn; cap `AGENT_MAX_CONTINUATION_MESSAGES`=3/turn enforced in `invoke_turn_loop.dispatch_tool_call`; config-mode `MAX_TOKENS` partials auto-continue under the same cap via `finish_max_tokens` + `CONTINUATION_PROMPT`), `create_chat`,
 `leave_group`, `read_history`, `count_messages_in_range`,
 `bulk_fetch_messages` (ADR 0072), `search_messages`,
 `search_semantic` (ADR 0069), `search_knowledge_semantic` (ADR 0078),

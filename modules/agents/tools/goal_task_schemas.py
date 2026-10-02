@@ -20,6 +20,7 @@ START_GOAL_TASK_SCHEMA = {
         "type": "object",
         "properties": {
             "chat_id": {"type": "string", "description": "chat_id of the person to converse with, from resolve_user/find_chat_by_name"},
+            "opening_message": {"type": "string", "description": "Your FIRST message to the person, written now in their language and the owner's voice, covering everything the owner specified. It is sent immediately. Always provide it."},
             "goal": {"type": "string", "description": "What to achieve, in the owner's words, including every detail they gave (item, quantity, settings, budget...)"},
             "done_when": {"type": "string", "description": "A concrete, checkable success condition (e.g. 'the seller confirms the item is available at or under 500 NIS and gives pickup details')"},
             "constraints": {"type": "string", "description": "Limits the agent must respect (max price, deadlines, things not to say or agree to)"},

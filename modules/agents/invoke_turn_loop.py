@@ -9,6 +9,7 @@ from config import settings
 from modules.agents.gemini_client import (
     GeminiChatError,
     extract_function_call,
+    extract_text,
     function_response_part,
 )
 from modules.agents.goal_tasks import TERMINAL_TOOL_NAMES
@@ -16,6 +17,7 @@ from modules.agents.invoke_debounce import arm_debounce_now, is_superseded
 from modules.agents.invoke_notify import _MESSAGE_SENDING_TOOL_NAMES, _publish_agent_thinking
 from modules.agents.invoke_turn_ctx import TurnCtx
 from modules.agents.invoke_turn_helpers import (
+    drop_read_history_if_chat_empty,
     _TOOL_THINKING_LABELS,
     _TurnSuperseded,
     _generate_turn_or_supersede,
@@ -33,8 +35,34 @@ from modules.agents.invoke_turn_steps import (
 )
 from modules.agents.token_budget import record_tokens
 from modules.agents.tools import execute_tool_call, get_tool_schemas_for_chat
+from modules.agents.tools.dispatch import is_config_mode
 
 logger = logging.getLogger(__name__)
+
+
+EMPTY_RESPONSE_NUDGE = (
+    "[system] Your last response was empty and nothing was sent. Reply to the "
+    "person now using send_message (or reply_message), or call pause_and_escalate "
+    "if you cannot help."
+)
+EMPTY_RESPONSE_OWNER_NOTICE = (
+    "I couldn't produce a reply to a message just now, so nobody was answered. "
+    "Please check that chat."
+)
+
+
+def _is_dropped_execution_reply(ctx: TurnCtx, content: dict) -> bool:
+    """Execution-mode real-chat turn whose final Gemini response had no
+    function call and no text, with nothing sent yet - the customer would
+    otherwise get silence. Goal/scoped turns have their own end contracts."""
+    return (
+        ctx.chat_id is not None
+        and not is_config_mode(ctx.agent, ctx.chat_id)
+        and ctx.goal_turn is None
+        and not ctx.scoped_system_prompt
+        and not ctx.turn_acted
+        and not extract_text(content).strip()
+    )
 
 
 async def run_round_trips(ctx: TurnCtx) -> None:
@@ -64,7 +92,9 @@ async def run_round_trip(ctx: TurnCtx, round_trip: int) -> bool:
     if budget == "exhausted":
         return True
 
-    tool_schemas = get_tool_schemas_for_chat(agent, chat_id)
+    tool_schemas = await drop_read_history_if_chat_empty(
+        session, get_tool_schemas_for_chat(agent, chat_id), chat_id
+    )
     system_prompt = build_system_prompt(ctx)
 
     # ADR 0059: token-usage tracking only, no gating (2026-09-26) -
@@ -139,6 +169,23 @@ async def run_round_trip(ctx: TurnCtx, round_trip: int) -> bool:
 
     call = extract_function_call(content)
     if call is None:
+        if _is_dropped_execution_reply(ctx, content):
+            logger.warning(
+                "agent_worker: agent %s chat %s empty Gemini response with nothing sent "
+                "(finishReason=%s, parts=%r, retry %d)",
+                agent_id, chat_id, result.finish_reason, content.get("parts"),
+                ctx.empty_retries_used,
+            )
+            if ctx.empty_retries_used < settings.AGENT_EMPTY_RESPONSE_MAX_RETRIES:
+                ctx.empty_retries_used += 1
+                ctx.contents.append({"role": "user", "parts": [{"text": EMPTY_RESPONSE_NUDGE}]})
+                return False
+            await _post_config_reply(
+                session, agent, agent.owner_agent_chat_id, EMPTY_RESPONSE_OWNER_NOTICE
+            )
+            await session.commit()
+            ctx.ended_status = "done"
+            return True
         await finish_without_call(ctx, content)
         return True
 
@@ -221,6 +268,10 @@ async def dispatch_tool_call(ctx: TurnCtx, call: dict) -> bool:
         tool_result["continuations_remaining"] = (
             settings.AGENT_MAX_CONTINUATION_MESSAGES - ctx.continuations_used
         )
+    if not tool_failed and (
+        call["name"] in _MESSAGE_SENDING_TOOL_NAMES or call["name"] == "pause_and_escalate"
+    ):
+        ctx.turn_acted = True
     if tool_failed:
         ctx.last_tool_error = str(tool_result["error"])
         ctx.last_tool_name = call["name"]

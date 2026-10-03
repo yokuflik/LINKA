@@ -1,6 +1,6 @@
 # Linka
 
-A real-time messaging platform (WhatsApp / Telegram–style) built backend-first around two problems most chat-app tutorials skip: operating at tens-of-billions-of-messages scale, and running an autonomous AI agent as a first-class actor inside the messaging system rather than as a bolted-on chatbot widget.
+A real-time messaging platform (WhatsApp / Telegram–style) built backend-first around two problems most chat-app tutorials skip: operating at scale, and running an autonomous AI agent as a first-class actor inside the messaging system rather than as a bolted-on chatbot widget.
 
 There is no production client — only a single-file Vue 3 proof-of-concept (`poc/`) for manual testing. The real product is the backend: a feature-based modular monolith fronted by a standalone Rust WebSocket gateway, with async Redis-stream fan-out, a partitioned Postgres core, and dual server-side search (full-text + semantic vector) — all exercised by ~700 integration tests against real Postgres/Redis/MinIO.
 

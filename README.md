@@ -1,3 +1,5 @@
+
+
 # Linka
 
 **A real-time messaging platform with an AI agent built into its core, not attached to its side.**
@@ -23,7 +25,7 @@ There is no production client. `poc/` is a single-page Vue app I use to exercise
 
 ## Demo
 
-[![צפו בהדגמת הפלטפורמה](docs/assets/video-thumbnail.jpg)](docs/assets/linka-demo.mp4)
+https://github.com/user-attachments/assets/7e19df69-d169-4b8a-a3fd-a087a4227dfc
 
 > 🔍 **לתרשימים אינטראקטיביים ומפורטים יותר:**
 > - [תרשים: מסלול ההודעה, מהשליחה ועד ההגעה](docs/assets/diagrams/message_path.html)

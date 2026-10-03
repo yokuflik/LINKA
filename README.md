@@ -27,10 +27,10 @@ https://github.com/user-attachments/assets/7e19df69-d169-4b8a-a3fd-a087a4227dfc
 
 
 
-> 🔍 **לתרשימים אינטראקטיביים ומפורטים יותר:**
-> - [תרשים: מסלול ההודעה, מהשליחה ועד ההגעה](https://yokuflik.github.io/LINKA/assets/diagrams/message_path.html)
-> - [עץ החלטות: צ'אט הבעלים והסוכן](https://yokuflik.github.io/LINKA/assets/diagrams/agent_owner_chat_flow.html)
-> - [עץ החלטות: הודעה בצ'אט עם צד שלישי (ניתוב וטריגרים)](https://yokuflik.github.io/LINKA/assets/diagrams/agent_owner_chat_flow.html)
+> 🔍 **To more detailed, interactive diagrams:**
+> - [Diagram: Message flow, from sending to delivery](https://yokuflik.github.io/LINKA/assets/diagrams/message_path.html)
+> - [Decision tree: Owner and agent chat](https://yokuflik.github.io/LINKA/assets/diagrams/agent_owner_chat_flow.html)
+> - [Decision tree: Chat message with a third party (routing and triggers)](https://yokuflik.github.io/LINKA/assets/diagrams/agent_owner_chat_flow.html)
 ---
 
 ## Contents

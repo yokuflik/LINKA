@@ -28,11 +28,11 @@ There is no production client. `poc/` is a single-page Vue app I use to exercise
 https://github.com/user-attachments/assets/7e19df69-d169-4b8a-a3fd-a087a4227dfc
 
 
-https://yokuflik.github.io/LINKA/assets/diagrams/message_path.html
+
 > 🔍 **לתרשימים אינטראקטיביים ומפורטים יותר:**
-> - [תרשים: מסלול ההודעה, מהשליחה ועד ההגעה](docs/assets/diagrams/message_path.html)
-> - [עץ החלטות: צ'אט הבעלים והסוכן](docs/assets/diagrams/agent_owner_chat_flow.html)
-> - [[עץ החלטות: הודעה בצ'אט עם צד שלישי (ניתוב וטריגרים)](https://github.com/yokuflik/LINKA/blob/main/docs/assets/diagrams/agent_owner_chat_flow.html)]
+> - [תרשים: מסלול ההודעה, מהשליחה ועד ההגעה](https://yokuflik.github.io/LINKA/assets/diagrams/message_path.html)
+> - [עץ החלטות: צ'אט הבעלים והסוכן](https://yokuflik.github.io/LINKA/assets/diagrams/agent_owner_chat_flow.html)
+> - [עץ החלטות: הודעה בצ'אט עם צד שלישי (ניתוב וטריגרים)](https://yokuflik.github.io/LINKA/assets/diagrams/agent_owner_chat_flow.html)
 ---
 
 ## Contents

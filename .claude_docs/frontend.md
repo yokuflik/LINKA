@@ -180,7 +180,7 @@ There is **no real client app** — only a single-file HTML/Vue PoC (`poc/`) for
 ## Draft private chats
 - Opening a private chat from the sidebar no longer POSTs `/chats/private`. `useNewChat.createPrivateChat` resolves the phone → user and calls `useChats.openDraftChat(user)`, which sets `draftChat = {otherUserId, phone, user}`, nulls `activeChatId`, and subscribes to presence **by user id** (the `subscribe_presence` gate is the target's `privacy.online`, not a shared chat — so `everyone` resolves with no chat row; `contacts` won't).
 - `activePaneVisible` (`activeChatId || draftChat`) drives the main pane; the `activeChat*` label/avatar/presence computeds all fall back to `draftChat` values. Header shows name + online / last-seen.
-- First text send: `useMessageSend.sendMessage` awaits `useNewChat.commitDraftChat()` (POST `/chats/private` → `loadChats` → `selectChat`) then sends normally. Media/voice are blocked in draft mode ("Send a message first…").
+- First text send: `useMessageSend.sendMessage` awaits `useNewChat.commitDraftChat()` (POST `/chats/private` → `loadChats` → `selectChat`) then sends normally. `useMediaUpload.sendMediaMessage` (photo/file + caption) also commits the draft first via `commitDraftChat()` (offline → error, no chat created). Voice recording also works in draft mode: the chat is committed when the recording is sent.
 - Leaving without sending: `selectChat` (any real chat) and `logout` call `discardDraftChat` / clear `draftChat` + `unsubscribeFromPresence`. Nothing is created server-side.
 - If a real chat with that user already exists, `createPrivateChat` just opens it (no draft).
 

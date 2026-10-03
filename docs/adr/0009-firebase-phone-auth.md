@@ -49,7 +49,7 @@ Firebase-issued ID token and trade it for our own access/refresh pair.
    numbers, but the code it prints must now actually be entered.
 
 4. **Dev whitelist bypasses verification for exact phone strings `1`–`5`**
-   (`DEV_AUTH_WHITELIST` env, default `"1,2,3,4,5"`), enforced **server-side** in
+   (`DEV_AUTH_WHITELIST` env, default `"1,2,3,4,5,6,7,8,9,10"`), enforced **server-side** in
    both `request_otp` (no code stored, returns immediately) and
    `verify_otp_and_login` (skips straight to find-or-create). These are not real
    numbers and are only reachable by typing a single digit 1–5 into the phone

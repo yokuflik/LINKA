@@ -346,3 +346,7 @@ Now: per-message cap `AGENT_BULK_FETCH_MESSAGE_MAX_CHARS` (1000, `…[truncated 
 total `AGENT_BULK_FETCH_MAX_CHARS` (60000, at least 1 message/page), `has_more` +
 `next_after_message_id`; new optional `after_message_id` arg (`get_messages_in_range(after_id=)`).
 `pending_confirmation` is cleared only on the last page. Tests: `tests/modules/agents/tools/test_bulk_fetch.py`.
+
+## Self-targeted send + generic denial hint (2026-10-03, no ADR)
+
+Bug: owner says "send me a message" -> `send_message(target_user_id=owner)` tried `get_or_create_private_chat(owner, owner)`; the model then flailed with workarounds. Fixes: (1) `_tool_send_message` raises `ToolDeniedError(SELF_TARGET_REASON)` when `target_user_id == owner_user_id`; `_tool_resolve_user` returns `{found, is_owner: true, note}` for the owner without opening a chat (a `chat_id` pointing at a owner-only chat is NOT blocked). (2) `dispatch_tool_call` adds `"hint": DENIAL_HINT` (`tools/common.py`) to every `ToolDeniedError` result - "hard block, don't retry/workaround, tell the owner in one sentence". (3) `builder_flow.STYLE_RULES` section "When a tool is blocked" (all config/help states). Tests: `tests/modules/agents/tools/test_self_target.py`.

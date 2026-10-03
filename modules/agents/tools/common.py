@@ -29,6 +29,19 @@ class ToolDeniedError(Exception):
         super().__init__(reason)
 
 
+# Appended by dispatch_tool_call to every denial so the model stops hunting for
+# workarounds and just tells the owner (generic, not tied to any one denial).
+DENIAL_HINT = (
+    "This is a hard block, not a temporary failure. Do not retry or try other tools "
+    "to get around it - explain it to the owner in one short sentence in your reply."
+)
+
+SELF_TARGET_REASON = (
+    "the target is the owner themselves - an agent cannot message its own owner "
+    "through this tool; the owner already sees your plain-text reply in this chat"
+)
+
+
 async def _resolve_sender_labels(session: AsyncSession, sender_ids: list) -> dict:
     """Hard, server-side identity mask (never a prompt instruction): every
     tool result handed to Gemini must carry a human-readable label instead of

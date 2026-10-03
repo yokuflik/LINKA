@@ -65,7 +65,7 @@ from modules.agents.tools import builder_handoff as builder_handoff_module
 from modules.agents.tools import config_mode as config_mode_module
 from modules.agents.tools import dispatch as dispatch_module
 from modules.agents.tools import execution as execution_module
-from modules.agents.tools.common import ToolDeniedError
+from modules.agents.tools.common import DENIAL_HINT, ToolDeniedError
 from modules.agents.tools.dispatch import execute_tool_call, get_tool_schemas_for_chat, is_config_mode
 from modules.agents.tools.schemas import BUILDER_STATE_TOOL_SCHEMAS, TOOL_SCHEMAS
 
@@ -457,7 +457,7 @@ async def test_tool_denied_error_is_caught_and_reported_with_its_reason(monkeypa
     agent = _agent()
     result = await execute_tool_call(fake_session, agent, "send_message", {"chat_id": "1", "content": "hi"}, chat_id=OTHER_CHAT_ID)
 
-    assert result == {"error": "can_send_messages is disabled"}
+    assert result == {"error": "can_send_messages is disabled", "hint": DENIAL_HINT}
     assert _mock_log_call[-1]["allowed"] is False
     assert _mock_log_call[-1]["denial_reason"] == "can_send_messages is disabled"
 

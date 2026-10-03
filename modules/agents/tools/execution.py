@@ -28,6 +28,7 @@ from modules.agents.knowledge_service import KnowledgeValidationError, search_kn
 from modules.agents.models import Agent
 from modules.agents.schedule import sync_schedule_zset
 from modules.agents.tools.common import (
+    SELF_TARGET_REASON,
     ToolDeniedError,
     _chat_is_group,
     _consume_owner_send_budget,
@@ -75,6 +76,8 @@ async def _tool_send_message(session: AsyncSession, agent: Agent, arguments: dic
         # No chat yet: open (or fetch) the 1:1 chat as part of the send itself,
         # saving the model a separate open-chat round-trip.
         target_user_id = int(target_user_id)
+        if target_user_id == agent.owner_user_id:
+            raise ToolDeniedError(SELF_TARGET_REASON)
         if await get_pair_chat_id(session, agent.owner_user_id, target_user_id) is None:
             if not agent.restrictions.get("can_message_new_private_contacts", True):
                 raise ToolDeniedError("can_message_new_private_contacts is disabled")

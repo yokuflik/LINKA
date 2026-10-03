@@ -19,7 +19,7 @@ from modules.agents.builder_flow import BuilderState
 from modules.agents.goal_tasks import find_goal_task_for_chat
 from modules.agents.models import Agent
 from modules.agents.tools.builder_handoff import BUILDER_STATE_HANDLERS
-from modules.agents.tools.common import ToolDeniedError, _log_call
+from modules.agents.tools.common import DENIAL_HINT, ToolDeniedError, _log_call
 from modules.agents.tools.execution import CHAT_SCOPED_TOOL_NAMES, EXECUTION_TOOL_HANDLERS
 from modules.agents.tools.goal_task_schemas import COMPLETE_TASK_SCHEMA, FAIL_TASK_SCHEMA
 from modules.agents.tools.goal_task_tools import GOAL_TASK_HANDLERS
@@ -113,7 +113,7 @@ async def execute_tool_call(
     except ToolDeniedError as exc:
         logger.info("agent %s tool %s denied: %s", agent.id, tool_name, exc.reason)
         await _log_call(session, agent.id, tool_name, arguments, allowed=False, denial_reason=exc.reason)
-        return {"error": exc.reason}
+        return {"error": exc.reason, "hint": DENIAL_HINT}
     except Exception as exc:
         logger.exception("agent %s tool %s failed", agent.id, tool_name)
         await _log_call(session, agent.id, tool_name, arguments, allowed=False, denial_reason=f"error: {exc}")

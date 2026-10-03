@@ -31,7 +31,7 @@ from modules.agents.knowledge_service import KnowledgeValidationError, commit_kn
 from modules.agents.models import Agent
 from modules.agents.personas import STORABLE_SKILLS
 from modules.agents.schedule import sync_schedule_zset
-from modules.agents.tools.common import ToolDeniedError
+from modules.agents.tools.common import SELF_TARGET_REASON, ToolDeniedError
 from modules.chats import service as chat_service
 from modules.users.crud import get_user_by_phone, get_user_by_username
 
@@ -109,6 +109,10 @@ async def _tool_resolve_user(session: AsyncSession, agent: Agent, arguments: dic
 
     if user is None:
         return {"found": False}
+
+    if user.id == agent.owner_user_id:
+        # Never open a self-chat; tell the model so it can explain to the owner.
+        return {"found": True, "is_owner": True, "note": SELF_TARGET_REASON}
 
     chat = await chat_service.get_or_create_private_chat(session, agent.owner_user_id, user.id)
     return {

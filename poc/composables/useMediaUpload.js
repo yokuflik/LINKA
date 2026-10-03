@@ -326,10 +326,21 @@ function useMediaUpload(ctx) {
 
   async function sendMediaMessage(file, forceKind) {
     ctx.messagesError.value = '';
-    if (!ctx.activeChatId.value) {
-      if (ctx.draftChat.value) ctx.messagesError.value = 'Send a message first to start the chat.';
-      return;
+    // First send into an uncommitted draft chat: create the chat now (needs
+    // the network), then continue with a real activeChatId.
+    if (!ctx.activeChatId.value && ctx.draftChat.value) {
+      if (!ctx.wsIsOpen()) {
+        ctx.messagesError.value = "You appear to be offline right now. Please try again once you're reconnected.";
+        return;
+      }
+      try {
+        await ctx.commitDraftChat();
+      } catch (err) {
+        ctx.messagesError.value = ctx.friendlyError(err, "Couldn't start the chat. Please try again.");
+        return;
+      }
     }
+    if (!ctx.activeChatId.value) return;
     // An unsupported image/video MIME type falls back to a plain file
     // attachment instead of erroring - mirrors stageAttachment.
     const kind = mediaKindForMime(file.type, forceKind) || 'file';
@@ -461,10 +472,8 @@ function useMediaUpload(ctx) {
 
   async function startRecording() {
     ctx.messagesError.value = '';
-    if (!ctx.activeChatId.value) {
-      if (ctx.draftChat.value) ctx.messagesError.value = 'Send a message first to start the chat.';
-      return;
-    }
+    // A draft chat is allowed here; it is committed when the recording is sent.
+    if (!ctx.activeChatId.value && !ctx.draftChat.value) return;
     if (isRecording.value) return;
     // Unlock the shared AudioContext synchronously inside this tap gesture,
     // before any await - otherwise iOS leaves it 'suspended' and the FIRST
@@ -549,6 +558,15 @@ function useMediaUpload(ctx) {
       ctx.messagesError.value = "You appear to be offline right now. Please try again once you're reconnected.";
       return;
     }
+    if (!ctx.activeChatId.value && ctx.draftChat.value) {
+      try {
+        await ctx.commitDraftChat();
+      } catch (err) {
+        ctx.messagesError.value = ctx.friendlyError(err, "Couldn't start the chat. Please try again.");
+        return;
+      }
+    }
+    if (!ctx.activeChatId.value) return;
     const ext = { 'audio/webm': 'webm', 'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3' }[type] || 'm4a';
     const name = 'voice-' + Date.now() + '.' + ext;
 

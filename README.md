@@ -1,5 +1,7 @@
 # Linka
 
+🔗 Live demo: https:\\linka-web.com
+
 A real-time messaging platform (WhatsApp / Telegram–style) built backend-first around two problems most chat-app tutorials skip: operating at scale, and running an autonomous AI agent as a first-class actor inside the messaging system rather than as a bolted-on chatbot widget.
 
 Concretely, that comes down to a question:

@@ -25,6 +25,7 @@ function useAuth(ctx) {
   // Firebase confirmationResult between requestOtp() and verifyOtp() for the
   // real-SMS path (ADR 0009). null on the dev-whitelist path.
   let firebaseConfirmation = null;
+  let firebaseSend = null; // in-flight background SMS request
   const profileDraft = ref({ about_text: '', username: '', display_name: '' });
   // Advisory username availability for the welcome form. status: '' | 'checking'
   // | 'ok' | 'bad'; reason is the backend machine code when status==='bad'.
@@ -146,33 +147,49 @@ function useAuth(ctx) {
     return window._linkaRecaptcha;
   }
 
+  const SMS_OUTAGE_MESSAGE =
+    "There's a problem with our SMS service right now, so we couldn't send your code. " +
+    'You can still sign in with any code by using one of the test numbers 1-10.';
+
   async function requestOtp() {
     authError.value = '';
-    authBusy.value = true;
     clearConnRetry();
     phoneNumber.value = ctx.resolvedPhone.value;
-    try {
-      if (ctx.phoneIsWhitelisted.value) {
-        // Dev-whitelist number (1..5): legacy OTP stub, code is anything.
+    if (ctx.phoneIsWhitelisted.value) {
+      authBusy.value = true;
+      try {
+        // Dev-whitelist number (1..10): legacy OTP stub, code is anything.
         await apiFetch('/auth/otp/request', {
           method: 'POST',
           body: JSON.stringify({ phone_number: phoneNumber.value }),
           ...authRetryHooks(),
         });
         log('OTP (dev stub) requested for', phoneNumber.value, '- any code works');
-      } else {
-        // Real number: Firebase sends the SMS entirely client-side.
-        if (!window.firebaseAuth) throw new Error('Phone verification is unavailable (Firebase not loaded)');
-        firebaseConfirmation = await window.firebaseAuth.signInWithPhoneNumber(phoneNumber.value, firebaseRecaptcha());
-        log('Firebase SMS sent to', phoneNumber.value);
+        authStage.value = 'otp';
+      } catch (err) {
+        authError.value = ctx.friendlyError(err, "We couldn't send your code. Please check the number and try again.");
+      } finally {
+        authBusy.value = false;
+        clearConnRetry();
       }
-      authStage.value = 'otp';
-    } catch (err) {
-      authError.value = ctx.friendlyError(err, "We couldn't send your code. Please check the number and try again.");
-    } finally {
-      authBusy.value = false;
-      clearConnRetry();
+      return;
     }
+    // Real number: jump to the code screen right away; Firebase sends the SMS
+    // client-side in the background and a failure is reported on that screen.
+    authStage.value = 'otp';
+    const number = phoneNumber.value;
+    firebaseConfirmation = null;
+    firebaseSend = (async () => {
+      try {
+        if (!window.firebaseAuth) throw new Error('Firebase not loaded');
+        const confirmation = await window.firebaseAuth.signInWithPhoneNumber(number, firebaseRecaptcha());
+        if (authStage.value === 'otp' && phoneNumber.value === number) firebaseConfirmation = confirmation;
+        log('Firebase SMS sent to', number);
+      } catch (err) {
+        log('Firebase SMS failed', err);
+        if (authStage.value === 'otp') authError.value = SMS_OUTAGE_MESSAGE;
+      }
+    })();
   }
 
   async function verifyOtp() {
@@ -194,7 +211,11 @@ function useAuth(ctx) {
         });
       } else {
         // Confirm the SMS code with Firebase, then trade its ID token for our pair.
-        if (!firebaseConfirmation) throw new Error('Request a code first');
+        if (firebaseSend) await firebaseSend;
+        if (!firebaseConfirmation) {
+          authError.value = SMS_OUTAGE_MESSAGE;
+          return;
+        }
         const cred = await firebaseConfirmation.confirm(otpCode.value);
         const idToken = await cred.user.getIdToken();
         body = await apiFetch('/auth/firebase/verify', {

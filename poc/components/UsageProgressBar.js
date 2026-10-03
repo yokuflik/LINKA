@@ -99,7 +99,7 @@ const UsageProgressBar = {
         <span class="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-slate-700">{{ ringPercent }}%</span>
       </button>
 
-      <div v-if="popoverOpen" class="absolute right-0 top-9 z-10 w-64 rounded-lg border border-slate-200 bg-white shadow-lg p-3 space-y-2">
+      <div v-if="popoverOpen" class="max-md:fixed max-md:left-3 max-md:right-3 max-md:top-14 max-md:w-auto md:absolute md:right-0 md:top-9 md:w-64 z-50 rounded-lg border border-slate-200 bg-white shadow-lg p-3 space-y-2">
         <div v-for="w in windows" :key="w.key" class="text-[11px]">
           <div class="flex items-center justify-between mb-0.5 text-slate-500">
             <span>{{ w.label }}</span>

@@ -149,6 +149,8 @@
 <script src="composables/useDesktopNotifications.js?v=2026.10.04-3"></script>
 <script src="composables/useWsRouter.js?v=2026.10.04-3"></script>
 <style>
+  /* App header height incl. the notch / status-bar safe area (0 on desktop). */
+  :root { --header-h: calc(3.5rem + env(safe-area-inset-top, 0px)); }
   /* Phone only: lock the page itself so only the chat list / message list scroll
      (header, input bar stay fixed). 100dvh tracks the visible mobile viewport. */
   @media (max-width: 767px) {

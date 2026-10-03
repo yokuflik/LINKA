@@ -153,7 +153,7 @@ const MessageList = {
     // until the viewer taps it. `_openedMedia` holds the message ids whose
     // real <img>/<video> src is now bound. Legacy rows with no blur_hash keep
     // loading eagerly (openMedia is a no-op guard away).
-    const openedMedia = Vue.reactive({});
+    const openedMedia = store ? store.openedMedia : Vue.reactive({});
     function hasBlur(m) { return !!(m && m.media_blur_hash); }
     function isMediaOpened(m) {
       // Our own just-sent media is already local (blob: URL) - show it straight
@@ -182,7 +182,7 @@ const MessageList = {
     // Per-message blob: URL of downloaded bytes. We bind THIS (not the presigned
     // URL) as the <img>/<video> src so the browser never sees the S3
     // Content-Disposition: attachment header and never triggers a "save as".
-    const downloadedBlobUrl = Vue.reactive({});
+    const downloadedBlobUrl = store ? store.downloadedBlobUrl : Vue.reactive({});
     function mediaSrc(m) {
       const key = m.id || m.client_message_id;
       return downloadedBlobUrl[key] || m.media_url;
@@ -365,7 +365,7 @@ const MessageList = {
       <template v-for="row in rows" :key="row.type === 'separator' ? row.key : (row.m.id || row.m.client_message_id)">
         <!-- Sticky day separator (WhatsApp-style). data-row is absent so
              onScroll's paging count ignores it. -->
-        <div v-if="row.type === 'separator'" class="day-separator flex justify-center py-1">
+        <div v-if="row.type === 'separator'" class="day-separator flex justify-center pt-1 pb-3">
           <span class="inline-block w-40 text-center px-3 py-1 rounded-full text-[11px] font-medium bg-slate-200 text-slate-600 shadow-sm whitespace-nowrap overflow-hidden text-ellipsis">{{ row.label }}</span>
         </div>
       <template v-else>

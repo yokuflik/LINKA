@@ -50,7 +50,7 @@ const AgentDrawer = {
     'reset-agent', 'voice-played',
   ],
   template: `
-    <div v-if="open" class="fixed inset-x-0 top-14 z-50 pointer-events-none max-md:h-[calc(100dvh-3.5rem)] md:bottom-0">
+    <div v-if="open" class="fixed inset-x-0 z-50 pointer-events-none md:bottom-0 max-md:h-[calc(100dvh-var(--header-h))]" style="top: var(--header-h)">
       <div class="absolute inset-0 bg-black/30 md:hidden pointer-events-auto" @click="$emit('close')"></div>
       <div class="absolute inset-y-0 left-0 right-0 md:left-72 bg-white border-l border-slate-200 shadow-xl flex flex-col pointer-events-auto">
 

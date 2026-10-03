@@ -148,8 +148,47 @@ function useAuth(ctx) {
   }
 
   const SMS_OUTAGE_MESSAGE =
-    "There's a problem with our SMS service right now, so we couldn't send your code. " +
-    'You can still sign in with any code by using one of the test numbers 1-10.';
+    "There's a problem with our SMS service right now, so we couldn't send your code.";
+
+  const TEST_NUMBERS_HINT = '\nIn the meantime you can sign in with one of the test numbers 1-10 (any code works).';
+
+  // Maps Firebase Auth error codes to user-facing messages (send step + confirm step).
+  function firebaseErrorMessage(err, fallback) {
+    const code = (err && err.code) || '';
+    switch (code) {
+      case 'auth/too-many-requests':
+        return 'Too many attempts from this device or network. Please wait a while (up to a few hours) and try again.';
+      case 'auth/quota-exceeded':
+        return 'Our daily SMS limit has been reached. Please try again later, or use one of the test numbers 1-10.';
+      case 'auth/captcha-check-failed':
+      case 'auth/invalid-app-credential':
+      case 'auth/missing-app-credential':
+        return 'Security check failed. Disable any VPN or ad blocker, open the app in a regular browser (not inside another app), and try again.';
+      case 'auth/unauthorized-domain':
+      case 'auth/app-not-authorized':
+        return 'Phone sign-in is not enabled for this website address. Please contact support.';
+      case 'auth/operation-not-allowed':
+        return 'SMS sign-in is not available for this phone number\'s region right now.';
+      case 'auth/invalid-phone-number':
+      case 'auth/missing-phone-number':
+        return 'That phone number looks invalid. Please check it and try again.';
+      case 'auth/network-request-failed':
+        return 'Network problem. Please check your connection and try again.';
+      case 'auth/web-storage-unsupported':
+        return 'Your browser is blocking storage needed for sign-in. Enable cookies / leave private mode and try again.';
+      case 'auth/user-disabled':
+        return 'This account has been disabled.';
+      case 'auth/invalid-verification-code':
+      case 'auth/missing-verification-code':
+        return "That code doesn't look right. Please check it and try again.";
+      case 'auth/code-expired':
+      case 'auth/session-expired':
+      case 'auth/invalid-verification-id':
+        return 'That code has expired. Please go back and request a new one.';
+      default:
+        return fallback;
+    }
+  }
 
   async function requestOtp() {
     authError.value = '';
@@ -187,7 +226,7 @@ function useAuth(ctx) {
         log('Firebase SMS sent to', number);
       } catch (err) {
         log('Firebase SMS failed', err);
-        if (authStage.value === 'otp') authError.value = SMS_OUTAGE_MESSAGE;
+        if (authStage.value === 'otp') authError.value = firebaseErrorMessage(err, SMS_OUTAGE_MESSAGE) + TEST_NUMBERS_HINT;
       }
     })();
   }
@@ -213,7 +252,7 @@ function useAuth(ctx) {
         // Confirm the SMS code with Firebase, then trade its ID token for our pair.
         if (firebaseSend) await firebaseSend;
         if (!firebaseConfirmation) {
-          authError.value = SMS_OUTAGE_MESSAGE;
+          authError.value = SMS_OUTAGE_MESSAGE + TEST_NUMBERS_HINT;
           return;
         }
         const cred = await firebaseConfirmation.confirm(otpCode.value);
@@ -351,6 +390,7 @@ function useAuth(ctx) {
     currentUser.value = null;
     ctx.chats.value = [];
     ctx.messages.value = [];
+    if (typeof LinkaChatStore !== 'undefined') LinkaChatStore.resetMediaCache();
     ctx.activeChatId.value = null;
     ctx.draftChat.value = null;
     ctx.resetPresence();

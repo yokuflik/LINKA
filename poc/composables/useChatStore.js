@@ -27,6 +27,18 @@ const LinkaChatStore = (function buildChatStore() {
   // (selecting any real chat, or closing it) discards it silently.
   const draftChat = ref(null);
   const messages = ref([]);
+  // Per-message media download state, keyed by message id. Lives here (not in
+  // <MessageList>) so it survives leaving/re-entering a chat; cleared on logout
+  // (resetMediaCache) or page reload (in-memory only).
+  const openedMedia = Vue.reactive({});
+  const downloadedBlobUrl = Vue.reactive({});
+  function resetMediaCache() {
+    for (const k of Object.keys(downloadedBlobUrl)) {
+      try { URL.revokeObjectURL(downloadedBlobUrl[k]); } catch (_) { /* ignore */ }
+      delete downloadedBlobUrl[k];
+    }
+    for (const k of Object.keys(openedMedia)) delete openedMedia[k];
+  }
   const messageInput = ref('');
   const chatsError = ref('');
   const messagesError = ref('');
@@ -221,6 +233,7 @@ const LinkaChatStore = (function buildChatStore() {
 
   return {
     chats, activeChatId, draftChat, messages, messageInput,
+    openedMedia, downloadedBlobUrl, resetMediaCache,
     chatsError, messagesError, messagesConnectionError, messagesLoading, messagesEl,
     hasMoreMessages, loadingOlderMessages, olderMessagesRetrying, pendingHighlightId,
     MESSAGE_PAGE_SIZE, LOAD_OLDER_THRESHOLD, MAX_VISIBLE_MEMBERS,

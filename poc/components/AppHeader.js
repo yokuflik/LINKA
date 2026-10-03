@@ -47,7 +47,8 @@ const AppHeader = {
     },
   },
   template: `
-    <header class="h-14 shrink-0 flex items-center justify-between px-4 bg-white border-b border-slate-200">
+    <header class="shrink-0 flex items-center justify-between px-4 bg-white border-b border-slate-200"
+            style="height: var(--header-h); padding-top: env(safe-area-inset-top, 0px)">
       <div class="flex items-center gap-3 min-w-0">
         <span class="flex items-center gap-2 font-semibold shrink-0">
           <img src="assets/maskable_icon_x192.png" alt="Linka"

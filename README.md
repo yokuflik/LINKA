@@ -2,10 +2,9 @@
 
 A real-time messaging platform (WhatsApp / Telegram–style) built backend-first around two problems most chat-app tutorials skip: operating at scale, and running an autonomous AI agent as a first-class actor inside the messaging system rather than as a bolted-on chatbot widget.
 
-Concretely, that comes down to two questions:
+Concretely, that comes down to a question:
 
-1. What does the message path look like when it has to survive tens of billions of messages?
-2. What happens when an autonomous AI agent is a *participant* in that system, one that sends real messages, obeys real limits, and can be trusted by the person who owns it?
+What happens when an autonomous AI agent is a *participant* in that system, one that sends real messages, obeys real limits, and can be trusted by the person who owns it?
 
 
 The agent is the part I spent the most time on, and it's the main subject of this document.

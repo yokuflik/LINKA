@@ -21,6 +21,17 @@ There is no production client. `poc/` is a single-page Vue app I use to exercise
 
 ---
 
+## Demo
+
+[![צפו בהדגמת הפלטפורמה](docs/assets/video-thumbnail.jpg)](docs/assets/linka-demo.mp4)
+
+> 🔍 **לתרשימים אינטראקטיביים ומפורטים יותר:**
+> - [תרשים: מסלול ההודעה, מהשליחה ועד ההגעה](docs/assets/diagrams/message_path.html)
+> - [עץ החלטות: צ'אט הבעלים והסוכן](docs/assets/diagrams/agent_owner_chat_flow.html)
+> - [עץ החלטות: הודעה בצ'אט עם צד שלישי (ניתוב וטריגרים)](docs/assets/diagrams/agent_trigger_flow.html)
+
+---
+
 ## Contents
 
 1. [The AI agent](#the-ai-agent)

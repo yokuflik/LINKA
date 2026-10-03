@@ -121,7 +121,7 @@ kindcheck:{t:'decision',ic:'🧹',title:'סינון ראשוני של ההודע
    {l:'הבעלים כותב בצ\'אט הסוכן שלו',h:'owner-chat direct-wake — עץ ההחלטות של צ\'אט הבעלים',n:'e_owner',bad:1},
    {l:'הודעה רגילה בצ\'אט אחר',h:'בודקים כל משתתף אחר',n:'cfg'}]},
 e_ignored:{t:'end',ic:'⛔',title:'אין תגובה',tag:'END',desc:'ההודעה נשמרת ומופצת כרגיל. לא נוצר תור סוכן.',files:[],choices:[]},
-e_owner:{t:'end',ic:'➡️',title:'עץ אחר',tag:'END · owner chat',desc:'הודעה של הבעלים בצ\'אט הפרטי עם הסוכן שלו עוברת דרך הראוטר ומצבי ההגדרות. ראו <b>docs/agent_owner_chat_flow.html</b>. (הודעת <b>agent_reply</b> של הסוכן עצמו שם לא מעירה אותו שוב — מניעת לולאה עצמית.)',files:['docs/agent_owner_chat_flow.html'],choices:[]},
+e_owner:{t:'end',ic:'➡️',title:'עץ אחר',tag:'END · owner chat',desc:'הודעה של הבעלים בצ\'אט הפרטי עם הסוכן שלו עוברת דרך הראוטר ומצבי ההגדרות. ראו <b>docs/assets/diagrams/agent_owner_chat_flow.html</b>. (הודעת <b>agent_reply</b> של הסוכן עצמו שם לא מעירה אותו שוב — מניעת לולאה עצמית.)',files:['docs/assets/diagrams/agent_owner_chat_flow.html'],choices:[]},
 cfg:{t:'decision',ic:'👤',title:'למשתתף יש סוכן פעיל?',tag:'agent:trigger_cfg · Redis',
   desc:'לכל משתתף אחר בצ\'אט נטענת תצורת הטריגרים מה-<b>cache ב-Redis</b> (בלי Postgres). רוב ההודעות נעצרות כאן בזול. סוכן שהקפיא את הצ\'אט הזה (<b>pause_and_escalate</b>) מדולג עוד לפני בדיקת הטריגרים.',
   files:['modules/agents/cache.py','modules/agents/trigger_engine.py::_load_trigger_cfg'],

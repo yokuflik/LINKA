@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/7e19df69-d169-4b8a-a3fd-a087a4227dfc
 > 🔍 **לתרשימים אינטראקטיביים ומפורטים יותר:**
 > - [תרשים: מסלול ההודעה, מהשליחה ועד ההגעה](docs/assets/diagrams/message_path.html)
 > - [עץ החלטות: צ'אט הבעלים והסוכן](docs/assets/diagrams/agent_owner_chat_flow.html)
-> - [עץ החלטות: הודעה בצ'אט עם צד שלישי (ניתוב וטריגרים)](docs/assets/diagrams/agent_trigger_flow.html)
+> - [[עץ החלטות: הודעה בצ'אט עם צד שלישי (ניתוב וטריגרים)](https://github.com/yokuflik/LINKA/blob/main/docs/assets/diagrams/agent_owner_chat_flow.html)](l)
 
 ---
 

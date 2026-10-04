@@ -25,7 +25,8 @@ There is no production client. `poc/` is a single-page Vue app I use to exercise
 
 ## Demo
 
-https://github.com/user-attachments/assets/7e19df69-d169-4b8a-a3fd-a087a4227dfc
+https://github.com/user-attachments/assets/b20d72b2-5507-4aa1-a5b5-f9c7d893adf7
+
 
 
 

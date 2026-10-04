@@ -165,6 +165,7 @@ const AuthScreen = {
              :class="phoneRawInput && !canSubmitPhone ? 'text-red-600' : 'text-slate-400'">
             <template v-if="phoneRawInput && !canSubmitPhone">Enter a valid phone number</template>
             <template v-else-if="phoneIsWhitelisted">Dev test number — verification skipped.</template>
+            <template v-else-if="!phoneRawInput">Demo: enter 1–10</template>
           </p>
 
           <button @click="$emit('request-otp')" :disabled="authBusy || !canSubmitPhone"

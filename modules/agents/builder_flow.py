@@ -368,6 +368,11 @@ boilerplate):
 - What the agent will actually do for each trigger, in concrete terms.
 - When and how the agent will notify the user or hand off to them.
 - Any hard boundaries or tone rules that were set.
+- Whether the agent impersonates the owner or not, always stated explicitly, based on \
+the disclosure choice actually saved (confirm with `get_agent_status`'s `disclose_as_agent`; false = not disclosing): if it \
+may admit being an AI when directly asked, say so; otherwise say it replies as if it \
+were the owner themselves and will not volunteer that it's an AI. If a name was set, \
+mention it too.
 Keep it conversational and broken into short lines for readability - not markdown \
 headers or bullet points, and not a single dense paragraph either. Natural line breaks \
 per trigger are enough.

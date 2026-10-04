@@ -219,6 +219,8 @@ async def _tool_get_agent_status(session: AsyncSession, agent: Agent, arguments:
     return {
         "is_enabled": agent.is_enabled,
         "active_skill": agent.active_skill,
+        "agent_name": agent.agent_name,
+        "disclose_as_agent": agent.disclose_as_agent,
         "restrictions": agent.restrictions,
         "triggers": agent.triggers,
         "paused_chat_ids": [entry["chat_id"] for entry in _active_pauses(agent)],

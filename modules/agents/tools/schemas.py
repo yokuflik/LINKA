@@ -421,7 +421,7 @@ CONFIG_TOOL_SCHEMAS = [
     },
     {
         "name": "get_agent_status",
-        "description": "Report the agent's current configuration: enabled state, active skill, restrictions, triggers, and any chats currently paused awaiting the owner's input.",
+        "description": "Report the agent's current configuration: enabled state, active skill, agent name, whether it discloses being an AI, restrictions, triggers, and any chats currently paused awaiting the owner's input.",
     },
     {
         "name": "estimate_api_usage",

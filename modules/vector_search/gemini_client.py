@@ -17,11 +17,16 @@ batch alone can exhaust the whole per-minute quota. This module makes no
 attempt to pace requests itself - the seed script keeps its batches at 90 and
 sleeps a full 65s between them (see scripts/seed_vector_data.py); the runtime
 flush path (50-message auto-flush / on-demand flush) makes at most one batch
-call per flush, expected to stay under the ceiling at demo traffic.
+call per flush, expected to stay under the ceiling at demo traffic. The paid
+tier lifts that ceiling; a 429 is still handled via the queue backoff key
+(ADR 0107).
+
+`taskType`: documents are embedded as RETRIEVAL_DOCUMENT, queries as
+RETRIEVAL_QUERY (ADR 0107).
 """
 
 import logging
-from typing import Sequence
+from typing import Optional, Sequence
 
 import httpx
 
@@ -41,11 +46,21 @@ def _require_api_key() -> str:
     return settings.GEMINI_API_KEY
 
 
-async def embed_batch(texts: Sequence[str]) -> list[list[float]]:
+TASK_TYPE_DOCUMENT = "RETRIEVAL_DOCUMENT"
+TASK_TYPE_QUERY = "RETRIEVAL_QUERY"
+
+
+def _status_of(exc: Exception) -> "int | None":
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None)
+
+
+async def embed_batch(texts: Sequence[str], task_type: Optional[str] = TASK_TYPE_DOCUMENT) -> list[list[float]]:
     """batchEmbedContents - up to VECTOR_GEMINI_BATCH_SIZE texts per call.
     Caller is responsible for chunking a larger batch. Raises
     EmbeddingProviderError on any HTTP/shape failure - callers decide whether
-    that means "drop this batch" (flush) or "surface a 502" (query embed)."""
+    that means "requeue / bisect / drop" (flush, ADR 0107) or "surface a 502"
+    (query embed). A 429 raises EmbeddingProviderQuotaExceededError."""
     api_key = _require_api_key()
     model = f"models/{settings.GEMINI_EMBED_MODEL}"
     url = f"{settings.GEMINI_API_BASE}/v1beta/{model}:batchEmbedContents"
@@ -55,6 +70,7 @@ async def embed_batch(texts: Sequence[str]) -> list[list[float]]:
                 "model": model,
                 "content": {"parts": [{"text": t}]},
                 "outputDimensionality": settings.VECTOR_EMBEDDING_DIM,
+                **({"taskType": task_type} if task_type else {}),
             }
             for t in texts
         ]
@@ -62,6 +78,9 @@ async def embed_batch(texts: Sequence[str]) -> list[list[float]]:
     try:
         async with httpx.AsyncClient(timeout=settings.GEMINI_HTTP_TIMEOUT_SECONDS) as client:
             resp = await client.post(url, params={"key": api_key}, json=body)
+        if resp.status_code == 429:
+            logger.warning("Gemini batchEmbedContents quota exceeded (429)")
+            raise EmbeddingProviderQuotaExceededError("Gemini quota exceeded")
         resp.raise_for_status()
         data = resp.json()
         embeddings = data["embeddings"]
@@ -72,10 +91,10 @@ async def embed_batch(texts: Sequence[str]) -> list[list[float]]:
         return [e["values"] for e in embeddings]
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.warning("Gemini batchEmbedContents failed: %s", exc)
-        raise EmbeddingProviderError(str(exc)) from exc
+        raise EmbeddingProviderError(str(exc), status_code=_status_of(exc)) from exc
 
 
-async def embed_query(text: str) -> list[float]:
+async def embed_query(text: str, task_type: Optional[str] = TASK_TYPE_QUERY) -> list[float]:
     """embedContent - single text, used for the search query itself."""
     api_key = _require_api_key()
     model = f"models/{settings.GEMINI_EMBED_MODEL}"
@@ -84,6 +103,7 @@ async def embed_query(text: str) -> list[float]:
         "model": model,
         "content": {"parts": [{"text": text}]},
         "outputDimensionality": settings.VECTOR_EMBEDDING_DIM,
+        **({"taskType": task_type} if task_type else {}),
     }
     try:
         async with httpx.AsyncClient(timeout=settings.GEMINI_HTTP_TIMEOUT_SECONDS) as client:
@@ -95,4 +115,4 @@ async def embed_query(text: str) -> list[float]:
         return resp.json()["embedding"]["values"]
     except (httpx.HTTPError, KeyError, ValueError) as exc:
         logger.warning("Gemini embedContent failed: %s", exc)
-        raise EmbeddingProviderError(str(exc)) from exc
+        raise EmbeddingProviderError(str(exc), status_code=_status_of(exc)) from exc

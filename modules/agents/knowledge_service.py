@@ -32,7 +32,11 @@ from modules.agents.knowledge_crud import update_chunk_embeddings
 from modules.agents.models import Agent, AgentKnowledgeChunk, AgentKnowledgeDocument
 from modules.media import media_service
 from modules.vector_search import gemini_client
-from modules.vector_search.errors import EmbeddingProviderError, EmbeddingProviderUnavailableError
+from modules.vector_search.errors import (
+    EmbeddingProviderError,
+    EmbeddingProviderQuotaExceededError,
+    EmbeddingProviderUnavailableError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +144,7 @@ async def _embed_chunks_best_effort(session: AsyncSession, chunks: list[AgentKno
         return
     try:
         vectors = await gemini_client.embed_batch([c.content for c in chunks])
-    except (EmbeddingProviderError, EmbeddingProviderUnavailableError):
+    except (EmbeddingProviderError, EmbeddingProviderUnavailableError, EmbeddingProviderQuotaExceededError):
         logger.warning("knowledge-chunk embedding failed - %d chunks left unembedded", len(chunks), exc_info=True)
         return
     await update_chunk_embeddings(session, [(c.id, vec) for c, vec in zip(chunks, vectors)])

@@ -29,16 +29,24 @@ VECTOR_QUEUE_FLUSH_SIZE = int(os.environ.get("VECTOR_QUEUE_FLUSH_SIZE", "50"))
 # below that.
 VECTOR_GEMINI_BATCH_SIZE = int(os.environ.get("VECTOR_GEMINI_BATCH_SIZE", "90"))
 
+# --- Retry queue (ADR 0107) ---
+# Per-item embed attempts (transient failures only) before the item is dropped.
+VECTOR_EMBED_MAX_ATTEMPTS = int(os.environ.get("VECTOR_EMBED_MAX_ATTEMPTS", "5"))
+# Global flush pause after a Gemini 429.
+VECTOR_EMBED_BACKOFF_SECONDS = int(os.environ.get("VECTOR_EMBED_BACKOFF_SECONDS", "30"))
+VECTOR_EMBED_BACKOFF_KEY = os.environ.get("VECTOR_EMBED_BACKOFF_KEY", "vector_embed_backoff_until")
+# Max drain rounds a semantic search will spend before giving up on the queue.
+VECTOR_SEARCH_DRAIN_ROUNDS = int(os.environ.get("VECTOR_SEARCH_DRAIN_ROUNDS", "3"))
+
 # --- Search endpoint ---
 VECTOR_SEARCH_DEFAULT_LIMIT = int(os.environ.get("VECTOR_SEARCH_DEFAULT_LIMIT", "10"))
 VECTOR_SEARCH_MAX_LIMIT = int(os.environ.get("VECTOR_SEARCH_MAX_LIMIT", "30"))
 # Cosine-distance ceiling (lower = stricter): rows with `embedding <=> query`
 # at or above this are dropped rather than padding out LIMIT with irrelevant
-# results. Validated against the seeded mock corpus (gemini-embedding-001):
-# genuinely relevant queries landed at 0.237-0.322 distance, unrelated ones at
-# 0.436-0.488 - a clean gap with no overlap. 0.35 sits in that gap with margin
-# on both sides. See docs/adr/0042.
-VECTOR_SEARCH_MAX_DISTANCE = float(os.environ.get("VECTOR_SEARCH_MAX_DISTANCE", "0.35"))
+# results. Recalibrated 2026-10-15 (ADR 0107) with taskType on a 6-language
+# synthetic corpus: 0.32 gives precision 0.91 / recall 0.40 pooled (0.35 was
+# precision 0.78 / recall 0.63). Report: .claude_docs/vector_search.md.
+VECTOR_SEARCH_MAX_DISTANCE = float(os.environ.get("VECTOR_SEARCH_MAX_DISTANCE", "0.32"))
 # Looser ceiling for the opt-in "show more results" expansion (client passes
 # expanded=true) - surfaces weaker matches the default hides, most commonly
 # cross-lingual queries against this corpus (Hebrew query / English content
@@ -67,6 +75,10 @@ __all__ = [
     "VECTOR_QUEUE_KEY",
     "VECTOR_QUEUE_FLUSH_SIZE",
     "VECTOR_GEMINI_BATCH_SIZE",
+    "VECTOR_EMBED_MAX_ATTEMPTS",
+    "VECTOR_EMBED_BACKOFF_SECONDS",
+    "VECTOR_EMBED_BACKOFF_KEY",
+    "VECTOR_SEARCH_DRAIN_ROUNDS",
     "VECTOR_SEARCH_DEFAULT_LIMIT",
     "VECTOR_SEARCH_MAX_LIMIT",
     "VECTOR_SEARCH_MAX_DISTANCE",

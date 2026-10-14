@@ -24,6 +24,14 @@ class RateLimited(Exception):
         super().__init__(f"rate limited: {action}")
 
 
+async def refund_increment(identifier: Union[int, str], action: str) -> None:
+    """Undo one successful check_and_increment (e.g. the guarded work failed and
+    will be retried). No-op if the window already expired; never goes below 0."""
+    key = f"{_KEY_PREFIX}{action}:{identifier}"
+    if await redis_client.exists(key) and await redis_client.decr(key) < 0:
+        await redis_client.set(key, 0, keepttl=True)
+
+
 async def check_and_increment(identifier: Union[int, str], action: str, max_per_window: int, window_seconds: int) -> bool:
     """
     Fixed-window counter per (identifier, action) - e.g. action="send_message",

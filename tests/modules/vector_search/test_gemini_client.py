@@ -88,3 +88,39 @@ async def test_embed_query_malformed_response_raises_provider_error(monkeypatch)
     _patch_post(monkeypatch, _FakeResponse(200, {"unexpected": "shape"}))
     with pytest.raises(EmbeddingProviderError):
         await gemini_client.embed_query("hi")
+
+
+def _capture_post(monkeypatch, response):
+    seen = {}
+
+    async def _fake_post(self, url, params=None, json=None):
+        seen["body"] = json
+        return response
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+    return seen
+
+
+async def test_embed_batch_sends_task_type_per_request(monkeypatch):
+    seen = _capture_post(monkeypatch, _FakeResponse(200, {"embeddings": [{"values": [0.1]}, {"values": [0.2]}]}))
+    await gemini_client.embed_batch(["a", "b"])
+    assert [r["taskType"] for r in seen["body"]["requests"]] == ["RETRIEVAL_DOCUMENT"] * 2
+
+
+async def test_embed_query_sends_retrieval_query_task_type(monkeypatch):
+    seen = _capture_post(monkeypatch, _FakeResponse(200, {"embedding": {"values": [0.1]}}))
+    await gemini_client.embed_query("hi")
+    assert seen["body"]["taskType"] == "RETRIEVAL_QUERY"
+
+
+async def test_embed_batch_429_raises_quota_exceeded(monkeypatch):
+    _patch_post(monkeypatch, _FakeResponse(429))
+    with pytest.raises(EmbeddingProviderQuotaExceededError):
+        await gemini_client.embed_batch(["a"])
+
+
+async def test_embed_batch_4xx_exposes_status_class(monkeypatch):
+    _patch_post(monkeypatch, _FakeResponse(400))
+    with pytest.raises(EmbeddingProviderError) as ei:
+        await gemini_client.embed_batch(["a"])
+    assert ei.value.is_client_error

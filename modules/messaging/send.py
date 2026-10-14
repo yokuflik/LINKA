@@ -6,7 +6,7 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from modules.agents.crud import get_agent_by_owner_chat
-from modules.agents.trigger_engine import evaluate_triggers
+from modules.agents.trigger_queue import maybe_enqueue_trigger_eval
 from modules.messaging.crud import create_message
 from modules.chats.crud.crud_participant import get_chat_participants
 from modules.chats.crud.crud_participant import is_participant
@@ -145,12 +145,6 @@ async def process_outgoing(
         client_message_id=client_message_id,
     )
 
-    # AI agent Trigger Rule Engine (ADR 0045): fire-and-forget, parallel to
-    # fan-out above - never blocks or fails the send path even if it errors.
-    # Runs on its own DB session (this worker's `session` belongs to the
-    # caller and may be committed/closed before this task gets scheduled).
-    asyncio.create_task(evaluate_triggers(message))
-
     return message
 
 
@@ -263,3 +257,14 @@ async def fan_out_message(session: AsyncSession, message: Message, client_messag
         ),
         return_exceptions=True,
     )
+
+    # ADR 0106: agent trigger evaluation is queued here (one SMISMEMBER, no DB)
+    # instead of a per-message create_task in the send path. System messages
+    # never trigger an agent. Best-effort, never raises.
+    if message.type != SYSTEM_MESSAGE_TYPE and message.sender_id is not None:
+        await maybe_enqueue_trigger_eval(
+            message_id=message.id,
+            chat_id=message.chat_id,
+            sender_id=message.sender_id,
+            recipient_ids=recipient_ids,
+        )

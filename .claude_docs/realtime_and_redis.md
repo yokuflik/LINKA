@@ -27,6 +27,12 @@ now wrapped in `_ack_with_retry` (3 attempts, short backoff) as defense in depth
 apply process-wide (every stream worker: send/fan-out/receipt/agent-invoke), not just
 the agent one.
 
+## Agent trigger evaluation stream (ADR 0106)
+- `process_outgoing` no longer `create_task`s the Trigger Rule Engine. `message_service.fan_out_message` (already holding participants) ends with `modules/agents/trigger_queue.maybe_enqueue_trigger_eval`: one `SMISMEMBER agent:enabled_owners <recipient_ids>` (sender id if the chat has no recipients, i.e. the owner<->agent chat); on a hit `XADD agent_trigger_stream {message_id, chat_id}`. System/null-sender messages skipped. Best-effort, never raises.
+- `modules/agents/trigger_worker.AgentTriggerConsumer` (`BaseStreamConsumer`, group `agent_trigger_worker`) runs inside `agent_worker` (`invoke_worker.run_forever`), loads the message (`get_message_by_id` - needs a real Snowflake id in tests) and runs the unchanged `_evaluate_triggers`. Failures are handled per owner: infra errors refund the quota and re-XADD the failed `owner_ids` with `attempts+1` (max `AGENT_TRIGGER_MAX_ATTEMPTS`=3); `AgentConfigError` (bad stored agent config) refunds and posts a cooldown-gated notice to the owner's agent chat; anything else is logged, refunded, dropped. Entries are always acked (stream redelivery would double-count quota).
+- The enabled-owners SET is now the authoritative gate, so `cache.reconcile_enabled_owners` diffs it vs `agents.is_enabled` at `agent_worker` start + every `AGENT_ENABLED_OWNERS_RECONCILE_SECONDS` (600).
+- Tests: `tests/modules/agents/test_trigger_stream.py`.
+
 ## Async send path (FANOUT_REWRITE_PLAN.md steps 1–4, all landed)
 - WS `send_message` does only a rate-limit + participant check, then `realtime/fanout/send_queue.enqueue_outgoing_message` (XADD `message_send_stream`) and ACKs `{"type":"ack","for":"send_message","status":"queued"}` (no `message_id`/`created_at`).
 - `realtime/fanout/worker.py` (`run_forever`, one task/process, started in `main.py` lifespan; `drain_once` exposed for tests) runs the old send flow via `message_service.process_outgoing` — idempotency, `_validate_media` HEAD, `create_message`, then `send_queue.enqueue_fanout`.

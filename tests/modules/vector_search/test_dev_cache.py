@@ -20,7 +20,7 @@ def _isolated_cache(tmp_path, monkeypatch):
 
 
 def _fake_embed_batch(calls):
-    async def _fn(texts):
+    async def _fn(texts, task_type="RETRIEVAL_DOCUMENT"):
         calls.append(list(texts))
         return [[float(len(t)), 0.0] for t in texts]
 
@@ -83,3 +83,9 @@ async def test_clear_cache_removes_file(tmp_path, monkeypatch):
     assert path.exists()
     dev_cache.clear_cache()
     assert not path.exists()
+
+
+async def test_cache_key_differs_by_task_type():
+    a = dev_cache._cache_key("m", 768, "t", "RETRIEVAL_DOCUMENT")
+    b = dev_cache._cache_key("m", 768, "t", "RETRIEVAL_QUERY")
+    assert a != b

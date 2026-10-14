@@ -29,15 +29,18 @@ next debounce cycle's ``acquire_turn_lock`` failure in
 latency from ~AGENT_INVOKE_DEBOUNCE_POLL_INTERVAL_SECONDS +
 AGENT_INVOKE_DEBOUNCE_SECONDS (~3s) down to a single Redis round-trip.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from redis.exceptions import RedisError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from infra.db.connection import session_scope
-from infra.ratelimit.service import check_and_increment
+from infra.ratelimit.service import check_and_increment, refund_increment
 from infra.redis.client import redis_client
 from modules.agents.cache import (
     get_cached_trigger_cfg,
@@ -77,6 +80,64 @@ _ACTIVATION_QUOTA_NOTICE = (
     "Your agent hit its hourly activation limit and won't respond to new "
     "messages until it resets. It'll pick back up automatically."
 )
+
+
+class AgentConfigError(Exception):
+    """ADR 0106: raised only while parsing an agent's own stored config (triggers /
+    restrictions / paused_chat_ids) - never for infra failures - so the owner can be
+    told their agent is misconfigured. Not retried."""
+
+    def __init__(self, owner_user_id: int):
+        super().__init__(f"invalid agent config for owner {owner_user_id}")
+        self.owner_user_id = owner_user_id
+
+
+_CONFIG_SHAPE_ERRORS = (KeyError, ValueError, TypeError, AttributeError)
+_INFRA_ERRORS = (SQLAlchemyError, RedisError, OSError, asyncio.TimeoutError)
+
+_INVALID_CONFIG_NOTICE = (
+    "I couldn't check whether to reply to a new message because your agent's "
+    "settings look invalid. Please review them in the agent settings (or reset "
+    "the agent to default)."
+)
+
+
+async def _consume(consumed: list, identifier, action: str, max_per_window: int, window_seconds: int) -> bool:
+    """check_and_increment that remembers what it counted, so a later failure in
+    the same evaluation can refund it (ADR 0106)."""
+    allowed = await check_and_increment(identifier, action, max_per_window, window_seconds)
+    if allowed:
+        consumed.append((identifier, action))
+    return allowed
+
+
+async def _refund(consumed: list) -> None:
+    for identifier, action in consumed:
+        try:
+            await refund_increment(identifier, action)
+        except Exception:
+            logger.exception("failed to refund %s counter for %s", action, identifier)
+
+
+async def _notify_invalid_agent_config(session: AsyncSession, owner_user_id: int) -> None:
+    """Tells the owner (in their agent chat, cooldown-gated like the quota
+    notice) that their agent's stored config can't be parsed."""
+    try:
+        agents = await get_enabled_agents_for_owners(session, [owner_user_id])
+        if not agents:
+            return
+        chat_id = agents[0].owner_agent_chat_id
+        acquired = await redis_client.set(
+            f"agent_config_notice_sent:{chat_id}", "1", nx=True,
+            ex=settings.AGENT_ACTIVATION_QUOTA_WINDOW_SECONDS,
+        )
+        if not acquired:
+            return
+        from modules.messaging.send import send_system_message
+
+        await send_system_message(session, chat_id, _INVALID_CONFIG_NOTICE)
+    except Exception:
+        logger.exception("failed to notify owner %s of invalid agent config", owner_user_id)
 
 
 async def _notify_activation_quota_exceeded(session: AsyncSession, owner_agent_chat_id: int) -> None:
@@ -276,7 +337,12 @@ async def evaluate_triggers(message: Message) -> None:
         logger.exception("agent trigger evaluation failed for message %s", message.id)
 
 
-async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
+async def _evaluate_triggers(
+    session: AsyncSession, message: Message, only_owner_ids: Optional[set] = None
+) -> list[int]:
+    """Returns the owner_user_ids whose evaluation failed transiently (ADR 0106:
+    the trigger consumer re-queues exactly those). `only_owner_ids` restricts a
+    retry to them so already-handled owners are not evaluated twice."""
     # AGENT_REPLY_MESSAGE_TYPE messages carry sender_id=owner_user_id (the
     # agent has no user_id of its own, ADR 0045) - indistinguishable from a
     # real owner-authored message by sender_id alone. Without this check, the
@@ -291,7 +357,7 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
     # like any message - agents are first-class senders; the hourly
     # activation quota + token budgets bound any agent-to-agent ping-pong.
     if message.type == SYSTEM_MESSAGE_TYPE or message.sender_id is None:
-        return
+        return []
 
     # Owner -> their own agent's dedicated 1:1 chat (AGENT_DRAWER_UI_PLAN.md
     # Wave 2, Step 5a): that chat has only the owner as a participant, so the
@@ -303,7 +369,7 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
     owner_agent = await get_agent_by_owner_chat(session, message.chat_id)
     if owner_agent is not None and owner_agent.owner_user_id == message.sender_id:
         if message.type == AGENT_REPLY_MESSAGE_TYPE:
-            return
+            return []
         # ADR 0054 (revised): no implicit auto-resume here anymore - any
         # message in the owner's own agent chat used to resume the most-
         # recently-escalated pause regardless of content, which silently
@@ -334,25 +400,53 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
             else:
                 await _notify_activation_quota_exceeded(session, owner_agent.owner_agent_chat_id)
                 await session.commit()
-        return
+        return []
 
     participants = await get_chat_participants(session, message.chat_id)
     candidate_owner_ids = [p.user_id for p in participants if p.user_id != message.sender_id]
     if not candidate_owner_ids:
+        return []
+
+    failed_owner_ids: list[int] = []
+    for owner_user_id in candidate_owner_ids:
+        if only_owner_ids is not None and owner_user_id not in only_owner_ids:
+            continue
+        consumed: list = []
+        try:
+            await _evaluate_owner(session, message, owner_user_id, consumed)
+        except AgentConfigError:
+            await session.rollback()
+            logger.exception("agent config invalid for owner %s (message %s)", owner_user_id, message.id)
+            await _refund(consumed)
+            await _notify_invalid_agent_config(session, owner_user_id)
+        except _INFRA_ERRORS:
+            await session.rollback()
+            logger.warning("transient failure evaluating owner %s for message %s", owner_user_id, message.id, exc_info=True)
+            await _refund(consumed)
+            failed_owner_ids.append(owner_user_id)
+        except Exception:
+            await session.rollback()
+            logger.exception("agent trigger evaluation failed for owner %s (message %s)", owner_user_id, message.id)
+            await _refund(consumed)
+    return failed_owner_ids
+
+
+async def _evaluate_owner(session: AsyncSession, message: Message, owner_user_id: int, consumed: list) -> None:
+    """One candidate owner's share of _evaluate_triggers (ADR 0106: split out so
+    a failure for one owner can be refunded/retried without touching the others).
+    `consumed` collects every rate-limit counter bumped so a failure can refund it."""
+    cfg = await _load_trigger_cfg(session, owner_user_id)
+    if cfg is None:
         return
 
-    for owner_user_id in candidate_owner_ids:
-        cfg = await _load_trigger_cfg(session, owner_user_id)
-        if cfg is None:
-            continue
+    # ADR 0047 decision 5: a chat the agent paused itself (pause_and_
+    # escalate) via the cache is skipped before even matching triggers -
+    # cheap pre-filter, same idea as the blocked_read_chat_ids check
+    # further down against the full row.
+    if message.chat_id in _active_paused_chat_ids(cfg.get("paused_chat_ids", [])):
+        return
 
-        # ADR 0047 decision 5: a chat the agent paused itself (pause_and_
-        # escalate) via the cache is skipped before even matching triggers -
-        # cheap pre-filter, same idea as the blocked_read_chat_ids check
-        # further down against the full row.
-        if message.chat_id in _active_paused_chat_ids(cfg.get("paused_chat_ids", [])):
-            continue
-
+    try:
         matched_unknown_sender = await _matches_unknown_sender(session, cfg["triggers"], message)
         matched_specific_chat = _matches_trigger_config(cfg["triggers"], message)
         matched_any_message = await _matches_any_message(session, cfg["triggers"], message)
@@ -364,100 +458,111 @@ async def _evaluate_triggers(session: AsyncSession, message: Message) -> None:
         if matched_goal_task:
             matched_unknown_sender = matched_specific_chat = matched_any_message = False
         matched = matched_unknown_sender or matched_specific_chat or matched_any_message or matched_goal_task
-        if not matched:
-            continue
+    except _CONFIG_SHAPE_ERRORS as exc:
+        raise AgentConfigError(owner_user_id) from exc
+    if not matched:
+        return
 
+    try:
         agent_id = int(cfg["id"])
+    except _CONFIG_SHAPE_ERRORS as exc:
+        raise AgentConfigError(owner_user_id) from exc
 
-        # Postgres touched here, once, right before enqueue: re-checks
-        # is_enabled + restrictions.blocked_read_chat_ids + paused_chat_ids
-        # (defense in depth for the enqueue-to-dequeue-style window between
-        # the cache read above and this point - same pattern as the existing
-        # is_enabled recheck).
-        agent = await get_agent_by_id(session, agent_id)
-        if agent is None or not agent.is_enabled:
-            continue
+    # Postgres touched here, once, right before enqueue: re-checks
+    # is_enabled + restrictions.blocked_read_chat_ids + paused_chat_ids
+    # (defense in depth for the enqueue-to-dequeue-style window between
+    # the cache read above and this point - same pattern as the existing
+    # is_enabled recheck).
+    agent = await get_agent_by_id(session, agent_id)
+    if agent is None or not agent.is_enabled:
+        return
+    try:
         blocked_chat_ids = {int(cid) for cid in agent.restrictions.get("blocked_read_chat_ids", [])}
-        if message.chat_id in blocked_chat_ids:
-            continue
-        if message.chat_id in _active_paused_chat_ids(agent.paused_chat_ids):
-            continue
+        paused_chat_ids = _active_paused_chat_ids(agent.paused_chat_ids)
+    except _CONFIG_SHAPE_ERRORS as exc:
+        raise AgentConfigError(owner_user_id) from exc
+    if message.chat_id in blocked_chat_ids:
+        return
+    if message.chat_id in paused_chat_ids:
+        return
 
-        # ADR 0061: a reply in a chat some spawn_ephemeral_task is still
-        # waiting on is recorded deterministically here (no Gemini call needed
-        # to "record" a reply - same reasoning as auto_register_unknown_sender_
-        # chat's plain dict mutation below) rather than falling through to a
-        # normal on_specific_chats-matched turn against that chat. Once every
-        # expected_chat_id has replied, the summarize-to-owner turn is enqueued
-        # immediately and the task deletes itself (complete_task) - no separate
-        # cleanup step, no sweep needed for the "everyone replied" case (only
-        # the nobody-ever-replied case needs the schedule poll loop's sweep,
-        # see invoke_worker._schedule_poll_loop).
-        task_match = find_task_for_chat(agent, message.chat_id)
-        if task_match is not None:
-            task_id, task_entry = task_match
-            agent = await record_reply(session, agent, task_id, message.chat_id, message.content or "")
+    # ADR 0061: a reply in a chat some spawn_ephemeral_task is still
+    # waiting on is recorded deterministically here (no Gemini call needed
+    # to "record" a reply - same reasoning as auto_register_unknown_sender_
+    # chat's plain dict mutation below) rather than falling through to a
+    # normal on_specific_chats-matched turn against that chat. Once every
+    # expected_chat_id has replied, the summarize-to-owner turn is enqueued
+    # immediately and the task deletes itself (complete_task) - no separate
+    # cleanup step, no sweep needed for the "everyone replied" case (only
+    # the nobody-ever-replied case needs the schedule poll loop's sweep,
+    # see invoke_worker._schedule_poll_loop).
+    task_match = find_task_for_chat(agent, message.chat_id)
+    if task_match is not None:
+        task_id, task_entry = task_match
+        agent = await record_reply(session, agent, task_id, message.chat_id, message.content or "")
+        await session.commit()
+        refreshed_entry = agent.triggers.get("on_ephemeral_task", {}).get(task_id)
+        if refreshed_entry is not None and is_task_complete(refreshed_entry):
+            await fire_summary_and_complete(session, agent, task_id, refreshed_entry)
             await session.commit()
-            refreshed_entry = agent.triggers.get("on_ephemeral_task", {}).get(task_id)
-            if refreshed_entry is not None and is_task_complete(refreshed_entry):
-                await fire_summary_and_complete(session, agent, task_id, refreshed_entry)
-                await session.commit()
-            continue
+        return
 
-        allowed = await check_and_increment(
-            agent.id,
-            "agent_activation",
-            settings.AGENT_ACTIVATION_QUOTA_PER_HOUR,
-            settings.AGENT_ACTIVATION_QUOTA_WINDOW_SECONDS,
+    allowed = await _consume(
+        consumed,
+        agent.id,
+        "agent_activation",
+        settings.AGENT_ACTIVATION_QUOTA_PER_HOUR,
+        settings.AGENT_ACTIVATION_QUOTA_WINDOW_SECONDS,
+    )
+    if not allowed:
+        # Hourly quota exceeded - drop the trigger (message still
+        # delivered normally; no backlog/queueing of missed triggers per
+        # ADR 0045), but let the owner know via their own agent chat.
+        await _notify_activation_quota_exceeded(session, agent.owner_agent_chat_id)
+        await session.commit()
+        return
+
+    if matched_unknown_sender:
+        # ADR 0046 decision 2: dedicated per-sender daily cap, on top of
+        # the hourly activation quota above - stops one unknown sender
+        # from burning the whole hourly budget by itself while staying
+        # bounded by it in aggregate.
+        sender_allowed = await _consume(
+            consumed,
+            f"{agent.id}:{message.sender_id}",
+            "agent_unknown_sender",
+            settings.AGENT_UNKNOWN_SENDER_QUOTA_PER_DAY,
+            settings.AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS,
         )
-        if not allowed:
-            # Hourly quota exceeded - drop the trigger (message still
-            # delivered normally; no backlog/queueing of missed triggers per
-            # ADR 0045), but let the owner know via their own agent chat.
-            await _notify_activation_quota_exceeded(session, agent.owner_agent_chat_id)
-            await session.commit()
-            continue
+        if not sender_allowed:
+            return
 
-        if matched_unknown_sender:
-            # ADR 0046 decision 2: dedicated per-sender daily cap, on top of
-            # the hourly activation quota above - stops one unknown sender
-            # from burning the whole hourly budget by itself while staying
-            # bounded by it in aggregate.
-            sender_allowed = await check_and_increment(
-                f"{agent.id}:{message.sender_id}",
-                "agent_unknown_sender",
-                settings.AGENT_UNKNOWN_SENDER_QUOTA_PER_DAY,
-                settings.AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS,
-            )
-            if not sender_allowed:
-                continue
-
-            # ADR 0051: first-contact reply just cleared every gate - keep
-            # the agent responding to this same person going forward by
-            # folding the chat into on_specific_chats (FIFO-capped at
-            # AGENT_MAX_AUTO_CHATS). auto_register_unknown_sender_chat only
-            # flushes, so this session must commit or the registration is
-            # silently rolled back when session_scope() closes.
-            await auto_register_unknown_sender_chat(session, agent, message.chat_id)
-            await session.commit()
-
-        # ADR 0095: decrement max_fires / delete-on-lapsed-expires_at for
-        # whichever trigger(s) just matched - on_specific_chats (including
-        # the entry auto-registered above, which never itself carries
-        # expires_at/max_fires so this is a no-op for it),
-        # on_unknown_sender, and on_any_message. Must run after the
-        # auto-register commit above (it re-reads agent.triggers) and before
-        # arming the debounce, so a worker picking this turn up immediately
-        # never reads a stale fire count.
-        agent = await consume_matched_trigger_fire(
-            session,
-            agent,
-            chat_id=message.chat_id,
-            matched_specific_chat=matched_specific_chat,
-            matched_unknown_sender=matched_unknown_sender,
-            matched_any_message=matched_any_message,
-        )
-        await sync_agent_cache(agent)
+        # ADR 0051: first-contact reply just cleared every gate - keep
+        # the agent responding to this same person going forward by
+        # folding the chat into on_specific_chats (FIFO-capped at
+        # AGENT_MAX_AUTO_CHATS). auto_register_unknown_sender_chat only
+        # flushes, so this session must commit or the registration is
+        # silently rolled back when session_scope() closes.
+        await auto_register_unknown_sender_chat(session, agent, message.chat_id)
         await session.commit()
 
-        await _arm_debounce_eager(agent.id, message.chat_id, message.id)
+    # ADR 0095: decrement max_fires / delete-on-lapsed-expires_at for
+    # whichever trigger(s) just matched - on_specific_chats (including
+    # the entry auto-registered above, which never itself carries
+    # expires_at/max_fires so this is a no-op for it),
+    # on_unknown_sender, and on_any_message. Must run after the
+    # auto-register commit above (it re-reads agent.triggers) and before
+    # arming the debounce, so a worker picking this turn up immediately
+    # never reads a stale fire count.
+    agent = await consume_matched_trigger_fire(
+        session,
+        agent,
+        chat_id=message.chat_id,
+        matched_specific_chat=matched_specific_chat,
+        matched_unknown_sender=matched_unknown_sender,
+        matched_any_message=matched_any_message,
+    )
+    await sync_agent_cache(agent)
+    await session.commit()
+
+    await _arm_debounce_eager(agent.id, message.chat_id, message.id)

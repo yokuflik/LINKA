@@ -321,3 +321,5 @@ and margin-tuning notes: `.claude_docs/ai_agent_owner_chat_router.md`.
 
 ## Provisioning (ADR 0104, reverses ADR 0047 lazy half)
 `modules/agents/provisioning.py::provision_agent` (idempotent: owner-agent chat + `Agent` + cache sync + greeting) is called best-effort from `modules/auth/service.py::_find_or_create_and_issue` for brand-new users, and by `POST /agents/me` (self-heal for older accounts). `is_enabled` still defaults `False`.
+
+**Trigger evaluation path (ADR 0106):** no longer `create_task` in `process_outgoing`; gated in `fan_out_message` via `agent:enabled_owners` SMISMEMBER -> `agent_trigger_stream` -> `AgentTriggerConsumer` in `agent_worker`. Detail in `.claude_docs/realtime_and_redis.md`.

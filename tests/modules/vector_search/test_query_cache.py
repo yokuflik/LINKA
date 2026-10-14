@@ -119,3 +119,9 @@ async def test_concurrent_requests_for_same_text_do_not_corrupt_cache(monkeypatc
     assert all(r == [1.0, 2.0, 3.0] for r in results)
     assert len(calls) >= 1
     assert len(query_cache._cache) == 1
+
+
+def test_cache_key_differs_by_task_type():
+    assert query_cache._cache_key("m", 768, "t", "RETRIEVAL_QUERY") != query_cache._cache_key(
+        "m", 768, "t", "RETRIEVAL_DOCUMENT"
+    )

@@ -40,8 +40,8 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _cache_key(model: str, dim: int, text: str) -> str:
-    return hashlib.sha256(f"{model}:{dim}:{text}".encode("utf-8")).hexdigest()
+def _cache_key(model: str, dim: int, text: str, task_type: str = gemini_client.TASK_TYPE_DOCUMENT) -> str:
+    return hashlib.sha256(f"{model}:{dim}:{task_type}:{text}".encode("utf-8")).hexdigest()
 
 
 def _pack(vector: Sequence[float]) -> bytes:
@@ -58,13 +58,15 @@ def clear_cache() -> None:
         os.remove(CACHE_PATH)
 
 
-async def embed_batch_cached(texts: Sequence[str]) -> list[list[float]]:
+async def embed_batch_cached(
+    texts: Sequence[str], task_type: str = gemini_client.TASK_TYPE_DOCUMENT
+) -> list[list[float]]:
     """Drop-in replacement for gemini_client.embed_batch - only calls Gemini
     for texts not already in the local cache."""
     global hits, misses
     model = settings.GEMINI_EMBED_MODEL
     dim = settings.VECTOR_EMBEDDING_DIM
-    keys = [_cache_key(model, dim, t) for t in texts]
+    keys = [_cache_key(model, dim, t, task_type) for t in texts]
 
     conn = _connect()
     try:
@@ -78,7 +80,7 @@ async def embed_batch_cached(texts: Sequence[str]) -> list[list[float]]:
         miss_indices = [i for i, r in enumerate(results) if r is None]
         if miss_indices:
             misses += len(miss_indices)
-            fresh = await gemini_client.embed_batch([texts[i] for i in miss_indices])
+            fresh = await gemini_client.embed_batch([texts[i] for i in miss_indices], task_type=task_type)
             now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             for i, vec in zip(miss_indices, fresh):
                 results[i] = vec
@@ -96,5 +98,5 @@ async def embed_batch_cached(texts: Sequence[str]) -> list[list[float]]:
 
 async def embed_query_cached(text: str) -> list[float]:
     """Drop-in replacement for gemini_client.embed_query, same cache."""
-    vectors = await embed_batch_cached([text])
+    vectors = await embed_batch_cached([text], gemini_client.TASK_TYPE_QUERY)
     return vectors[0]

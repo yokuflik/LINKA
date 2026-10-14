@@ -156,6 +156,24 @@ AGENT_SEND_RATE_LIMIT_BACKOFF_MAX_MS = int(os.environ.get("AGENT_SEND_RATE_LIMIT
 AGENT_ENABLED_OWNERS_SET_KEY = os.environ.get("AGENT_ENABLED_OWNERS_SET_KEY", "agent:enabled_owners")
 AGENT_TRIGGER_CFG_KEY_PREFIX = os.environ.get("AGENT_TRIGGER_CFG_KEY_PREFIX", "agent:trigger_cfg:")
 
+# --- Trigger evaluation stream (ADR 0106) ---
+# The fan-out worker XADDs here only when a recipient is in the enabled-owners
+# SET above; the agent_worker's AgentTriggerConsumer runs evaluate_triggers.
+AGENT_TRIGGER_STREAM_KEY = os.environ.get("AGENT_TRIGGER_STREAM_KEY", "agent_trigger_stream")
+AGENT_TRIGGER_STREAM_MAXLEN = int(os.environ.get("AGENT_TRIGGER_STREAM_MAXLEN", "100000"))
+AGENT_TRIGGER_STREAM_GROUP = os.environ.get("AGENT_TRIGGER_STREAM_GROUP", "agent_trigger_worker")
+AGENT_TRIGGER_STREAM_BATCH = int(os.environ.get("AGENT_TRIGGER_STREAM_BATCH", "20"))
+AGENT_TRIGGER_STREAM_BLOCK_MS = int(os.environ.get("AGENT_TRIGGER_STREAM_BLOCK_MS", "5000"))
+AGENT_TRIGGER_STREAM_CLAIM_IDLE_MS = int(os.environ.get("AGENT_TRIGGER_STREAM_CLAIM_IDLE_MS", "60000"))
+# The enabled-owners SET is the authoritative gate, so it is re-diffed against
+# agents.is_enabled at agent_worker start and on this interval.
+# Transient failures (DB/Redis) re-queue just the failed owners this many times
+# in total (attempt 1 included) before the trigger is dropped.
+AGENT_TRIGGER_MAX_ATTEMPTS = int(os.environ.get("AGENT_TRIGGER_MAX_ATTEMPTS", "3"))
+AGENT_ENABLED_OWNERS_RECONCILE_SECONDS = int(
+    os.environ.get("AGENT_ENABLED_OWNERS_RECONCILE_SECONDS", "600")
+)
+
 # --- on_unknown_sender trigger (ADR 0046, decision 2) ---
 # Per-sender daily cap, on top of - not instead of - AGENT_ACTIVATION_QUOTA_
 # PER_HOUR above: caps how many times a single unknown sender can wake the
@@ -510,6 +528,14 @@ __all__ = [
     "AGENT_SEND_RATE_LIMIT_BACKOFF_MAX_MS",
     "AGENT_ENABLED_OWNERS_SET_KEY",
     "AGENT_TRIGGER_CFG_KEY_PREFIX",
+    "AGENT_TRIGGER_STREAM_KEY",
+    "AGENT_TRIGGER_STREAM_MAXLEN",
+    "AGENT_TRIGGER_STREAM_GROUP",
+    "AGENT_TRIGGER_STREAM_BATCH",
+    "AGENT_TRIGGER_STREAM_BLOCK_MS",
+    "AGENT_TRIGGER_STREAM_CLAIM_IDLE_MS",
+    "AGENT_TRIGGER_MAX_ATTEMPTS",
+    "AGENT_ENABLED_OWNERS_RECONCILE_SECONDS",
     "AGENT_UNKNOWN_SENDER_QUOTA_PER_DAY",
     "AGENT_UNKNOWN_SENDER_QUOTA_WINDOW_SECONDS",
     "AGENT_MAX_AUTO_CHATS",

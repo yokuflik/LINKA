@@ -171,7 +171,7 @@ async def test_dev_cache_used_when_enabled(db_session: AsyncSession, redis_db, m
 
     calls = []
 
-    async def _fake_embed_batch(texts):
+    async def _fake_embed_batch(texts, task_type="RETRIEVAL_DOCUMENT"):
         calls.append(list(texts))
         return [unit_vector(0) for _ in texts]
 
@@ -219,22 +219,113 @@ async def test_flush_queue_writes_embeddings_in_batches(db_session: AsyncSession
     assert await queue.queue_length() == 2  # the remaining 2 of 5
 
 
-async def test_flush_queue_drops_failed_batch_without_raising(db_session: AsyncSession, redis_db, monkeypatch):
-    await _user(db_session, 925)
-    await _chat(db_session, 9203, 925)
-    mid = _mid(20)
-    await create_message(db_session, message_id=mid, chat_id=9203, sender_id=925, content="doomed")
-    await queue.enqueue(mid, "doomed")
+async def _queued(db_session, uid, chat_id, mid, content, attempts=0):
+    await _user(db_session, uid)
+    await _chat(db_session, chat_id, uid)
+    await create_message(db_session, message_id=mid, chat_id=chat_id, sender_id=uid, content=content)
+    await queue.enqueue(mid, content, attempts)
+
+
+async def _queue_items():
+    from config import settings
+    from infra.redis.client import redis_client
+    import json
+
+    return [json.loads(i) for i in await redis_client.lrange(settings.VECTOR_QUEUE_KEY, 0, -1)]
+
+
+async def test_flush_queue_transient_failure_requeues_with_attempt(db_session: AsyncSession, redis_db, monkeypatch):
+    await _queued(db_session, 925, 9203, _mid(20), "retry me")
+
+    async def _fail(texts):
+        raise gemini_client.EmbeddingProviderError("boom", status_code=503)
+
+    monkeypatch.setattr(gemini_client, "embed_batch", _fail)
+
+    assert await service.flush_queue(limits=_LIMITS) == 0
+    items = await _queue_items()
+    assert [(i["id"], i["attempts"]) for i in items] == [(str(_mid(20)), 1)]
+
+
+async def test_flush_queue_drops_at_max_attempts(db_session: AsyncSession, redis_db, monkeypatch):
+    await _queued(db_session, 929, 9207, _mid(21), "last try", attempts=4)
 
     async def _fail(texts):
         raise gemini_client.EmbeddingProviderError("boom")
 
     monkeypatch.setattr(gemini_client, "embed_batch", _fail)
-
-    embedded = await service.flush_queue(limits=_LIMITS)
-    assert embedded == 0
-    # Popped items are gone even though the embed failed - accepted gap (no requeue).
+    await service.flush_queue(limits=_LIMITS)
     assert await queue.queue_length() == 0
+
+
+async def test_flush_queue_legacy_item_without_attempts(db_session: AsyncSession, redis_db, monkeypatch):
+    import json
+    from config import settings
+    from infra.redis.client import redis_client
+
+    await _user(db_session, 930)
+    await _chat(db_session, 9208, 930)
+    mid = _mid(22)
+    await create_message(db_session, message_id=mid, chat_id=9208, sender_id=930, content="old")
+    await redis_client.rpush(settings.VECTOR_QUEUE_KEY, json.dumps({"id": str(mid), "content": "old"}))
+    monkeypatch.setattr(gemini_client, "embed_batch", _fake_embed_batch())
+    assert await service.flush_queue(limits=_LIMITS) == 1
+
+
+async def test_flush_queue_429_sets_backoff_keeps_attempts_and_skips_next(db_session: AsyncSession, redis_db, monkeypatch):
+    await _queued(db_session, 931, 9209, _mid(23), "quota")
+
+    async def _quota(texts):
+        raise gemini_client.EmbeddingProviderQuotaExceededError("429")
+
+    monkeypatch.setattr(gemini_client, "embed_batch", _quota)
+    assert await service.flush_queue(limits=_LIMITS) == 0
+    assert await queue.backoff_active()
+    assert [i["attempts"] for i in await _queue_items()] == [0]
+
+    calls = []
+
+    async def _spy(texts):
+        calls.append(texts)
+        return [unit_vector(0) for _ in texts]
+
+    monkeypatch.setattr(gemini_client, "embed_batch", _spy)
+    assert await service.flush_queue(limits=_LIMITS) == 0  # backoff active -> no call
+    assert calls == []
+
+
+async def test_flush_queue_4xx_bisects_poisoned_item(db_session: AsyncSession, redis_db, monkeypatch):
+    await _user(db_session, 932)
+    await _chat(db_session, 9210, 932)
+    mids = [_mid(30 + n) for n in range(3)]
+    texts = ["ok1", "POISON", "ok2"]
+    for mid, t in zip(mids, texts):
+        await create_message(db_session, message_id=mid, chat_id=9210, sender_id=932, content=t)
+        await queue.enqueue(mid, t)
+
+    async def _fn(batch):
+        if "POISON" in batch:
+            raise gemini_client.EmbeddingProviderError("bad", status_code=400)
+        return [unit_vector(0) for _ in batch]
+
+    monkeypatch.setattr(gemini_client, "embed_batch", _fn)
+    big = VectorSearchLimits(queue_flush_size=3, gemini_batch_size=3, embed_max_attempts=5)
+    assert await service.flush_queue(limits=big) == 2
+    assert await queue.queue_length() == 0  # poison dropped, not requeued
+
+
+async def test_before_search_drain_bounded_and_never_raises(db_session: AsyncSession, redis_db, monkeypatch):
+    await _queued(db_session, 933, 9211, _mid(40), "stuck")
+    calls = []
+
+    async def _fail(texts):
+        calls.append(1)
+        raise gemini_client.EmbeddingProviderError("boom", status_code=500)
+
+    monkeypatch.setattr(gemini_client, "embed_batch", _fail)
+    await asyncio.wait_for(service.flush_queue_if_pending(limits=_LIMITS), timeout=5)
+    assert len(calls) == _LIMITS.drain_rounds
+    assert [i["attempts"] for i in await _queue_items()] == [3]
 
 
 async def test_flush_queue_if_pending_drains_below_flush_size(db_session: AsyncSession, redis_db, monkeypatch):

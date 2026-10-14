@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from infra.db.connection import session_scope
 from infra.redis.client import redis_client
+from modules.agents.cache import reconcile_enabled_owners
 from modules.agents.crud import get_agent_by_id
 from modules.agents.invoke_debounce import (
     acquire_turn_lock,
@@ -59,6 +60,7 @@ from modules.agents.invoke_poll_loops import (  # noqa: F401 - re-exported
 )
 from modules.agents.invoke_turn import _run_turn  # noqa: F401 - re-exported, patched here by tests
 from modules.agents.invoke_turn_helpers import _post_config_reply
+from modules.agents.trigger_worker import AgentTriggerConsumer
 from modules.agents.time_budget import has_budget_remaining, record_active_seconds
 from realtime.fanout.base_worker import BaseStreamConsumer, touch_app_liveness
 
@@ -322,15 +324,39 @@ class AgentInvokeConsumer(BaseStreamConsumer):
 
 
 
+async def _enabled_owners_reconcile_loop(stop_event: asyncio.Event) -> None:
+    """ADR 0106: re-diff the enabled-owners gate SET against Postgres at start
+    and then every AGENT_ENABLED_OWNERS_RECONCILE_SECONDS."""
+    while not stop_event.is_set():
+        try:
+            async with session_scope() as session:
+                added, removed = await reconcile_enabled_owners(session)
+            if added or removed:
+                logger.info("agent_worker: enabled-owners reconcile added=%s removed=%s", added, removed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("agent_worker: enabled-owners reconcile failed")
+        try:
+            await asyncio.wait_for(
+                stop_event.wait(), timeout=settings.AGENT_ENABLED_OWNERS_RECONCILE_SECONDS
+            )
+        except asyncio.TimeoutError:
+            pass
+
+
 async def run_forever(stop_event: asyncio.Event | None = None) -> None:
     from config import SERVER_ID
 
     stop_event = stop_event or asyncio.Event()
     semaphore = asyncio.Semaphore(settings.AGENT_WORKER_CONCURRENCY)
     consumer = AgentInvokeConsumer(f"agent-worker-{SERVER_ID}", semaphore)
+    trigger_consumer = AgentTriggerConsumer(f"agent-trigger-worker-{SERVER_ID}")
 
     await asyncio.gather(
         consumer.run_forever(stop_event),
+        trigger_consumer.run_forever(stop_event),
+        _enabled_owners_reconcile_loop(stop_event),
         _schedule_poll_loop(stop_event),
         _invoke_debounce_poll_loop(stop_event),
     )

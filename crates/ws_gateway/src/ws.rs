@@ -1,6 +1,7 @@
 //! WebSocket endpoint: handshake, per-connection reader/writer tasks, and the
-//! inbound dispatch table. Step 4 scope — no Redis fan-in yet (Step 5), only
-//! `heartbeat` and `send_message` are wired end to end.
+//! inbound dispatch table. Inbound frames (send_message, mark_*, edits,
+//! presence, typing) are handled here; the Redis fan-in (pub/sub -> client
+//! sockets) lives in `fanin.rs`.
 
 use std::sync::Arc;
 

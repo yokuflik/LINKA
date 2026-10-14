@@ -85,3 +85,23 @@ async def get_cached_trigger_cfg(owner_user_id: int) -> Optional[dict]:
     except (TypeError, ValueError):
         logger.warning("malformed agent trigger_cfg cache for owner %s", owner_user_id)
         return None
+
+
+async def reconcile_enabled_owners(session) -> tuple[int, int]:
+    """ADR 0106: the enabled-owners SET is the authoritative fan-out gate, so a
+    lost SADD/SREM would silently skip triggers. Diffs it against
+    agents.is_enabled: SADD missing owners, SREM stale ones. Returns
+    (added, removed). A concurrent enable/disable racing the DB snapshot is
+    corrected by the next run."""
+    from sqlalchemy import select
+
+    rows = await session.execute(select(Agent.owner_user_id).where(Agent.is_enabled.is_(True)))
+    db_owners = {int(r[0]) for r in rows}
+    cached = {int(m) for m in await redis_client.smembers(settings.AGENT_ENABLED_OWNERS_SET_KEY)}
+    missing = db_owners - cached
+    stale = cached - db_owners
+    if missing:
+        await redis_client.sadd(settings.AGENT_ENABLED_OWNERS_SET_KEY, *missing)
+    if stale:
+        await redis_client.srem(settings.AGENT_ENABLED_OWNERS_SET_KEY, *stale)
+    return len(missing), len(stale)

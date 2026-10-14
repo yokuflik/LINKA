@@ -11,7 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.db.connection import session_scope
 from modules.vector_search import crud, dev_cache, gemini_client, query_cache, queue
-from modules.vector_search.errors import VectorSearchQueryTooShortError
+from modules.vector_search.errors import (
+    EmbeddingProviderError,
+    EmbeddingProviderQuotaExceededError,
+    VectorSearchQueryTooShortError,
+)
 from modules.vector_search.limits import DEFAULT_VECTOR_SEARCH_LIMITS, VectorSearchLimits
 from modules.vector_search.schemas import SemanticSearchResponseOut, SemanticSearchResultOut
 
@@ -46,43 +50,104 @@ async def _flush_and_log(limits: VectorSearchLimits) -> None:
         logger.exception("background vector-embed queue flush failed")
 
 
-async def flush_queue(*, limits: VectorSearchLimits = DEFAULT_VECTOR_SEARCH_LIMITS) -> int:
-    """Pop up to `queue_flush_size` entries, embed them in one Gemini batch
-    call, write the vectors back. Returns the number of messages embedded.
-    A Gemini failure drops this batch (see ADR 0042's known-gaps) rather than
-    requeuing - callers (auto-flush / on-demand) both treat 0 as "nothing to
-    report", not an error."""
-    items = await queue.pop_batch(limits.queue_flush_size)
-    if not items:
-        return 0
+def _embed_fn():
+    return dev_cache.embed_batch_cached if dev_cache.CACHE_ENABLED else gemini_client.embed_batch
+
+
+def _bump_or_drop(items: list[dict], limits: VectorSearchLimits) -> list[dict]:
+    """attempts + 1; items reaching the cap are dropped (id only in the log)."""
+    keep = []
+    for item in items:
+        attempts = item.get("attempts", 0) + 1
+        if attempts >= limits.embed_max_attempts:
+            logger.warning("vector embed: dropping message %s after %d attempts", item["id"], attempts)
+            continue
+        keep.append({**item, "attempts": attempts})
+    return keep
+
+
+async def _embed_chunk(chunk: list[dict], limits: VectorSearchLimits) -> tuple[list[tuple[int, list[float]]], list[dict]]:
+    """Embed one chunk. Returns (rows to write, items to requeue) - ADR 0107."""
+    try:
+        vectors = await _embed_fn()([c["content"] for c in chunk])
+    except EmbeddingProviderQuotaExceededError:
+        # Not the messages' fault: pause flushing, keep attempts unchanged.
+        await queue.set_backoff(limits.backoff_seconds)
+        logger.warning("vector embed: Gemini 429 - backing off %ds, requeueing %d", limits.backoff_seconds, len(chunk))
+        return [], chunk
+    except EmbeddingProviderError as exc:
+        if not exc.is_client_error:
+            logger.warning("vector embed: transient failure, requeueing %d", len(chunk))
+            return [], _bump_or_drop(chunk, limits)
+        if len(chunk) == 1:
+            logger.warning("vector embed: dropping message %s (non-retriable %s)", chunk[0]["id"], exc.status_code)
+            return [], []
+        mid = len(chunk) // 2
+        rows_l, requeue_l = await _embed_chunk(chunk[:mid], limits)
+        if await queue.backoff_active():
+            return rows_l, requeue_l + chunk[mid:]
+        rows_r, requeue_r = await _embed_chunk(chunk[mid:], limits)
+        return rows_l + rows_r, requeue_l + requeue_r
+    except Exception:
+        logger.exception("vector embed: unexpected failure, requeueing %d", len(chunk))
+        return [], _bump_or_drop(chunk, limits)
+    return [(int(c["id"]), vec) for c, vec in zip(chunk, vectors)], []
+
+
+async def _process_items(items: list[dict], limits: VectorSearchLimits) -> int:
     embedded = 0
+    to_requeue: list[dict] = []
     async with session_scope() as session:
         for start in range(0, len(items), limits.gemini_batch_size):
             chunk = items[start : start + limits.gemini_batch_size]
-            try:
-                embed_fn = dev_cache.embed_batch_cached if dev_cache.CACHE_ENABLED else gemini_client.embed_batch
-                vectors = await embed_fn([c["content"] for c in chunk])
-            except Exception:
-                logger.exception("Gemini embed_batch failed - dropping %d queued messages", len(chunk))
+            rows, requeue_items = await _embed_chunk(chunk, limits)
+            to_requeue.extend(requeue_items)
+            if not rows:
                 continue
-            rows = [(int(c["id"]), vec) for c, vec in zip(chunk, vectors)]
-            await crud.update_embeddings(session, rows)
-            embedded += len(rows)
+            try:
+                await crud.update_embeddings(session, rows)
+                embedded += len(rows)
+            except Exception:
+                logger.exception("vector embed: DB write failed, requeueing %d", len(rows))
+                done = {r[0] for r in rows}
+                to_requeue.extend(_bump_or_drop([c for c in chunk if int(c["id"]) in done], limits))
+    await queue.requeue(to_requeue)
     return embedded
 
 
+async def flush_queue(*, limits: VectorSearchLimits = DEFAULT_VECTOR_SEARCH_LIMITS) -> int:
+    """Pop up to `queue_flush_size` entries, embed them, write the vectors back.
+    Returns the number of messages embedded. Failures are requeued (or dropped
+    per ADR 0107) - never raised; a global 429 backoff makes this a no-op."""
+    if await queue.backoff_active():
+        return 0
+    items = await queue.pop_batch(limits.queue_flush_size)
+    if not items:
+        return 0
+    return await _process_items(items, limits)
+
+
 async def flush_queue_if_pending(*, limits: VectorSearchLimits = DEFAULT_VECTOR_SEARCH_LIMITS) -> None:
-    """On-demand trigger (ADR 0042 point 3): called synchronously before a
-    semantic search runs so a just-sent message is guaranteed searchable, even
-    below the auto-flush size threshold. Keeps draining until the queue is
-    empty (a single search request should not leave a partially-drained queue
-    for the next one to redo)."""
-    while await queue.queue_length() > 0:
-        embedded = await flush_queue(limits=limits)
-        if embedded == 0:
-            # Either the queue emptied under us or every item's flush failed -
-            # either way, looping again would spin forever.
-            break
+    """On-demand trigger (ADR 0042 point 3), bounded per ADR 0107: at most
+    `drain_rounds` rounds, each draining no more than the LLEN snapshot (so
+    items requeued by a failure are not re-popped in the same round). After
+    that, give up silently - the search runs without the newest messages and
+    the leftovers are retried by the next flush. Never raises."""
+    try:
+        for _ in range(limits.drain_rounds):
+            if await queue.backoff_active():
+                return
+            budget = await queue.queue_length()
+            if budget <= 0:
+                return
+            while budget > 0:
+                items = await queue.pop_batch(min(limits.queue_flush_size, budget))
+                if not items:
+                    break
+                budget -= len(items)
+                await _process_items(items, limits)
+    except Exception:
+        logger.exception("before-search vector queue drain failed")
 
 
 async def semantic_search(

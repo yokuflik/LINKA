@@ -31,8 +31,8 @@ hits = 0
 misses = 0
 
 
-def _cache_key(model: str, dim: int, text: str) -> str:
-    return hashlib.sha256(f"{model}:{dim}:{text}".encode("utf-8")).hexdigest()
+def _cache_key(model: str, dim: int, text: str, task_type: str = gemini_client.TASK_TYPE_QUERY) -> str:
+    return hashlib.sha256(f"{model}:{dim}:{task_type}:{text}".encode("utf-8")).hexdigest()
 
 
 async def embed_query_cached(text: str) -> list[float]:

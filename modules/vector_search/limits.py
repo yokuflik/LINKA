@@ -17,6 +17,9 @@ class VectorSearchLimits:
     rate_window_s: int = settings.VECTOR_SEARCH_RATE_WINDOW_SECONDS
     queue_flush_size: int = settings.VECTOR_QUEUE_FLUSH_SIZE
     gemini_batch_size: int = settings.VECTOR_GEMINI_BATCH_SIZE
+    embed_max_attempts: int = settings.VECTOR_EMBED_MAX_ATTEMPTS
+    backoff_seconds: int = settings.VECTOR_EMBED_BACKOFF_SECONDS
+    drain_rounds: int = settings.VECTOR_SEARCH_DRAIN_ROUNDS
 
 
 DEFAULT_VECTOR_SEARCH_LIMITS = VectorSearchLimits()
